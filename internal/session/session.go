@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/lucasnoah/taintfactory/internal/db"
 	"github.com/lucasnoah/taintfactory/internal/pipeline"
 )
+
+var validSessionName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
 // CreateOpts holds parameters for creating a new session.
 type CreateOpts struct {
@@ -44,8 +47,28 @@ func NewManager(tmux TmuxRunner, database *db.DB, store *pipeline.Store) *Manage
 	return &Manager{tmux: tmux, db: database, store: store}
 }
 
+// ValidateSessionName checks that a session name is safe for use with tmux.
+func ValidateSessionName(name string) error {
+	if name == "" {
+		return fmt.Errorf("session name cannot be empty")
+	}
+	if !validSessionName.MatchString(name) {
+		return fmt.Errorf("session name %q contains invalid characters (allowed: alphanumeric, underscore, dot, hyphen)", name)
+	}
+	return nil
+}
+
+// shellQuote wraps a string in single quotes for safe shell interpolation.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
 // Create spins up a new tmux session running Claude Code.
 func (m *Manager) Create(opts CreateOpts) error {
+	if err := ValidateSessionName(opts.Name); err != nil {
+		return err
+	}
+
 	// Check that tmux is reachable
 	if _, err := m.tmux.ListSessions(); err != nil {
 		return fmt.Errorf("tmux not available: %w", err)
@@ -73,9 +96,9 @@ func (m *Manager) Create(opts CreateOpts) error {
 		}
 	}
 
-	// cd to workdir if specified
+	// cd to workdir if specified (shell-quoted for safety)
 	if opts.Workdir != "" {
-		if err := m.tmux.SendKeys(opts.Name, "cd "+opts.Workdir); err != nil {
+		if err := m.tmux.SendKeys(opts.Name, "cd "+shellQuote(opts.Workdir)); err != nil {
 			return fmt.Errorf("send cd: %w", err)
 		}
 	}
@@ -163,10 +186,10 @@ func (m *Manager) List(issueFilter int) ([]SessionInfo, error) {
 	seen := make(map[string]bool)
 	var result []SessionInfo
 	for _, se := range dbSessions {
+		seen[se.SessionID] = true // always mark as seen to avoid false orphans
 		if issueFilter > 0 && se.Issue != issueFilter {
 			continue
 		}
-		seen[se.SessionID] = true
 
 		orphan := ""
 		if !tmuxSet[se.SessionID] {

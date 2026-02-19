@@ -94,7 +94,7 @@ func (d *DB) GetAllActiveSessions() ([]SessionEvent, error) {
 			FROM session_events
 			GROUP BY session_id
 		) latest ON se.id = latest.max_id
-		WHERE se.event IN ('started', 'active')
+		WHERE se.event IN ('started', 'active', 'idle')
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("get active sessions: %w", err)
