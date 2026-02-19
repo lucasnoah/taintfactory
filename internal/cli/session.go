@@ -2,7 +2,11 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
+	"github.com/lucasnoah/taintfactory/internal/db"
+	"github.com/lucasnoah/taintfactory/internal/pipeline"
+	"github.com/lucasnoah/taintfactory/internal/session"
 	"github.com/spf13/cobra"
 )
 
@@ -16,7 +20,31 @@ var sessionCreateCmd = &cobra.Command{
 	Short: "Create a new Claude Code session in tmux",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("factory session create %s — not implemented\n", args[0])
+		name := args[0]
+		workdir, _ := cmd.Flags().GetString("workdir")
+		flags, _ := cmd.Flags().GetString("flags")
+		issue, _ := cmd.Flags().GetInt("issue")
+		stage, _ := cmd.Flags().GetString("stage")
+		interactive, _ := cmd.Flags().GetBool("interactive")
+
+		mgr, cleanup, err := newSessionManager()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		if err := mgr.Create(session.CreateOpts{
+			Name:        name,
+			Workdir:     workdir,
+			Flags:       flags,
+			Issue:       issue,
+			Stage:       stage,
+			Interactive: interactive,
+		}); err != nil {
+			return err
+		}
+
+		fmt.Printf("Session %q created (issue=%d stage=%s)\n", name, issue, stage)
 		return nil
 	},
 }
@@ -26,7 +54,20 @@ var sessionKillCmd = &cobra.Command{
 	Short: "Kill a tmux session and capture logs",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("factory session kill %s — not implemented\n", args[0])
+		name := args[0]
+
+		mgr, cleanup, err := newSessionManager()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		log, err := mgr.Kill(name)
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("Session %q killed. Captured output:\n%s", name, log)
 		return nil
 	},
 }
@@ -35,7 +76,41 @@ var sessionListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List active sessions",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("factory session list — not implemented")
+		issueFilter, _ := cmd.Flags().GetInt("issue")
+
+		mgr, cleanup, err := newSessionManager()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		sessions, err := mgr.List(issueFilter)
+		if err != nil {
+			return err
+		}
+
+		if len(sessions) == 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), "No active sessions.")
+			return nil
+		}
+
+		w := cmd.OutOrStdout()
+		fmt.Fprintf(w, "%-20s %-8s %-12s %-10s %-12s %s\n", "NAME", "ISSUE", "STAGE", "STATE", "ELAPSED", "ORPHAN")
+		fmt.Fprintf(w, "%-20s %-8s %-12s %-10s %-12s %s\n",
+			strings.Repeat("-", 20),
+			strings.Repeat("-", 8),
+			strings.Repeat("-", 12),
+			strings.Repeat("-", 10),
+			strings.Repeat("-", 12),
+			strings.Repeat("-", 6))
+		for _, s := range sessions {
+			issueStr := ""
+			if s.Issue > 0 {
+				issueStr = fmt.Sprintf("%d", s.Issue)
+			}
+			fmt.Fprintf(w, "%-20s %-8s %-12s %-10s %-12s %s\n",
+				s.Name, issueStr, s.Stage, s.State, s.Elapsed, s.Orphan)
+		}
 		return nil
 	},
 }
@@ -97,6 +172,8 @@ func init() {
 	sessionCreateCmd.Flags().String("stage", "", "Associated pipeline stage")
 	sessionCreateCmd.Flags().Bool("interactive", false, "Keep session in interactive mode")
 
+	sessionListCmd.Flags().Int("issue", 0, "Filter by issue number")
+
 	sessionSendCmd.Flags().String("from-file", "", "Read prompt from file")
 	sessionSendCmd.Flags().String("from-check-failures", "", "Generate fix prompt from check failures (issue:stage)")
 
@@ -115,4 +192,26 @@ func init() {
 	sessionCmd.AddCommand(sessionPeekCmd)
 	sessionCmd.AddCommand(sessionStatusCmd)
 	sessionCmd.AddCommand(sessionWaitIdleCmd)
+}
+
+// newSessionManager opens the DB, migrates, and returns a Manager + cleanup func.
+func newSessionManager() (*session.Manager, func(), error) {
+	dbPath, err := db.DefaultDBPath()
+	if err != nil {
+		return nil, nil, err
+	}
+	d, err := db.Open(dbPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := d.Migrate(); err != nil {
+		d.Close()
+		return nil, nil, err
+	}
+
+	// Pipeline store is best-effort — don't fail if unavailable
+	store, _ := pipeline.DefaultStore()
+
+	mgr := session.NewManager(session.NewExecTmux(), d, store)
+	return mgr, func() { d.Close() }, nil
 }
