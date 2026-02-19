@@ -63,6 +63,14 @@ func (m *Manager) Create(opts CreateOpts) error {
 		return fmt.Errorf("create session: %w", err)
 	}
 
+	// Write hooks config if workdir and issue are specified
+	if opts.Workdir != "" && opts.Issue > 0 {
+		cfg := GenerateHooksConfig(opts.Name, opts.Issue, opts.Stage)
+		if _, err := WriteHooksFile(opts.Workdir, cfg); err != nil {
+			return fmt.Errorf("write hooks config: %w", err)
+		}
+	}
+
 	// cd to workdir if specified
 	if opts.Workdir != "" {
 		if err := m.tmux.SendKeys(opts.Name, "cd "+opts.Workdir); err != nil {
@@ -186,6 +194,46 @@ func (m *Manager) List(issueFilter int) ([]SessionInfo, error) {
 	}
 
 	return result, nil
+}
+
+// StatusInfo holds the result of a session status query.
+type StatusInfo struct {
+	Name             string
+	Issue            int
+	Stage            string
+	State            string
+	Timestamp        string
+	Elapsed          string
+	TmuxAlive        bool
+	HumanIntervened  bool
+}
+
+// Status returns the current state of a session from DB + tmux.
+func (m *Manager) Status(name string) (*StatusInfo, error) {
+	state, err := m.db.GetSessionState(name)
+	if err != nil {
+		return nil, fmt.Errorf("get session state: %w", err)
+	}
+	if state == nil {
+		return nil, fmt.Errorf("session %q not found in database", name)
+	}
+
+	alive, _ := m.tmux.HasSession(name)
+
+	return &StatusInfo{
+		Name:      name,
+		Issue:     state.Issue,
+		Stage:     state.Stage,
+		State:     state.Event,
+		Timestamp: state.Timestamp,
+		Elapsed:   elapsed(state.Timestamp),
+		TmuxAlive: alive,
+	}, nil
+}
+
+// DetectHuman checks if a human has intervened in the session.
+func (m *Manager) DetectHuman(name string) (bool, error) {
+	return m.db.DetectHumanIntervention(name)
 }
 
 // buildClaudeCommand constructs the claude CLI invocation string.

@@ -55,6 +55,11 @@ func (d *DB) Close() error {
 	return d.conn.Close()
 }
 
+// Conn returns the underlying *sql.DB for advanced queries.
+func (d *DB) Conn() *sql.DB {
+	return d.conn
+}
+
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS schema_version (
     version    INTEGER PRIMARY KEY,

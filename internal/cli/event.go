@@ -16,7 +16,7 @@ var eventLogCmd = &cobra.Command{
 	Use:   "log",
 	Short: "Log a session event (called by Claude Code hooks)",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		session, _ := cmd.Flags().GetString("session")
+		sessionID, _ := cmd.Flags().GetString("session")
 		event, _ := cmd.Flags().GetString("event")
 		issue, _ := cmd.Flags().GetInt("issue")
 		stage, _ := cmd.Flags().GetString("stage")
@@ -41,10 +41,24 @@ var eventLogCmd = &cobra.Command{
 		if err := d.Migrate(); err != nil {
 			return err
 		}
-		if err := d.LogSessionEvent(session, issue, stage, event, exitCode, metadata); err != nil {
+
+		// If issue/stage not provided, look them up from the session's last event
+		if !cmd.Flags().Changed("issue") || !cmd.Flags().Changed("stage") {
+			state, err := d.GetSessionState(sessionID)
+			if err == nil && state != nil {
+				if !cmd.Flags().Changed("issue") {
+					issue = state.Issue
+				}
+				if !cmd.Flags().Changed("stage") {
+					stage = state.Stage
+				}
+			}
+		}
+
+		if err := d.LogSessionEvent(sessionID, issue, stage, event, exitCode, metadata); err != nil {
 			return err
 		}
-		fmt.Printf("Logged event: session=%s event=%s\n", session, event)
+		fmt.Printf("Logged event: session=%s event=%s\n", sessionID, event)
 		return nil
 	},
 }
@@ -58,8 +72,6 @@ func init() {
 	eventLogCmd.Flags().String("metadata", "", "JSON metadata")
 	eventLogCmd.MarkFlagRequired("session")
 	eventLogCmd.MarkFlagRequired("event")
-	eventLogCmd.MarkFlagRequired("issue")
-	eventLogCmd.MarkFlagRequired("stage")
 
 	eventCmd.AddCommand(eventLogCmd)
 }

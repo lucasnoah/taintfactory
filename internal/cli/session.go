@@ -150,7 +150,40 @@ var sessionStatusCmd = &cobra.Command{
 	Short: "Check session state (from DB events)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("factory session status %s — not implemented\n", args[0])
+		name := args[0]
+		detectHuman, _ := cmd.Flags().GetBool("detect-human")
+
+		mgr, cleanup, err := newSessionManager()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		info, err := mgr.Status(name)
+		if err != nil {
+			return err
+		}
+
+		w := cmd.OutOrStdout()
+		fmt.Fprintf(w, "Session:   %s\n", info.Name)
+		fmt.Fprintf(w, "State:     %s\n", info.State)
+		fmt.Fprintf(w, "Issue:     %d\n", info.Issue)
+		fmt.Fprintf(w, "Stage:     %s\n", info.Stage)
+		fmt.Fprintf(w, "Since:     %s (%s ago)\n", info.Timestamp, info.Elapsed)
+		tmuxStatus := "dead"
+		if info.TmuxAlive {
+			tmuxStatus = "alive"
+		}
+		fmt.Fprintf(w, "Tmux:      %s\n", tmuxStatus)
+
+		if detectHuman {
+			human, err := mgr.DetectHuman(name)
+			if err != nil {
+				return fmt.Errorf("detect human: %w", err)
+			}
+			fmt.Fprintf(w, "Human:     %v\n", human)
+		}
+
 		return nil
 	},
 }

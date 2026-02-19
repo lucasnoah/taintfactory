@@ -2,6 +2,8 @@ package session
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -322,6 +324,139 @@ func TestList_IssueFilter(t *testing.T) {
 		if s.Issue == 20 {
 			t.Error("session with issue 20 should be filtered out")
 		}
+	}
+}
+
+func TestCreate_WritesHooksConfig(t *testing.T) {
+	tmux := newMockTmux()
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	tmpDir := t.TempDir()
+	err := mgr.Create(CreateOpts{
+		Name:    "42-impl",
+		Workdir: tmpDir,
+		Issue:   42,
+		Stage:   "impl",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Verify hooks.json was written
+	data, err := os.ReadFile(filepath.Join(tmpDir, ".claude", "hooks.json"))
+	if err != nil {
+		t.Fatalf("read hooks.json: %v", err)
+	}
+	if !strings.Contains(string(data), "--session 42-impl") {
+		t.Errorf("hooks.json missing session name: %s", data)
+	}
+	if !strings.Contains(string(data), "--issue 42") {
+		t.Errorf("hooks.json missing issue: %s", data)
+	}
+}
+
+func TestCreate_NoHooksWithoutIssue(t *testing.T) {
+	tmux := newMockTmux()
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	tmpDir := t.TempDir()
+	err := mgr.Create(CreateOpts{
+		Name:    "no-issue",
+		Workdir: tmpDir,
+		Stage:   "plan",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// hooks.json should NOT be written when issue is 0
+	_, err = os.Stat(filepath.Join(tmpDir, ".claude", "hooks.json"))
+	if err == nil {
+		t.Error("hooks.json should not exist when issue is 0")
+	}
+}
+
+func TestStatus_HappyPath(t *testing.T) {
+	tmux := newMockTmux()
+	tmux.sessions["test-s"] = true
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	d.LogSessionEvent("test-s", 10, "plan", "started", nil, "")
+
+	info, err := mgr.Status("test-s")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+
+	if info.Name != "test-s" {
+		t.Errorf("Name = %q, want %q", info.Name, "test-s")
+	}
+	if info.State != "started" {
+		t.Errorf("State = %q, want %q", info.State, "started")
+	}
+	if info.Issue != 10 {
+		t.Errorf("Issue = %d, want 10", info.Issue)
+	}
+	if info.Stage != "plan" {
+		t.Errorf("Stage = %q, want %q", info.Stage, "plan")
+	}
+	if !info.TmuxAlive {
+		t.Error("TmuxAlive = false, want true")
+	}
+}
+
+func TestStatus_TmuxDead(t *testing.T) {
+	tmux := newMockTmux()
+	// Don't add session to tmux — it's dead
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	d.LogSessionEvent("dead-sess", 1, "impl", "started", nil, "")
+
+	info, err := mgr.Status("dead-sess")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+
+	if info.TmuxAlive {
+		t.Error("TmuxAlive = true, want false (session not in tmux)")
+	}
+}
+
+func TestStatus_NotFound(t *testing.T) {
+	tmux := newMockTmux()
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	_, err := mgr.Status("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent session")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %q, want 'not found'", err.Error())
+	}
+}
+
+func TestDetectHuman(t *testing.T) {
+	tmux := newMockTmux()
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	// Active event without preceding factory_send → human
+	d.Conn().Exec(`INSERT INTO session_events (session_id, issue, stage, event, timestamp) VALUES (?, ?, ?, ?, ?)`,
+		"sess-h", 1, "plan", "started", "2024-01-15 10:00:00")
+	d.Conn().Exec(`INSERT INTO session_events (session_id, issue, stage, event, timestamp) VALUES (?, ?, ?, ?, ?)`,
+		"sess-h", 1, "plan", "active", "2024-01-15 10:00:10")
+
+	human, err := mgr.DetectHuman("sess-h")
+	if err != nil {
+		t.Fatalf("DetectHuman: %v", err)
+	}
+	if !human {
+		t.Error("expected human=true when no factory_send precedes active")
 	}
 }
 
