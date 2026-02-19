@@ -325,3 +325,40 @@ func (d *DB) GetLatestFailedChecks(issue int, stage string) ([]CheckRun, error) 
 	}
 	return runs, rows.Err()
 }
+
+// GetCheckHistory returns all check runs for an issue, ordered by id descending.
+func (d *DB) GetCheckHistory(issue int) ([]CheckRun, error) {
+	rows, err := d.conn.Query(
+		`SELECT id, issue, stage, attempt, fix_round, check_name, passed, auto_fixed, exit_code, duration_ms, summary, findings, timestamp
+		 FROM check_runs WHERE issue = ? ORDER BY id DESC`,
+		issue,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get check history: %w", err)
+	}
+	defer rows.Close()
+
+	var runs []CheckRun
+	for rows.Next() {
+		var r CheckRun
+		var exitCode, durationMs sql.NullInt64
+		var summary, findings sql.NullString
+		if err := rows.Scan(&r.ID, &r.Issue, &r.Stage, &r.Attempt, &r.FixRound, &r.CheckName, &r.Passed, &r.AutoFixed, &exitCode, &durationMs, &summary, &findings, &r.Timestamp); err != nil {
+			return nil, fmt.Errorf("scan check history: %w", err)
+		}
+		if exitCode.Valid {
+			r.ExitCode = int(exitCode.Int64)
+		}
+		if durationMs.Valid {
+			r.DurationMs = int(durationMs.Int64)
+		}
+		if summary.Valid {
+			r.Summary = summary.String
+		}
+		if findings.Valid {
+			r.Findings = findings.String
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
+}

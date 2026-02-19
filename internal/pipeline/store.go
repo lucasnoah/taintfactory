@@ -47,6 +47,11 @@ func (s *Store) stageAttemptDir(issue int, stage string, attempt int) string {
 	return filepath.Join(s.issueDir(issue), "stages", stage, fmt.Sprintf("attempt-%d", attempt))
 }
 
+// CheckOutputDir returns the directory for storing raw check output.
+func (s *Store) CheckOutputDir(issue int, stage string, attempt int, checkName string) string {
+	return filepath.Join(s.stageAttemptDir(issue, stage, attempt), "checks", checkName)
+}
+
 // Create initialises a new pipeline on disk.
 func (s *Store) Create(issue int, title string, branch string, worktree string, firstStage string, goalGates map[string]string) (*PipelineState, error) {
 	dir := s.issueDir(issue)
