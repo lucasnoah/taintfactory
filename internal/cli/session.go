@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/lucasnoah/taintfactory/internal/db"
@@ -120,7 +121,44 @@ var sessionSendCmd = &cobra.Command{
 	Short: "Send a prompt to a running session",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("factory session send %s — not implemented\n", args[0])
+		name := args[0]
+		fromFile, _ := cmd.Flags().GetString("from-file")
+		fromCheckFailures, _ := cmd.Flags().GetString("from-check-failures")
+
+		mgr, cleanup, err := newSessionManager()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		switch {
+		case fromFile != "":
+			if err := mgr.SendFromFile(name, fromFile); err != nil {
+				return err
+			}
+			fmt.Printf("Sent prompt from file %q to session %q\n", fromFile, name)
+
+		case fromCheckFailures != "":
+			issue, stage, err := parseIssueStage(fromCheckFailures)
+			if err != nil {
+				return fmt.Errorf("invalid --from-check-failures format (expected issue:stage): %w", err)
+			}
+			if err := mgr.SendFromCheckFailures(name, issue, stage); err != nil {
+				return err
+			}
+			fmt.Printf("Sent fix prompt for issue %d stage %q to session %q\n", issue, stage, name)
+
+		default:
+			if len(args) < 2 {
+				return fmt.Errorf("provide a prompt string, --from-file, or --from-check-failures")
+			}
+			prompt := strings.Join(args[1:], " ")
+			if err := mgr.Send(name, prompt); err != nil {
+				return err
+			}
+			fmt.Printf("Sent prompt to session %q\n", name)
+		}
+
 		return nil
 	},
 }
@@ -130,7 +168,20 @@ var sessionSteerCmd = &cobra.Command{
 	Short: "Send a steering message to an active session",
 	Args:  cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("factory session steer %s — not implemented\n", args[0])
+		name := args[0]
+		message := strings.Join(args[1:], " ")
+
+		mgr, cleanup, err := newSessionManager()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		if err := mgr.Steer(name, message); err != nil {
+			return err
+		}
+
+		fmt.Printf("Steered session %q\n", name)
 		return nil
 	},
 }
@@ -140,7 +191,21 @@ var sessionPeekCmd = &cobra.Command{
 	Short: "Read recent output from a session",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("factory session peek %s — not implemented\n", args[0])
+		name := args[0]
+		lines, _ := cmd.Flags().GetInt("lines")
+
+		mgr, cleanup, err := newSessionManager()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		output, err := mgr.Peek(name, lines)
+		if err != nil {
+			return err
+		}
+
+		fmt.Print(output)
 		return nil
 	},
 }
@@ -193,7 +258,26 @@ var sessionWaitIdleCmd = &cobra.Command{
 	Short: "Block until a session becomes idle or exits",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("factory session wait-idle %s — not implemented\n", args[0])
+		name := args[0]
+		timeout, _ := cmd.Flags().GetDuration("timeout")
+		pollInterval, _ := cmd.Flags().GetDuration("poll-interval")
+
+		mgr, cleanup, err := newSessionManager()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		result, err := mgr.WaitIdle(name, timeout, pollInterval)
+		if err != nil {
+			return err
+		}
+
+		jsonStr, err := result.JSON()
+		if err != nil {
+			return err
+		}
+		fmt.Println(jsonStr)
 		return nil
 	},
 }
@@ -247,4 +331,17 @@ func newSessionManager() (*session.Manager, func(), error) {
 
 	mgr := session.NewManager(session.NewExecTmux(), d, store)
 	return mgr, func() { d.Close() }, nil
+}
+
+// parseIssueStage parses "issue:stage" format (e.g., "42:impl").
+func parseIssueStage(s string) (int, string, error) {
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) != 2 {
+		return 0, "", fmt.Errorf("expected format issue:stage, got %q", s)
+	}
+	issue, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, "", fmt.Errorf("invalid issue number %q: %w", parts[0], err)
+	}
+	return issue, parts[1], nil
 }

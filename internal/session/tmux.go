@@ -12,6 +12,7 @@ type TmuxRunner interface {
 	SendKeys(session string, keys string) error
 	KillSession(name string) error
 	CapturePane(name string) (string, error)
+	CapturePaneLines(name string, lines int) (string, error)
 	ListSessions() ([]string, error)
 	HasSession(name string) (bool, error)
 }
@@ -38,6 +39,15 @@ func (e *ExecTmux) KillSession(name string) error {
 
 func (e *ExecTmux) CapturePane(name string) (string, error) {
 	out, err := exec.Command("tmux", "capture-pane", "-t", name, "-p", "-S", "-").Output()
+	if err != nil {
+		return "", fmt.Errorf("capture-pane: %w", err)
+	}
+	return string(out), nil
+}
+
+func (e *ExecTmux) CapturePaneLines(name string, lines int) (string, error) {
+	startLine := fmt.Sprintf("-%d", lines)
+	out, err := exec.Command("tmux", "capture-pane", "-t", name, "-p", "-S", startLine).Output()
 	if err != nil {
 		return "", fmt.Errorf("capture-pane: %w", err)
 	}

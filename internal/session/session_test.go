@@ -44,6 +44,11 @@ func (m *mockTmux) CapturePane(name string) (string, error) {
 	return m.captureText, nil
 }
 
+func (m *mockTmux) CapturePaneLines(name string, lines int) (string, error) {
+	m.calls = append(m.calls, fmt.Sprintf("capture-pane-lines %s %d", name, lines))
+	return m.captureText, nil
+}
+
 func (m *mockTmux) ListSessions() ([]string, error) {
 	if m.listErr != nil {
 		return nil, m.listErr
@@ -457,6 +462,237 @@ func TestDetectHuman(t *testing.T) {
 	}
 	if !human {
 		t.Error("expected human=true when no factory_send precedes active")
+	}
+}
+
+func TestSend_HappyPath(t *testing.T) {
+	tmux := newMockTmux()
+	tmux.sessions["test-send"] = true
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	d.LogSessionEvent("test-send", 5, "impl", "started", nil, "")
+
+	err := mgr.Send("test-send", "Fix the bug in auth.go")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	// Verify factory_send event logged
+	state, _ := d.GetSessionState("test-send")
+	if state.Event != "factory_send" {
+		t.Errorf("latest event = %q, want %q", state.Event, "factory_send")
+	}
+
+	// Verify send-keys was called with the prompt
+	found := false
+	for _, c := range tmux.calls {
+		if strings.Contains(c, "Fix the bug in auth.go") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("prompt not found in tmux calls: %v", tmux.calls)
+	}
+}
+
+func TestSend_Nonexistent(t *testing.T) {
+	tmux := newMockTmux()
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	err := mgr.Send("nonexistent", "hello")
+	if err == nil {
+		t.Fatal("expected error for nonexistent session")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("error = %q, want 'does not exist'", err.Error())
+	}
+}
+
+func TestSendFromFile(t *testing.T) {
+	tmux := newMockTmux()
+	tmux.sessions["test-file"] = true
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	d.LogSessionEvent("test-file", 1, "plan", "started", nil, "")
+
+	// Write temp prompt file
+	tmpFile := filepath.Join(t.TempDir(), "prompt.md")
+	os.WriteFile(tmpFile, []byte("Fix all lint errors\n"), 0o644)
+
+	err := mgr.SendFromFile("test-file", tmpFile)
+	if err != nil {
+		t.Fatalf("SendFromFile: %v", err)
+	}
+
+	found := false
+	for _, c := range tmux.calls {
+		if strings.Contains(c, "Fix all lint errors") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("file contents not found in tmux calls: %v", tmux.calls)
+	}
+}
+
+func TestSendFromCheckFailures(t *testing.T) {
+	tmux := newMockTmux()
+	tmux.sessions["test-fix"] = true
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	d.LogSessionEvent("test-fix", 10, "impl", "started", nil, "")
+
+	// Insert failed check runs
+	d.LogCheckRun(10, "impl", 1, 0, "lint", false, false, 1, 500, "3 errors found", "src/auth.go:12: unused var")
+	d.LogCheckRun(10, "impl", 1, 0, "test", false, false, 1, 2000, "2 tests failed", "TestLogin FAIL")
+
+	err := mgr.SendFromCheckFailures("test-fix", 10, "impl")
+	if err != nil {
+		t.Fatalf("SendFromCheckFailures: %v", err)
+	}
+
+	// Verify factory_send was logged
+	state, _ := d.GetSessionState("test-fix")
+	if state.Event != "factory_send" {
+		t.Errorf("latest event = %q, want %q", state.Event, "factory_send")
+	}
+
+	// Verify the prompt was sent containing check names
+	found := false
+	for _, c := range tmux.calls {
+		if strings.Contains(c, "lint") && strings.Contains(c, "test") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("check failure info not found in tmux calls: %v", tmux.calls)
+	}
+}
+
+func TestSendFromCheckFailures_NoneFound(t *testing.T) {
+	tmux := newMockTmux()
+	tmux.sessions["test-nofail"] = true
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	err := mgr.SendFromCheckFailures("test-nofail", 99, "impl")
+	if err == nil {
+		t.Fatal("expected error when no failures found")
+	}
+	if !strings.Contains(err.Error(), "no failed checks") {
+		t.Errorf("error = %q, want 'no failed checks'", err.Error())
+	}
+}
+
+func TestSteer_HappyPath(t *testing.T) {
+	tmux := newMockTmux()
+	tmux.sessions["test-steer"] = true
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	d.LogSessionEvent("test-steer", 5, "impl", "started", nil, "")
+
+	err := mgr.Steer("test-steer", "Focus on auth module")
+	if err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+
+	// Verify steer event logged (not factory_send)
+	state, _ := d.GetSessionState("test-steer")
+	if state.Event != "steer" {
+		t.Errorf("latest event = %q, want %q", state.Event, "steer")
+	}
+
+	// Verify message was sent
+	found := false
+	for _, c := range tmux.calls {
+		if strings.Contains(c, "Focus on auth module") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("steer message not found in tmux calls: %v", tmux.calls)
+	}
+}
+
+func TestSteer_Nonexistent(t *testing.T) {
+	tmux := newMockTmux()
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	err := mgr.Steer("nonexistent", "hello")
+	if err == nil {
+		t.Fatal("expected error for nonexistent session")
+	}
+}
+
+func TestPeek_HappyPath(t *testing.T) {
+	tmux := newMockTmux()
+	tmux.sessions["test-peek"] = true
+	tmux.captureText = "line 1\nline 2\nline 3\n"
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	output, err := mgr.Peek("test-peek", 50)
+	if err != nil {
+		t.Fatalf("Peek: %v", err)
+	}
+
+	if !strings.Contains(output, "line 1") {
+		t.Errorf("output = %q, want captured text", output)
+	}
+
+	// Verify capture-pane-lines was called with correct line count
+	found := false
+	for _, c := range tmux.calls {
+		if strings.Contains(c, "capture-pane-lines test-peek 50") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("capture-pane-lines not found in tmux calls: %v", tmux.calls)
+	}
+}
+
+func TestPeek_Nonexistent(t *testing.T) {
+	tmux := newMockTmux()
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	_, err := mgr.Peek("nonexistent", 50)
+	if err == nil {
+		t.Fatal("expected error for nonexistent session")
+	}
+}
+
+func TestBuildFixPrompt(t *testing.T) {
+	failures := []db.CheckRun{
+		{CheckName: "lint", ExitCode: 1, Summary: "3 errors", Findings: "auth.go:12: unused"},
+		{CheckName: "test", ExitCode: 1, Summary: "2 failed", Findings: ""},
+	}
+
+	prompt := buildFixPrompt(failures)
+
+	if !strings.Contains(prompt, "lint") {
+		t.Error("prompt missing lint check name")
+	}
+	if !strings.Contains(prompt, "3 errors") {
+		t.Error("prompt missing lint summary")
+	}
+	if !strings.Contains(prompt, "auth.go:12") {
+		t.Error("prompt missing lint findings")
+	}
+	if !strings.Contains(prompt, "test") {
+		t.Error("prompt missing test check name")
 	}
 }
 
