@@ -52,6 +52,11 @@ func (s *Store) CheckOutputDir(issue int, stage string, attempt int, checkName s
 	return filepath.Join(s.stageAttemptDir(issue, stage, attempt), "checks", checkName)
 }
 
+// GateResultDir returns the directory for storing gate result JSON.
+func (s *Store) GateResultDir(issue int, stage string, attempt int, fixRound int) string {
+	return filepath.Join(s.stageAttemptDir(issue, stage, attempt), "checks", fmt.Sprintf("post-gate-%d", fixRound))
+}
+
 // Create initialises a new pipeline on disk.
 func (s *Store) Create(issue int, title string, branch string, worktree string, firstStage string, goalGates map[string]string) (*PipelineState, error) {
 	dir := s.issueDir(issue)
