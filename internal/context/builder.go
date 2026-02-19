@@ -194,22 +194,31 @@ func (b *Builder) addFindingsOnlyContext(ps *pipeline.PipelineState, opts BuildO
 }
 
 // addCheckFailures includes check failure data (always included regardless of mode).
+// It searches backward through stage history for the most recent failed attempt
+// of the current stage, since the current attempt hasn't completed yet.
 func (b *Builder) addCheckFailures(ps *pipeline.PipelineState, opts BuildOpts, vars prompt.Vars) {
-	if len(ps.StageHistory) == 0 {
-		return
+	// Search stage history backward for the most recent failure of this stage
+	for i := len(ps.StageHistory) - 1; i >= 0; i-- {
+		entry := ps.StageHistory[i]
+		if entry.Stage != opts.Stage {
+			continue
+		}
+		outcome, err := b.store.GetStageOutcome(ps.Issue, entry.Stage, entry.Attempt)
+		if err != nil {
+			continue
+		}
+		if outcome.Status == "fail" && outcome.Summary != "" {
+			vars["check_failures"] = outcome.Summary
+		}
+		return // found the most recent entry for this stage
 	}
 
-	// Look for the most recent outcome with findings from the current stage
-	// (relevant for fix rounds)
+	// Also check current attempt in case outcome was saved before context build
 	outcome, err := b.store.GetStageOutcome(ps.Issue, opts.Stage, ps.CurrentAttempt)
 	if err != nil {
 		return
 	}
-	if outcome == nil {
-		return
-	}
-
-	if outcome.Status == "fail" && outcome.Summary != "" {
+	if outcome != nil && outcome.Status == "fail" && outcome.Summary != "" {
 		vars["check_failures"] = outcome.Summary
 	}
 }
