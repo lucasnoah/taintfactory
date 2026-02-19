@@ -1,0 +1,88 @@
+pipeline:
+  name: my-web-app
+  repo: github.com/myorg/my-web-app
+  max_fix_rounds: 3
+  fresh_session_after: 2
+
+  defaults:
+    model: sonnet
+    timeout: "5m"
+    flags: "--verbose"
+
+  default_checks:
+    - lint
+    - typecheck
+
+  checks:
+    lint:
+      command: "npm run lint"
+      parser: eslint
+      timeout: "2m"
+      auto_fix: true
+      fix_command: "npm run lint -- --fix"
+      severity_threshold: warning
+
+    typecheck:
+      command: "npx tsc --noEmit"
+      parser: typescript
+      timeout: "3m"
+
+    test:
+      command: "npm test"
+      parser: vitest
+      timeout: "5m"
+
+    prettier:
+      command: "npx prettier --check ."
+      parser: prettier
+      auto_fix: true
+      fix_command: "npx prettier --write ."
+
+    audit:
+      command: "npm audit --production"
+      parser: npm-audit
+      severity_threshold: high
+
+  stages:
+    - id: scaffold
+      type: agent
+      prompt_template: "templates/scaffold.md"
+      context_mode: full
+      goal_gate: true
+      session_mode: fresh
+
+    - id: implement
+      type: agent
+      prompt_template: "templates/implement.md"
+      model: opus
+      context_mode: code_only
+      on_fail: scaffold
+      extra_checks:
+        - test
+
+    - id: style
+      type: agent
+      prompt_template: "templates/style.md"
+      context_mode: findings_only
+      checks_before:
+        - prettier
+      on_fail:
+        lint_fail: implement
+        test_fail: implement
+
+    - id: qa
+      type: agent
+      prompt_template: "templates/qa.md"
+      context_mode: minimal
+      browser_check: true
+      extra_checks:
+        - test
+
+    - id: final-gate
+      type: checks_only
+      checks:
+        - lint
+        - typecheck
+        - test
+        - prettier
+        - audit
