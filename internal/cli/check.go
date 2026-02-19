@@ -128,7 +128,10 @@ var checkGateCmd = &cobra.Command{
 		}
 
 		// Resolve which checks to run for this stage
-		checkNames := resolveStageChecks(cfg, stage)
+		checkNames, err := resolveStageChecks(cfg, stage)
+		if err != nil {
+			return err
+		}
 		if len(checkNames) == 0 {
 			fmt.Fprintln(cmd.OutOrStdout(), "No checks configured for this stage.")
 			return nil
@@ -400,14 +403,14 @@ func parseDuration(s string, fallback time.Duration) time.Duration {
 }
 
 // resolveStageChecks determines which checks to run for a given stage.
-func resolveStageChecks(cfg *config.PipelineConfig, stageName string) []string {
+func resolveStageChecks(cfg *config.PipelineConfig, stageName string) ([]string, error) {
 	for _, s := range cfg.Pipeline.Stages {
 		if s.ID != stageName {
 			continue
 		}
 		// checks_only stages use their explicit checks list
 		if s.Type == "checks_only" {
-			return s.Checks
+			return s.Checks, nil
 		}
 		// For agent stages: checks_after (already resolved with defaults by loader)
 		// plus extra_checks
@@ -425,10 +428,9 @@ func resolveStageChecks(cfg *config.PipelineConfig, stageName string) []string {
 				seen[c] = true
 			}
 		}
-		return result
+		return result, nil
 	}
-	// Stage not found — fall back to default_checks
-	return cfg.Pipeline.DefaultChecks
+	return nil, fmt.Errorf("stage %q not found in pipeline config", stageName)
 }
 
 // saveRawOutput writes stdout/stderr to disk at the appropriate check path.

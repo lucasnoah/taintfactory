@@ -231,3 +231,40 @@ func TestGateResult_JSON(t *testing.T) {
 		t.Errorf("expected gate=implement, got %q", parsed.Gate)
 	}
 }
+
+func TestGateResult_EmptyChecksJSON(t *testing.T) {
+	// Verify that empty checks serializes as [] not null
+	mock := &mockCmd{}
+	runner := NewRunner(mock)
+
+	gate, _, err := runner.RunGate("/tmp", GateOpts{
+		Issue: 42,
+		Stage: "implement",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	jsonStr, err := gate.JSON()
+	if err != nil {
+		t.Fatalf("JSON error: %v", err)
+	}
+
+	// Must contain "checks": [] not "checks": null
+	if !contains(jsonStr, `"checks": []`) {
+		t.Errorf("expected checks to be empty array [], got JSON: %s", jsonStr)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstring(s, substr))
+}
+
+func containsSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
