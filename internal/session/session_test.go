@@ -100,8 +100,8 @@ func TestCreate_HappyPath(t *testing.T) {
 	if tmux.calls[0] != "new-session test-1" {
 		t.Errorf("call[0] = %q, want %q", tmux.calls[0], "new-session test-1")
 	}
-	if !strings.Contains(tmux.calls[1], "cd /tmp/myproject") {
-		t.Errorf("call[1] = %q, want cd command", tmux.calls[1])
+	if !strings.Contains(tmux.calls[1], "cd '/tmp/myproject'") {
+		t.Errorf("call[1] = %q, want shell-quoted cd command", tmux.calls[1])
 	}
 	if !strings.Contains(tmux.calls[2], "claude") {
 		t.Errorf("call[2] = %q, want claude command", tmux.calls[2])
@@ -313,22 +313,15 @@ func TestList_IssueFilter(t *testing.T) {
 		t.Fatalf("List: %v", err)
 	}
 
-	// Should include sess-1 (issue 10) + sess-2 as no-db orphan (filter only applies to DB sessions)
-	dbSessions := 0
-	for _, s := range sessions {
-		if s.Issue == 10 {
-			dbSessions++
-		}
+	// Should include only sess-1 (issue 10) — sess-2 is in DB so not an orphan
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d: %v", len(sessions), sessions)
 	}
-	if dbSessions != 1 {
-		t.Errorf("expected 1 DB session with issue 10, got %d", dbSessions)
+	if sessions[0].Name != "sess-1" {
+		t.Errorf("expected sess-1, got %q", sessions[0].Name)
 	}
-
-	// sess-2 (issue 20) should NOT appear from DB
-	for _, s := range sessions {
-		if s.Issue == 20 {
-			t.Error("session with issue 20 should be filtered out")
-		}
+	if sessions[0].Issue != 10 {
+		t.Errorf("expected issue 10, got %d", sessions[0].Issue)
 	}
 }
 
@@ -693,6 +686,70 @@ func TestBuildFixPrompt(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "test") {
 		t.Error("prompt missing test check name")
+	}
+}
+
+func TestValidateSessionName(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr bool
+	}{
+		{"valid-name", false},
+		{"42-impl", false},
+		{"my_session.1", false},
+		{"", true},
+		{"has spaces", true},
+		{"semi;colon", true},
+		{"pipe|char", true},
+		{"back`tick", true},
+		{"dollar$var", true},
+		{"-starts-with-dash", true},
+		{".starts-with-dot", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateSessionName(tt.name)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateSessionName(%q) error = %v, wantErr %v", tt.name, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestCreate_InvalidName(t *testing.T) {
+	tmux := newMockTmux()
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	err := mgr.Create(CreateOpts{
+		Name:  "bad;name",
+		Issue: 1,
+		Stage: "plan",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid session name")
+	}
+	if !strings.Contains(err.Error(), "invalid characters") {
+		t.Errorf("error = %q, want 'invalid characters'", err.Error())
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"/tmp/simple", "'/tmp/simple'"},
+		{"/tmp/with spaces", "'/tmp/with spaces'"},
+		{"/tmp/it's", "'/tmp/it'\\''s'"},
+		{"", "''"},
+	}
+	for _, tt := range tests {
+		got := shellQuote(tt.input)
+		if got != tt.want {
+			t.Errorf("shellQuote(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
 

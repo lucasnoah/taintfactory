@@ -191,9 +191,10 @@ func TestGetAllActiveSessions(t *testing.T) {
 		t.Fatalf("get active sessions: %v", err)
 	}
 
-	// Should only return sess-1 (active) and sess-3 (started)
-	if len(sessions) != 2 {
-		t.Fatalf("got %d active sessions, want 2", len(sessions))
+	// Should return sess-1 (active), sess-3 (started), and sess-4 (idle)
+	// Idle sessions are still alive and should be included
+	if len(sessions) != 3 {
+		t.Fatalf("got %d active sessions, want 3", len(sessions))
 	}
 
 	ids := map[string]bool{}
@@ -209,8 +210,8 @@ func TestGetAllActiveSessions(t *testing.T) {
 	if ids["sess-2"] {
 		t.Error("sess-2 (exited) should not be active")
 	}
-	if ids["sess-4"] {
-		t.Error("sess-4 (idle) should not be active")
+	if !ids["sess-4"] {
+		t.Error("expected sess-4 (idle) in active sessions")
 	}
 }
 
