@@ -64,7 +64,9 @@ Stage: {{stage_id}} (attempt {{attempt}})
 {{#if git_diff_summary}}
 ## Changes Summary
 {{git_diff_summary}}
+{{/if}}
 
+{{#if files_changed}}
 ### Files Changed
 {{files_changed}}
 {{/if}}
@@ -147,7 +149,9 @@ Stage: {{stage_id}} (attempt {{attempt}})
 {{#if git_diff_summary}}
 ## Changes Summary
 {{git_diff_summary}}
+{{/if}}
 
+{{#if files_changed}}
 ### Files Changed
 {{files_changed}}
 {{/if}}

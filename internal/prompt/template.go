@@ -9,8 +9,9 @@ import (
 )
 
 var (
-	varRe  = regexp.MustCompile(`\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}`)
-	ifRe   = regexp.MustCompile(`(?s)\{\{#if\s+([a-zA-Z_][a-zA-Z0-9_]*)\}\}(.*?)\{\{/if\}\}`)
+	varRe      = regexp.MustCompile(`\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}`)
+	ifOpenRe   = regexp.MustCompile(`\{\{#if\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}`)
+	ifCloseStr = "{{/if}}"
 )
 
 // Vars is a map of variable names to values for template rendering.
@@ -20,19 +21,11 @@ type Vars map[string]string
 // {{variable}} is replaced with its value. Missing required variables cause an error.
 // {{#if variable}}...{{/if}} blocks are included only if the variable is non-empty.
 func Render(tmpl string, vars Vars) (string, error) {
-	// First pass: process conditional blocks
-	result := ifRe.ReplaceAllStringFunc(tmpl, func(match string) string {
-		m := ifRe.FindStringSubmatch(match)
-		if m == nil {
-			return match
-		}
-		varName := m[1]
-		body := m[2]
-		if val, ok := vars[varName]; ok && val != "" {
-			return body
-		}
-		return ""
-	})
+	// Process conditional blocks iteratively, innermost first
+	result, err := processConditionals(tmpl, vars)
+	if err != nil {
+		return "", err
+	}
 
 	// Second pass: expand variables, collecting any missing ones
 	var missing []string
@@ -56,6 +49,59 @@ func Render(tmpl string, vars Vars) (string, error) {
 	return expanded, nil
 }
 
+// processConditionals handles {{#if var}}...{{/if}} blocks, supporting nesting.
+// It processes innermost blocks first by finding the last {{#if before each {{/if}}.
+func processConditionals(tmpl string, vars Vars) (string, error) {
+	result := tmpl
+	for {
+		// Find the first {{/if}}
+		closeIdx := strings.Index(result, ifCloseStr)
+		if closeIdx == -1 {
+			break
+		}
+
+		// Find the last {{#if ...}} before this {{/if}} — that's the innermost
+		prefix := result[:closeIdx]
+		openLocs := ifOpenRe.FindAllStringIndex(prefix, -1)
+		if openLocs == nil {
+			return "", fmt.Errorf("dangling {{/if}} without matching {{#if}}")
+		}
+
+		// Take the last (innermost) opening tag
+		lastOpen := openLocs[len(openLocs)-1]
+		openStart := lastOpen[0]
+		openEnd := lastOpen[1]
+
+		// Extract variable name from the opening tag
+		openTag := prefix[openStart:openEnd]
+		m := ifOpenRe.FindStringSubmatch(openTag)
+		if m == nil {
+			return "", fmt.Errorf("failed to parse conditional tag: %s", openTag)
+		}
+		varName := m[1]
+
+		// Extract body between opening and closing tags
+		body := result[openEnd:closeIdx]
+		closeEnd := closeIdx + len(ifCloseStr)
+
+		// Evaluate: include body if variable is set and non-empty
+		var replacement string
+		if val, ok := vars[varName]; ok && val != "" {
+			replacement = body
+		}
+
+		result = result[:openStart] + replacement + result[closeEnd:]
+	}
+
+	// Check for unclosed conditional blocks
+	if ifOpenRe.MatchString(result) {
+		loc := ifOpenRe.FindString(result)
+		return "", fmt.Errorf("unclosed conditional block: %s", loc)
+	}
+
+	return result, nil
+}
+
 // LoadTemplate reads a template from the given path.
 // It first checks for project-level overrides (relative to workdir),
 // then falls back to built-in templates.
@@ -63,13 +109,25 @@ func LoadTemplate(templatePath string, workdir string) (string, error) {
 	// Check project-level override first
 	if workdir != "" {
 		projectPath := filepath.Join(workdir, templatePath)
+		// Prevent path traversal: resolved path must be within workdir
+		absProject, err := filepath.Abs(projectPath)
+		if err == nil {
+			absWorkdir, err2 := filepath.Abs(workdir)
+			if err2 == nil && !strings.HasPrefix(absProject, absWorkdir+string(filepath.Separator)) && absProject != absWorkdir {
+				return "", fmt.Errorf("template path %q escapes workdir", templatePath)
+			}
+		}
 		if data, err := os.ReadFile(projectPath); err == nil {
 			return string(data), nil
 		}
 	}
 
 	// Fall back to built-in templates
-	builtinPath := filepath.Join(builtinTemplateDir(), templatePath)
+	dir := builtinTemplateDir()
+	if dir == "" {
+		return "", fmt.Errorf("template %q not found and could not determine home directory for built-in templates", templatePath)
+	}
+	builtinPath := filepath.Join(dir, templatePath)
 	data, err := os.ReadFile(builtinPath)
 	if err != nil {
 		return "", fmt.Errorf("template not found at %q (also checked %q): %w", templatePath, builtinPath, err)
