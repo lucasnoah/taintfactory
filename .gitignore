@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Build
+dist/
+
+# Database
+*.db
+*.db-journal
+
+# OS
+.DS_Store
+
+# Environment
+.env
+.env.local
+
+# Factory runtime state
+pipelines/*/stages/*/session.log
+pipelines/*/stages/*/screenshots/
+pipelines/*/stages/*/gifs/
