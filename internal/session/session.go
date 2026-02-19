@@ -1,7 +1,9 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -234,6 +236,180 @@ func (m *Manager) Status(name string) (*StatusInfo, error) {
 // DetectHuman checks if a human has intervened in the session.
 func (m *Manager) DetectHuman(name string) (bool, error) {
 	return m.db.DetectHumanIntervention(name)
+}
+
+// Send delivers a prompt to a running session via tmux send-keys.
+// It logs a factory_send event before sending so human detection works.
+func (m *Manager) Send(name string, prompt string) error {
+	exists, err := m.tmux.HasSession(name)
+	if err != nil {
+		return fmt.Errorf("check session: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("session %q does not exist", name)
+	}
+
+	// Log factory_send event (for human intervention detection)
+	state, _ := m.db.GetSessionState(name)
+	issue, stage := 0, ""
+	if state != nil {
+		issue = state.Issue
+		stage = state.Stage
+	}
+	if err := m.db.LogSessionEvent(name, issue, stage, "factory_send", nil, ""); err != nil {
+		return fmt.Errorf("log factory_send: %w", err)
+	}
+
+	// Send the prompt — handle multiline by sending each line separately
+	lines := strings.Split(prompt, "\n")
+	for i, line := range lines {
+		if i == len(lines)-1 {
+			// Last line: send with Enter
+			if err := m.tmux.SendKeys(name, line); err != nil {
+				return fmt.Errorf("send keys: %w", err)
+			}
+		} else {
+			// Interior line: send with Enter
+			if err := m.tmux.SendKeys(name, line); err != nil {
+				return fmt.Errorf("send keys: %w", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// SendFromFile reads a file and sends its contents to the session.
+func (m *Manager) SendFromFile(name string, path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read prompt file: %w", err)
+	}
+	return m.Send(name, strings.TrimSpace(string(data)))
+}
+
+// SendFromCheckFailures generates a fix prompt from the latest failed checks.
+func (m *Manager) SendFromCheckFailures(name string, issue int, stage string) error {
+	failures, err := m.db.GetLatestFailedChecks(issue, stage)
+	if err != nil {
+		return fmt.Errorf("get failed checks: %w", err)
+	}
+	if len(failures) == 0 {
+		return fmt.Errorf("no failed checks found for issue %d stage %q", issue, stage)
+	}
+
+	prompt := buildFixPrompt(failures)
+	return m.Send(name, prompt)
+}
+
+// Steer sends a steering message to an active session.
+// Logs a "steer" event instead of "factory_send".
+func (m *Manager) Steer(name string, message string) error {
+	exists, err := m.tmux.HasSession(name)
+	if err != nil {
+		return fmt.Errorf("check session: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("session %q does not exist", name)
+	}
+
+	state, _ := m.db.GetSessionState(name)
+	issue, stage := 0, ""
+	if state != nil {
+		issue = state.Issue
+		stage = state.Stage
+	}
+	if err := m.db.LogSessionEvent(name, issue, stage, "steer", nil, ""); err != nil {
+		return fmt.Errorf("log steer: %w", err)
+	}
+
+	if err := m.tmux.SendKeys(name, message); err != nil {
+		return fmt.Errorf("send keys: %w", err)
+	}
+
+	return nil
+}
+
+// Peek captures recent output from a session's tmux pane.
+func (m *Manager) Peek(name string, lines int) (string, error) {
+	exists, err := m.tmux.HasSession(name)
+	if err != nil {
+		return "", fmt.Errorf("check session: %w", err)
+	}
+	if !exists {
+		return "", fmt.Errorf("session %q does not exist", name)
+	}
+
+	return m.tmux.CapturePaneLines(name, lines)
+}
+
+// WaitIdleResult holds the result of waiting for a session to become idle.
+type WaitIdleResult struct {
+	State    string `json:"state"`
+	Elapsed  string `json:"elapsed"`
+	ExitCode *int   `json:"exit_code,omitempty"`
+}
+
+// WaitIdle polls the DB until the session reaches "idle" or "exited" state.
+func (m *Manager) WaitIdle(name string, timeout time.Duration, pollInterval time.Duration) (*WaitIdleResult, error) {
+	if pollInterval <= 0 {
+		pollInterval = 30 * time.Second
+	}
+
+	deadline := time.Time{}
+	if timeout > 0 {
+		deadline = time.Now().Add(timeout)
+	}
+
+	for {
+		state, err := m.db.GetSessionState(name)
+		if err != nil {
+			return nil, fmt.Errorf("get session state: %w", err)
+		}
+		if state == nil {
+			return nil, fmt.Errorf("session %q not found", name)
+		}
+
+		if state.Event == "idle" || state.Event == "exited" {
+			return &WaitIdleResult{
+				State:    state.Event,
+				Elapsed:  elapsed(state.Timestamp),
+				ExitCode: state.ExitCode,
+			}, nil
+		}
+
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			return nil, fmt.Errorf("timeout waiting for session %q to become idle (current state: %s)", name, state.Event)
+		}
+
+		time.Sleep(pollInterval)
+	}
+}
+
+// buildFixPrompt generates a prompt from failed check runs.
+func buildFixPrompt(failures []db.CheckRun) string {
+	var b strings.Builder
+	b.WriteString("The following checks have failed. Please fix the issues:\n\n")
+	for _, f := range failures {
+		b.WriteString(fmt.Sprintf("## %s (exit code %d)\n", f.CheckName, f.ExitCode))
+		if f.Summary != "" {
+			b.WriteString(fmt.Sprintf("Summary: %s\n", f.Summary))
+		}
+		if f.Findings != "" {
+			b.WriteString(fmt.Sprintf("Findings:\n%s\n", f.Findings))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// WaitIdleResultJSON returns WaitIdleResult as JSON.
+func (r *WaitIdleResult) JSON() (string, error) {
+	data, err := json.Marshal(r)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 // buildClaudeCommand constructs the claude CLI invocation string.

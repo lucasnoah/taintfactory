@@ -279,3 +279,49 @@ func (d *DB) GetPipelineHistory(issue int) ([]PipelineEvent, error) {
 	}
 	return events, rows.Err()
 }
+
+// GetLatestFailedChecks returns the most recent failed check runs for an issue and stage.
+func (d *DB) GetLatestFailedChecks(issue int, stage string) ([]CheckRun, error) {
+	rows, err := d.conn.Query(`
+		SELECT cr.id, cr.issue, cr.stage, cr.attempt, cr.fix_round, cr.check_name,
+		       cr.passed, cr.auto_fixed, cr.exit_code, cr.duration_ms, cr.summary, cr.findings, cr.timestamp
+		FROM check_runs cr
+		INNER JOIN (
+			SELECT check_name, MAX(id) as max_id
+			FROM check_runs
+			WHERE issue = ? AND stage = ?
+			GROUP BY check_name
+		) latest ON cr.id = latest.max_id
+		WHERE cr.passed = 0
+		ORDER BY cr.check_name`,
+		issue, stage,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get latest failed checks: %w", err)
+	}
+	defer rows.Close()
+
+	var runs []CheckRun
+	for rows.Next() {
+		var r CheckRun
+		var exitCode, durationMs sql.NullInt64
+		var summary, findings sql.NullString
+		if err := rows.Scan(&r.ID, &r.Issue, &r.Stage, &r.Attempt, &r.FixRound, &r.CheckName, &r.Passed, &r.AutoFixed, &exitCode, &durationMs, &summary, &findings, &r.Timestamp); err != nil {
+			return nil, fmt.Errorf("scan failed check: %w", err)
+		}
+		if exitCode.Valid {
+			r.ExitCode = int(exitCode.Int64)
+		}
+		if durationMs.Valid {
+			r.DurationMs = int(durationMs.Int64)
+		}
+		if summary.Valid {
+			r.Summary = summary.String
+		}
+		if findings.Valid {
+			r.Findings = findings.String
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
+}
