@@ -109,8 +109,122 @@ var checkGateCmd = &cobra.Command{
 	Short: "Run all checks for a pipeline stage",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// gate is implemented in issue #9
-		fmt.Printf("factory check gate %s %s — not implemented (issue #9)\n", args[0], args[1])
+		issue, err := strconv.Atoi(args[0])
+		if err != nil {
+			return fmt.Errorf("invalid issue number %q: %w", args[0], err)
+		}
+		stage := args[1]
+		cont, _ := cmd.Flags().GetBool("continue")
+		fixRound, _ := cmd.Flags().GetInt("fix-round")
+		format, _ := cmd.Flags().GetString("format")
+
+		d, store, cfg, cleanup, err := openCheckDeps()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		ps, err := store.Get(issue)
+		if err != nil {
+			return fmt.Errorf("get pipeline state: %w", err)
+		}
+
+		// Resolve which checks to run for this stage
+		checkNames := resolveStageChecks(cfg, stage)
+		if len(checkNames) == 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), "No checks configured for this stage.")
+			return nil
+		}
+
+		// Build gate check configs from pipeline config
+		var gateChecks []checks.GateCheckConfig
+		for _, name := range checkNames {
+			chk, ok := cfg.Pipeline.Checks[name]
+			if !ok {
+				return fmt.Errorf("check %q not defined in pipeline config", name)
+			}
+			gateChecks = append(gateChecks, checks.GateCheckConfig{
+				Name:       name,
+				Command:    chk.Command,
+				Parser:     chk.Parser,
+				Timeout:    parseDuration(chk.Timeout, 2*time.Minute),
+				AutoFix:    chk.AutoFix,
+				FixCommand: chk.FixCommand,
+			})
+		}
+
+		runner := checks.NewRunner(&checks.ExecRunner{})
+		gate, results, err := runner.RunGate(ps.Worktree, checks.GateOpts{
+			Issue:    issue,
+			Stage:    stage,
+			FixRound: fixRound,
+			Attempt:  ps.CurrentAttempt,
+			Worktree: ps.Worktree,
+			Checks:   gateChecks,
+			Continue: cont,
+		})
+		if err != nil {
+			return fmt.Errorf("run gate: %w", err)
+		}
+
+		// Log each check result to DB and save raw output
+		for i, result := range results {
+			saveRawOutput(store, issue, stage, ps.CurrentAttempt, result.CheckName, result)
+			if err := d.LogCheckRun(
+				issue, stage, ps.CurrentAttempt, fixRound,
+				result.CheckName, result.Passed, result.AutoFixed, result.ExitCode,
+				result.DurationMs, result.Summary, result.Findings,
+			); err != nil {
+				return fmt.Errorf("log check run %d: %w", i, err)
+			}
+		}
+
+		// Save gate result to disk
+		gateDir := store.GateResultDir(issue, stage, ps.CurrentAttempt, fixRound)
+		if err := os.MkdirAll(gateDir, 0o755); err == nil {
+			gateJSON, _ := json.MarshalIndent(gate, "", "  ")
+			_ = os.WriteFile(filepath.Join(gateDir, "gate-result.json"), gateJSON, 0o644)
+		}
+
+		// Log pipeline event
+		event := "checks_passed"
+		if !gate.Passed {
+			event = "checks_failed"
+		}
+		_ = d.LogPipelineEvent(issue, event, stage, ps.CurrentAttempt, "")
+
+		// Output
+		if format == "json" {
+			jsonStr, err := gate.JSON()
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), jsonStr)
+		} else {
+			w := cmd.OutOrStdout()
+			for _, c := range gate.Checks {
+				icon := "PASS"
+				if !c.Passed {
+					icon = "FAIL"
+				}
+				extra := ""
+				if c.AutoFixed {
+					extra = " (auto-fixed)"
+				}
+				fmt.Fprintf(w, "[%s] %s — %s%s\n", icon, c.Check, c.Summary, extra)
+			}
+			if gate.Passed {
+				fmt.Fprintln(w, "\nGate PASSED")
+			} else {
+				fmt.Fprintln(w, "\nGate FAILED")
+			}
+		}
+
+		if !gate.Passed {
+			cmd.SilenceUsage = true
+			return fmt.Errorf("gate failed: %d checks failed", len(gate.RemainingFailures))
+		}
+
 		return nil
 	},
 }
@@ -285,6 +399,38 @@ func parseDuration(s string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+// resolveStageChecks determines which checks to run for a given stage.
+func resolveStageChecks(cfg *config.PipelineConfig, stageName string) []string {
+	for _, s := range cfg.Pipeline.Stages {
+		if s.ID != stageName {
+			continue
+		}
+		// checks_only stages use their explicit checks list
+		if s.Type == "checks_only" {
+			return s.Checks
+		}
+		// For agent stages: checks_after (already resolved with defaults by loader)
+		// plus extra_checks
+		seen := make(map[string]bool)
+		var result []string
+		for _, c := range s.ChecksAfter {
+			if !seen[c] {
+				result = append(result, c)
+				seen[c] = true
+			}
+		}
+		for _, c := range s.ExtraChecks {
+			if !seen[c] {
+				result = append(result, c)
+				seen[c] = true
+			}
+		}
+		return result
+	}
+	// Stage not found — fall back to default_checks
+	return cfg.Pipeline.DefaultChecks
 }
 
 // saveRawOutput writes stdout/stderr to disk at the appropriate check path.
