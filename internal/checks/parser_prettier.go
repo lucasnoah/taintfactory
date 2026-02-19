@@ -25,10 +25,11 @@ func (p *PrettierParser) Parse(stdout string, stderr string, exitCode int) Parse
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "[warn] ") {
 			file := strings.TrimPrefix(line, "[warn] ")
-			// Skip summary lines
-			if !strings.Contains(file, "Code style issues") && !strings.Contains(file, "Forgot to run") {
-				files = append(files, file)
+			// Skip non-filename lines (prettier summary messages)
+			if file == "" || !looksLikeFilePath(file) {
+				continue
 			}
+			files = append(files, file)
 		}
 	}
 
@@ -48,4 +49,20 @@ func (p *PrettierParser) Parse(stdout string, stderr string, exitCode int) Parse
 		Summary:  summary,
 		Findings: result,
 	}
+}
+
+// looksLikeFilePath returns true if the string looks like a file path
+// (contains a dot with an extension) rather than a prettier summary message.
+func looksLikeFilePath(s string) bool {
+	// Prettier summary lines start with uppercase and contain spaces
+	// File paths typically contain a dot (extension) and/or path separator
+	if strings.ContainsAny(s, "/\\") {
+		return true
+	}
+	// Check for file extension pattern
+	parts := strings.Split(s, ".")
+	if len(parts) >= 2 && len(parts[len(parts)-1]) <= 5 {
+		return true
+	}
+	return false
 }

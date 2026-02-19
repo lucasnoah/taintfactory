@@ -46,7 +46,6 @@ var checkRunCmd = &cobra.Command{
 		}
 
 		runner := checks.NewRunner(&checks.ExecRunner{})
-		var results []*checks.Result
 		var firstErr error
 
 		for _, name := range checkNames {
@@ -82,7 +81,6 @@ var checkRunCmd = &cobra.Command{
 				return fmt.Errorf("log check run: %w", err)
 			}
 
-			results = append(results, result)
 			statusIcon := "PASS"
 			if !result.Passed {
 				statusIcon = "FAIL"
