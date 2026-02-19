@@ -69,6 +69,7 @@ func (r *Runner) RunGate(dir string, opts GateOpts) (*GateResult, []*Result, err
 		Issue:             opts.Issue,
 		FixRound:          opts.FixRound,
 		Passed:            true,
+		Checks:            []GateCheckResult{},
 		RemainingFailures: make(map[string]GateFailure),
 	}
 
