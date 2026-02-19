@@ -476,3 +476,53 @@ func TestMultipleSessionsIsolation(t *testing.T) {
 		t.Errorf("issue 20 pipeline events: got %d, want 1", len(hist20))
 	}
 }
+
+func TestGetCheckHistory(t *testing.T) {
+	d := testDB(t)
+
+	// Log several check runs for the same issue
+	if err := d.LogCheckRun(42, "implement", 1, 0, "lint", true, false, 0, 100, "0 errors", "{}"); err != nil {
+		t.Fatalf("log lint: %v", err)
+	}
+	if err := d.LogCheckRun(42, "implement", 1, 0, "test", false, false, 1, 5000, "3 failures", "{\"failed\":3}"); err != nil {
+		t.Fatalf("log test: %v", err)
+	}
+	if err := d.LogCheckRun(42, "implement", 1, 1, "test", true, false, 0, 4500, "all passed", "{}"); err != nil {
+		t.Fatalf("log test fix: %v", err)
+	}
+	// Different issue
+	if err := d.LogCheckRun(99, "qa", 1, 0, "lint", true, false, 0, 50, "ok", "{}"); err != nil {
+		t.Fatalf("log other issue: %v", err)
+	}
+
+	// Get history for issue 42
+	runs, err := d.GetCheckHistory(42)
+	if err != nil {
+		t.Fatalf("get check history: %v", err)
+	}
+	if len(runs) != 3 {
+		t.Fatalf("expected 3 runs for issue 42, got %d", len(runs))
+	}
+	// Should be ordered by id DESC (most recent first)
+	if runs[0].CheckName != "test" || runs[0].FixRound != 1 {
+		t.Errorf("expected most recent run first (test fix_round=1), got %q fix_round=%d", runs[0].CheckName, runs[0].FixRound)
+	}
+
+	// Get history for issue 99
+	runs99, err := d.GetCheckHistory(99)
+	if err != nil {
+		t.Fatalf("get check history: %v", err)
+	}
+	if len(runs99) != 1 {
+		t.Errorf("expected 1 run for issue 99, got %d", len(runs99))
+	}
+
+	// Get history for non-existent issue
+	runsEmpty, err := d.GetCheckHistory(999)
+	if err != nil {
+		t.Fatalf("get check history: %v", err)
+	}
+	if len(runsEmpty) != 0 {
+		t.Errorf("expected 0 runs for issue 999, got %d", len(runsEmpty))
+	}
+}

@@ -44,6 +44,13 @@ type ExecRunner struct{}
 func (e *ExecRunner) Run(ctx context.Context, dir string, command string) (string, string, int, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = dir
+	// Use process group so we can kill child processes on timeout
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		// Send SIGTERM to the process group first
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	}
+	cmd.WaitDelay = 2 * time.Second // after SIGTERM, wait 2s then SIGKILL
 
 	var stdoutBuf, stderrBuf strings.Builder
 	cmd.Stdout = &stdoutBuf
@@ -160,11 +167,3 @@ func (r *Runner) runOnce(dir string, cfg CheckConfig, timeout time.Duration) (*R
 	}, nil
 }
 
-// Kill sends SIGTERM to a process, waits 2s, then SIGKILL.
-// Used by ExecRunner's context cancellation.
-func init() {
-	// Set exec.CommandContext to use process group kill
-	// This is handled automatically by Go's context cancellation.
-	// The context.WithTimeout in runOnce handles SIGKILL after deadline.
-	_ = syscall.SIGTERM // referenced for documentation
-}
