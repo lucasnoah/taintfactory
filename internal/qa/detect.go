@@ -33,45 +33,50 @@ var browserLabels = map[string]bool{
 	"ux":       true,
 }
 
-// browser-related file extensions
+// browser-related file extensions (includes .ts and .js for frontend code)
 var browserExtensions = map[string]bool{
-	".tsx":  true,
-	".jsx":  true,
-	".html": true,
-	".css":  true,
-	".scss": true,
-	".less": true,
-	".vue":  true,
+	".tsx":    true,
+	".jsx":    true,
+	".ts":     true,
+	".js":     true,
+	".html":   true,
+	".css":    true,
+	".scss":   true,
+	".less":   true,
+	".vue":    true,
 	".svelte": true,
 }
 
-// browser-related directory patterns
+// browserDirs matched as path segments (not substrings) via hasBrowserDirSegment
 var browserDirs = []string{
-	"components/",
-	"pages/",
-	"routes/",
-	"views/",
-	"layouts/",
-	"styles/",
-	"public/",
-	"static/",
-	"templates/",
-	"app/",
-	"src/ui/",
+	"components",
+	"pages",
+	"routes",
+	"views",
+	"layouts",
+	"styles",
+	"public",
+	"static",
+	"templates",
+	"src/ui",
 }
 
-// keywords in issue body suggesting browser testing
+// keywords in issue body suggesting browser testing —
+// higher-signal terms that are less likely to appear in non-UI contexts
 var browserKeywords = regexp.MustCompile(
-	`(?i)\b(button|form|modal|dialog|navigation|page|ui|dropdown|` +
-		`input field|checkbox|radio|tooltip|popover|sidebar|` +
-		`header|footer|menu|tab|accordion|carousel|slider|` +
+	`(?i)\b(button|form|modal|dialog|dropdown|` +
+		`checkbox|radio|tooltip|popover|sidebar|` +
+		`accordion|carousel|slider|` +
 		`login|signup|dashboard|landing page|responsive|` +
-		`click|hover|scroll|drag|drop|resize|animate|` +
-		`browser|viewport|mobile|desktop|css|style|layout)\b`,
+		`hover|scroll|drag|animate|` +
+		`browser|viewport|mobile|css)\b`,
 )
 
 // route extraction pattern: /path/like/this
 var routePattern = regexp.MustCompile(`(?:^|[^a-zA-Z0-9])(\/[a-z][a-z0-9\-\/]*[a-z0-9])`)
+
+// codeBlockPattern matches Markdown fenced code blocks
+var codeBlockPattern = regexp.MustCompile("(?s)```.*?```")
 
 // component extraction from file names (PascalCase filenames in component dirs)
 var componentNamePattern = regexp.MustCompile(`([A-Z][a-zA-Z0-9]+)`)
@@ -115,13 +120,18 @@ func DetectBrowserTest(opts DetectOpts) *DetectResult {
 				}
 				if len(unique) >= 2 {
 					result.BrowserTestNeeded = true
-					result.Reasons = append(result.Reasons, "Issue body mentions browser-related terms: "+strings.Join(unique[:min(3, len(unique))], ", "))
+					n := len(unique)
+					if n > 3 {
+						n = 3
+					}
+					result.Reasons = append(result.Reasons, "Issue body mentions browser-related terms: "+strings.Join(unique[:n], ", "))
 				}
 			}
 		}
 
-		// Extract routes from issue body
-		routeMatches := routePattern.FindAllStringSubmatch(opts.Issue.Body, -1)
+		// Extract routes from issue body (strip code blocks first)
+		bodyForRoutes := codeBlockPattern.ReplaceAllString(opts.Issue.Body, "")
+		routeMatches := routePattern.FindAllStringSubmatch(bodyForRoutes, -1)
 		seen := make(map[string]bool)
 		for _, m := range routeMatches {
 			route := m[1]
@@ -153,7 +163,7 @@ func DetectBrowserTest(opts DetectOpts) *DetectResult {
 		}
 	}
 
-	// Deduplicate routes
+	// Deduplicate routes and components
 	result.AffectedRoutes = dedupe(result.AffectedRoutes)
 	result.AffectedComponents = dedupe(result.AffectedComponents)
 
@@ -181,15 +191,13 @@ func analyzeBrowserFiles(files []string) browserFileAnalysis {
 			result.extensions = append(result.extensions, ext)
 		}
 
-		for _, dir := range browserDirs {
-			if strings.Contains(f, dir) && !seenDirs[dir] {
-				result.hasBrowserDir = true
-				seenDirs[dir] = true
-				result.dirs = append(result.dirs, strings.TrimSuffix(dir, "/"))
-			}
+		if dir := matchBrowserDir(f); dir != "" && !seenDirs[dir] {
+			result.hasBrowserDir = true
+			seenDirs[dir] = true
+			result.dirs = append(result.dirs, dir)
 		}
 
-		// Extract component names from PascalCase filenames in component-like directories
+		// Extract component names from PascalCase filenames in browser files
 		base := filepath.Base(f)
 		nameOnly := strings.TrimSuffix(base, filepath.Ext(base))
 		if componentNamePattern.MatchString(nameOnly) && isBrowserFile(f) {
@@ -200,19 +208,44 @@ func analyzeBrowserFiles(files []string) browserFileAnalysis {
 	return result
 }
 
+// matchBrowserDir checks if a file path contains a browser directory as a
+// proper path segment (not a substring). Returns the matched dir or "".
+func matchBrowserDir(path string) string {
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	for _, dir := range browserDirs {
+		if strings.Contains(dir, "/") {
+			// Multi-segment like "src/ui" — check consecutive segments
+			if strings.Contains(filepath.ToSlash(path), dir+"/") || strings.HasSuffix(filepath.ToSlash(path), dir) {
+				return dir
+			}
+		} else {
+			for _, p := range parts {
+				if p == dir {
+					return dir
+				}
+			}
+		}
+	}
+	return ""
+}
+
 func isBrowserFile(path string) bool {
 	ext := filepath.Ext(path)
 	return browserExtensions[ext]
 }
 
 // extractRouteFromPath extracts a route from a pages/ or routes/ file path.
+// Only matches "pages" and "routes" as exact path segments.
 func extractRouteFromPath(path string) string {
-	for _, prefix := range []string{"pages/", "routes/", "app/"} {
-		idx := strings.Index(path, prefix)
-		if idx >= 0 {
-			rest := path[idx+len(prefix):]
-			// Remove extension and index files
-			rest = strings.TrimSuffix(rest, filepath.Ext(rest))
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	for i, p := range parts {
+		if p == "pages" || p == "routes" {
+			rest := strings.Join(parts[i+1:], "/")
+			// Remove extension
+			if ext := filepath.Ext(rest); ext != "" {
+				rest = strings.TrimSuffix(rest, ext)
+			}
+			// Remove index files
 			rest = strings.TrimSuffix(rest, "/index")
 			rest = strings.TrimSuffix(rest, "index")
 			if rest == "" {
@@ -225,9 +258,13 @@ func extractRouteFromPath(path string) string {
 }
 
 // isCommonNonRoute filters out paths that look like routes but aren't.
+var nonRoutePrefixes = []string{
+	"/bin", "/etc", "/tmp", "/var", "/usr", "/dev", "/opt", "/home",
+	"/lib", "/sbin", "/proc", "/sys", "/run", "/snap",
+}
+
 func isCommonNonRoute(path string) bool {
-	nonRoutes := []string{"/bin", "/etc", "/tmp", "/var", "/usr", "/dev", "/opt", "/home"}
-	for _, nr := range nonRoutes {
+	for _, nr := range nonRoutePrefixes {
 		if strings.HasPrefix(path, nr) {
 			return true
 		}
@@ -235,9 +272,11 @@ func isCommonNonRoute(path string) bool {
 	return false
 }
 
+// dedupe returns a new slice with duplicates removed, preserving order.
+// Always returns a non-nil slice for consistent JSON serialization.
 func dedupe(items []string) []string {
 	seen := make(map[string]bool)
-	var result []string
+	result := []string{}
 	for _, item := range items {
 		if !seen[item] {
 			seen[item] = true
@@ -245,11 +284,4 @@ func dedupe(items []string) []string {
 		}
 	}
 	return result
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
