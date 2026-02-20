@@ -39,4 +39,5 @@ func init() {
 	rootCmd.AddCommand(dbCmd)
 	rootCmd.AddCommand(qaCmd)
 	rootCmd.AddCommand(stageCmd)
+	rootCmd.AddCommand(orchestratorCmd)
 }
