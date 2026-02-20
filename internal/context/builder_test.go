@@ -3,6 +3,7 @@ package context
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lucasnoah/taintfactory/internal/config"
@@ -11,10 +12,12 @@ import (
 
 // mockGit implements GitRunner for testing.
 type mockGit struct {
-	diff         string
-	diffSummary  string
-	filesChanged string
-	diffErr      error
+	diff            string
+	diffSummary     string
+	filesChanged    string
+	diffErr         error
+	diffSummaryErr  error
+	filesChangedErr error
 }
 
 func (m *mockGit) Diff(dir string) (string, error) {
@@ -22,10 +25,16 @@ func (m *mockGit) Diff(dir string) (string, error) {
 }
 
 func (m *mockGit) DiffSummary(dir string) (string, error) {
+	if m.diffSummaryErr != nil {
+		return "", m.diffSummaryErr
+	}
 	return m.diffSummary, m.diffErr
 }
 
 func (m *mockGit) FilesChanged(dir string) (string, error) {
+	if m.filesChangedErr != nil {
+		return "", m.filesChangedErr
+	}
 	return m.filesChanged, m.diffErr
 }
 
@@ -545,10 +554,5 @@ func TestInstallAndLoadBuiltinTemplates(t *testing.T) {
 }
 
 func containsStr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(s, substr)
 }
