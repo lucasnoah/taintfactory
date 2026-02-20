@@ -32,6 +32,11 @@ func DefaultStore() (*Store, error) {
 	return &Store{baseDir: dir}, nil
 }
 
+// BaseDir returns the store's root directory.
+func (s *Store) BaseDir() string {
+	return s.baseDir
+}
+
 // issueDir returns the directory path for a given issue.
 func (s *Store) issueDir(issue int) string {
 	return filepath.Join(s.baseDir, strconv.Itoa(issue))

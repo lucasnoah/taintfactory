@@ -1,11 +1,22 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/lucasnoah/taintfactory/internal/checks"
+	"github.com/lucasnoah/taintfactory/internal/config"
+	appctx "github.com/lucasnoah/taintfactory/internal/context"
+	"github.com/lucasnoah/taintfactory/internal/db"
+	"github.com/lucasnoah/taintfactory/internal/github"
+	"github.com/lucasnoah/taintfactory/internal/orchestrator"
 	"github.com/lucasnoah/taintfactory/internal/pipeline"
+	"github.com/lucasnoah/taintfactory/internal/session"
+	"github.com/lucasnoah/taintfactory/internal/stage"
+	"github.com/lucasnoah/taintfactory/internal/worktree"
 	"github.com/spf13/cobra"
 )
 
@@ -19,7 +30,28 @@ var pipelineCreateCmd = &cobra.Command{
 	Short: "Create a new pipeline for a GitHub issue",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("factory pipeline create %s — not implemented\n", args[0])
+		issue, err := strconv.Atoi(args[0])
+		if err != nil {
+			return fmt.Errorf("invalid issue number: %s", args[0])
+		}
+
+		orch, cleanup, err := newOrchestrator()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		ps, err := orch.Create(orchestrator.CreateOpts{Issue: issue})
+		if err != nil {
+			return err
+		}
+
+		w := cmd.OutOrStdout()
+		fmt.Fprintf(w, "Pipeline #%d created\n", ps.Issue)
+		fmt.Fprintf(w, "  Title:    %s\n", ps.Title)
+		fmt.Fprintf(w, "  Branch:   %s\n", ps.Branch)
+		fmt.Fprintf(w, "  Worktree: %s\n", ps.Worktree)
+		fmt.Fprintf(w, "  Stage:    %s\n", ps.CurrentStage)
 		return nil
 	},
 }
@@ -29,7 +61,46 @@ var pipelineAdvanceCmd = &cobra.Command{
 	Short: "Advance a pipeline to the next stage",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("factory pipeline advance %s — not implemented\n", args[0])
+		issue, err := strconv.Atoi(args[0])
+		if err != nil {
+			return fmt.Errorf("invalid issue number: %s", args[0])
+		}
+
+		orch, cleanup, err := newOrchestrator()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		result, err := orch.Advance(issue)
+		if err != nil {
+			return err
+		}
+
+		format, _ := cmd.Flags().GetString("format")
+		if format == "json" {
+			data, _ := json.MarshalIndent(result, "", "  ")
+			fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return nil
+		}
+
+		w := cmd.OutOrStdout()
+		fmt.Fprintf(w, "Pipeline #%d: %s\n", result.Issue, result.Action)
+		if result.Stage != "" {
+			fmt.Fprintf(w, "  Stage:     %s\n", result.Stage)
+		}
+		if result.NextStage != "" {
+			fmt.Fprintf(w, "  Next:      %s\n", result.NextStage)
+		}
+		if result.Outcome != "" {
+			fmt.Fprintf(w, "  Outcome:   %s\n", result.Outcome)
+		}
+		if result.FixRounds > 0 {
+			fmt.Fprintf(w, "  Fix Rounds: %d\n", result.FixRounds)
+		}
+		if result.Message != "" {
+			fmt.Fprintf(w, "  Message:   %s\n", result.Message)
+		}
 		return nil
 	},
 }
@@ -80,41 +151,50 @@ var pipelineStatusCmd = &cobra.Command{
 			return fmt.Errorf("invalid issue number: %s", args[0])
 		}
 
-		store, err := pipeline.DefaultStore()
+		orch, cleanup, err := newOrchestrator()
 		if err != nil {
-			return fmt.Errorf("open store: %w", err)
+			return err
 		}
+		defer cleanup()
 
-		ps, err := store.Get(issue)
+		format, _ := cmd.Flags().GetString("format")
+		info, err := orch.Status(issue)
 		if err != nil {
 			return err
 		}
 
-		w := cmd.OutOrStdout()
-		fmt.Fprintf(w, "Pipeline #%d: %s\n", ps.Issue, ps.Title)
-		fmt.Fprintf(w, "  Status:        %s\n", ps.Status)
-		fmt.Fprintf(w, "  Branch:        %s\n", ps.Branch)
-		fmt.Fprintf(w, "  Worktree:      %s\n", ps.Worktree)
-		fmt.Fprintf(w, "  Current Stage: %s (attempt %d)\n", ps.CurrentStage, ps.CurrentAttempt)
-		if ps.CurrentSession != "" {
-			fmt.Fprintf(w, "  Session:       %s\n", ps.CurrentSession)
+		if format == "json" {
+			data, _ := json.MarshalIndent(info, "", "  ")
+			fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return nil
 		}
-		if ps.CurrentFixRound > 0 {
-			fmt.Fprintf(w, "  Fix Round:     %d\n", ps.CurrentFixRound)
-		}
-		fmt.Fprintf(w, "  Created:       %s\n", ps.CreatedAt)
-		fmt.Fprintf(w, "  Updated:       %s\n", ps.UpdatedAt)
 
-		if len(ps.GoalGates) > 0 {
+		w := cmd.OutOrStdout()
+		fmt.Fprintf(w, "Pipeline #%d: %s\n", info.Issue, info.Title)
+		fmt.Fprintf(w, "  Status:        %s\n", info.Status)
+		fmt.Fprintf(w, "  Branch:        %s\n", info.Branch)
+		fmt.Fprintf(w, "  Current Stage: %s (attempt %d)\n", info.Stage, info.Attempt)
+		if info.Session != "" {
+			fmt.Fprintf(w, "  Session:       %s (%s)\n", info.Session, info.SessionState)
+		}
+		if info.FixRound > 0 {
+			fmt.Fprintf(w, "  Fix Round:     %d\n", info.FixRound)
+		}
+
+		if len(info.GoalGates) > 0 {
 			fmt.Fprintln(w, "  Goal Gates:")
-			for k, v := range ps.GoalGates {
-				fmt.Fprintf(w, "    %s: %s\n", k, v)
+			for k, v := range info.GoalGates {
+				status := v
+				if status == "" {
+					status = "pending"
+				}
+				fmt.Fprintf(w, "    %s: %s\n", k, status)
 			}
 		}
 
-		if len(ps.StageHistory) > 0 {
+		if len(info.StageHistory) > 0 {
 			fmt.Fprintln(w, "  Stage History:")
-			for _, h := range ps.StageHistory {
+			for _, h := range info.StageHistory {
 				firstPass := ""
 				if h.ChecksFirstPass {
 					firstPass = " (first-pass)"
@@ -132,7 +212,24 @@ var pipelineRetryCmd = &cobra.Command{
 	Short: "Retry the current stage of a pipeline",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("factory pipeline retry %s — not implemented\n", args[0])
+		issue, err := strconv.Atoi(args[0])
+		if err != nil {
+			return fmt.Errorf("invalid issue number: %s", args[0])
+		}
+
+		reason, _ := cmd.Flags().GetString("reason")
+
+		orch, cleanup, err := newOrchestrator()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		if err := orch.Retry(orchestrator.RetryOpts{Issue: issue, Reason: reason}); err != nil {
+			return err
+		}
+
+		fmt.Fprintf(cmd.OutOrStdout(), "Pipeline #%d: retry queued\n", issue)
 		return nil
 	},
 }
@@ -142,7 +239,24 @@ var pipelineFailCmd = &cobra.Command{
 	Short: "Mark a pipeline as failed",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("factory pipeline fail %s — not implemented\n", args[0])
+		issue, err := strconv.Atoi(args[0])
+		if err != nil {
+			return fmt.Errorf("invalid issue number: %s", args[0])
+		}
+
+		reason, _ := cmd.Flags().GetString("reason")
+
+		orch, cleanup, err := newOrchestrator()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		if err := orch.Fail(orchestrator.FailOpts{Issue: issue, Reason: reason}); err != nil {
+			return err
+		}
+
+		fmt.Fprintf(cmd.OutOrStdout(), "Pipeline #%d: marked as failed\n", issue)
 		return nil
 	},
 }
@@ -152,7 +266,24 @@ var pipelineAbortCmd = &cobra.Command{
 	Short: "Abort a pipeline and clean up",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("factory pipeline abort %s — not implemented\n", args[0])
+		issue, err := strconv.Atoi(args[0])
+		if err != nil {
+			return fmt.Errorf("invalid issue number: %s", args[0])
+		}
+
+		removeWorktree, _ := cmd.Flags().GetBool("remove-worktree")
+
+		orch, cleanup, err := newOrchestrator()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		if err := orch.Abort(orchestrator.AbortOpts{Issue: issue, RemoveWorktree: removeWorktree}); err != nil {
+			return err
+		}
+
+		fmt.Fprintf(cmd.OutOrStdout(), "Pipeline #%d: aborted\n", issue)
 		return nil
 	},
 }
@@ -167,4 +298,59 @@ func init() {
 	pipelineCmd.AddCommand(pipelineAbortCmd)
 
 	pipelineListCmd.Flags().String("status", "", "Filter by status (pending, in_progress, completed, failed, blocked)")
+	pipelineStatusCmd.Flags().String("format", "text", "Output format: text or json")
+	pipelineAdvanceCmd.Flags().String("format", "text", "Output format: text or json")
+	pipelineRetryCmd.Flags().String("reason", "", "Reason for retry")
+	pipelineFailCmd.Flags().String("reason", "", "Reason for failure")
+	pipelineAbortCmd.Flags().Bool("remove-worktree", false, "Remove the worktree after aborting")
+}
+
+// newOrchestrator builds a fully-wired Orchestrator from default paths/config.
+func newOrchestrator() (*orchestrator.Orchestrator, func(), error) {
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		return nil, nil, fmt.Errorf("load config: %w", err)
+	}
+
+	dbPath, err := db.DefaultDBPath()
+	if err != nil {
+		return nil, nil, err
+	}
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := database.Migrate(); err != nil {
+		database.Close()
+		return nil, nil, err
+	}
+
+	store, err := pipeline.DefaultStore()
+	if err != nil {
+		database.Close()
+		return nil, nil, fmt.Errorf("open store: %w", err)
+	}
+
+	runner := &github.ExecRunner{}
+	ghClient := github.NewClientWithGit(runner, runner)
+
+	repoDir, err := findRepoRoot()
+	if err != nil {
+		database.Close()
+		return nil, nil, err
+	}
+	wtDir := filepath.Join(repoDir, "worktrees")
+	wt := worktree.NewManager(&worktree.ExecGit{}, repoDir, wtDir)
+
+	tmux := session.NewExecTmux()
+	sessions := session.NewManager(tmux, database, store)
+
+	checker := checks.NewRunner(&checks.ExecRunner{})
+	builder := appctx.NewBuilder(store, &appctx.ExecGit{})
+	engine := stage.NewEngine(sessions, checker, builder, store, database, cfg)
+
+	orch := orchestrator.NewOrchestrator(store, database, ghClient, wt, sessions, engine, builder, cfg)
+
+	cleanup := func() { database.Close() }
+	return orch, cleanup, nil
 }
