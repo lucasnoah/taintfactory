@@ -92,6 +92,8 @@ func (o *Orchestrator) Create(opts CreateOpts) (*pipeline.PipelineState, error) 
 	// Create pipeline state (this creates the issue directory)
 	ps, err := o.store.Create(opts.Issue, issue.Title, wtResult.Branch, wtResult.Path, firstStage, goalGates)
 	if err != nil {
+		// Clean up orphaned worktree on store failure
+		_ = o.wt.Remove(opts.Issue, true)
 		return nil, fmt.Errorf("create pipeline: %w", err)
 	}
 
@@ -106,7 +108,7 @@ func (o *Orchestrator) Create(opts CreateOpts) (*pipeline.PipelineState, error) 
 // AdvanceResult describes what happened during an advance.
 type AdvanceResult struct {
 	Issue       int    `json:"issue"`
-	Action      string `json:"action"` // "ran_stage", "advanced", "completed", "failed", "escalated", "still_running"
+	Action      string `json:"action"` // "advanced", "completed", "failed", "escalated", "retry", "routed"
 	Stage       string `json:"stage"`
 	NextStage   string `json:"next_stage,omitempty"`
 	Outcome     string `json:"outcome,omitempty"`
@@ -128,15 +130,20 @@ func (o *Orchestrator) Advance(issue int) (*AdvanceResult, error) {
 		return &AdvanceResult{Issue: issue, Action: "failed", Message: fmt.Sprintf("pipeline is %s", ps.Status)}, nil
 	}
 
-	stageCfg := o.findStage(ps.CurrentStage)
+	currentStage := ps.CurrentStage
+	currentAttempt := ps.CurrentAttempt
+
+	stageCfg := o.findStage(currentStage)
 	if stageCfg == nil {
-		return nil, fmt.Errorf("stage %q not found in config", ps.CurrentStage)
+		return nil, fmt.Errorf("stage %q not found in config", currentStage)
 	}
 
 	// Update status to in_progress
-	_ = o.store.Update(issue, func(ps *pipeline.PipelineState) {
+	if err := o.store.Update(issue, func(ps *pipeline.PipelineState) {
 		ps.Status = "in_progress"
-	})
+	}); err != nil {
+		return nil, fmt.Errorf("update status: %w", err)
+	}
 
 	// Determine timeout
 	timeout := 30 * time.Minute
@@ -149,15 +156,19 @@ func (o *Orchestrator) Advance(issue int) (*AdvanceResult, error) {
 	// Run the stage lifecycle
 	runResult, err := o.engine.Run(stage.RunOpts{
 		Issue:   issue,
-		Stage:   ps.CurrentStage,
+		Stage:   currentStage,
 		Timeout: timeout,
 	})
 	if err != nil {
+		// Reset status on engine failure so pipeline isn't stuck as in_progress
+		_ = o.store.Update(issue, func(ps *pipeline.PipelineState) {
+			ps.Status = "pending"
+		})
 		return nil, fmt.Errorf("run stage: %w", err)
 	}
 
 	// Record stage history
-	_ = o.store.Update(issue, func(ps *pipeline.PipelineState) {
+	if err := o.store.Update(issue, func(ps *pipeline.PipelineState) {
 		ps.StageHistory = append(ps.StageHistory, pipeline.StageHistoryEntry{
 			Stage:           runResult.Stage,
 			Attempt:         runResult.Attempt,
@@ -166,30 +177,34 @@ func (o *Orchestrator) Advance(issue int) (*AdvanceResult, error) {
 			FixRounds:       runResult.FixRounds,
 			ChecksFirstPass: runResult.ChecksFirstPass,
 		})
-	})
+	}); err != nil {
+		return nil, fmt.Errorf("record stage history: %w", err)
+	}
 
 	// Checkpoint the stage outcome
-	_ = o.builder.Checkpoint(issue, ps.CurrentStage, ps.CurrentAttempt, appctx.CheckpointOpts{
+	_ = o.builder.Checkpoint(issue, currentStage, currentAttempt, appctx.CheckpointOpts{
 		Status:  runResult.Outcome,
 		Summary: formatCheckStateSummary(runResult.FinalCheckState),
 	})
 
 	// Update goal gate if applicable
 	if stageCfg.GoalGate && runResult.Outcome == "success" {
-		_ = o.store.Update(issue, func(ps *pipeline.PipelineState) {
+		if err := o.store.Update(issue, func(ps *pipeline.PipelineState) {
 			if ps.GoalGates == nil {
 				ps.GoalGates = make(map[string]string)
 			}
-			ps.GoalGates[ps.CurrentStage] = "success"
-		})
+			ps.GoalGates[currentStage] = "success"
+		}); err != nil {
+			return nil, fmt.Errorf("update goal gate: %w", err)
+		}
 	}
 
 	if runResult.Outcome == "success" {
-		return o.advanceToNextStage(issue, ps.CurrentStage, runResult)
+		return o.advanceToNextStage(issue, currentStage, runResult)
 	}
 
 	// Stage failed — route via on_fail
-	return o.handleStageFailure(issue, ps, stageCfg, runResult)
+	return o.handleStageFailure(issue, currentStage, currentAttempt, stageCfg, runResult)
 }
 
 // advanceToNextStage moves the pipeline to the next stage or completes it.
@@ -207,9 +222,11 @@ func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, runRes
 			}, nil
 		}
 
-		_ = o.store.Update(issue, func(ps *pipeline.PipelineState) {
+		if err := o.store.Update(issue, func(ps *pipeline.PipelineState) {
 			ps.Status = "completed"
-		})
+		}); err != nil {
+			return nil, fmt.Errorf("update completed status: %w", err)
+		}
 		_ = o.db.LogPipelineEvent(issue, "completed", currentStage, runResult.Attempt, "")
 
 		return &AdvanceResult{
@@ -221,12 +238,14 @@ func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, runRes
 	}
 
 	// Move to next stage
-	_ = o.store.Update(issue, func(ps *pipeline.PipelineState) {
+	if err := o.store.Update(issue, func(ps *pipeline.PipelineState) {
 		ps.CurrentStage = nextStage
 		ps.CurrentAttempt = 1
 		ps.CurrentFixRound = 0
 		ps.CurrentSession = ""
-	})
+	}); err != nil {
+		return nil, fmt.Errorf("advance to next stage: %w", err)
+	}
 	_ = o.db.LogPipelineEvent(issue, "stage_advanced", nextStage, 1, fmt.Sprintf("from=%s", currentStage))
 
 	return &AdvanceResult{
@@ -240,74 +259,91 @@ func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, runRes
 }
 
 // handleStageFailure routes the pipeline based on on_fail config.
-func (o *Orchestrator) handleStageFailure(issue int, ps *pipeline.PipelineState, stageCfg *config.Stage, runResult *stage.RunResult) (*AdvanceResult, error) {
+// Uses captured values from the start of Advance() to avoid stale-snapshot issues.
+func (o *Orchestrator) handleStageFailure(issue int, currentStage string, currentAttempt int, stageCfg *config.Stage, runResult *stage.RunResult) (*AdvanceResult, error) {
 	target := resolveOnFail(stageCfg.OnFail)
 
 	if target == "escalate" {
-		_ = o.store.Update(issue, func(ps *pipeline.PipelineState) {
+		if err := o.store.Update(issue, func(ps *pipeline.PipelineState) {
 			ps.Status = "blocked"
-		})
-		_ = o.db.LogPipelineEvent(issue, "escalated", ps.CurrentStage, ps.CurrentAttempt, "")
+		}); err != nil {
+			return nil, fmt.Errorf("update blocked status: %w", err)
+		}
+		_ = o.db.LogPipelineEvent(issue, "escalated", currentStage, currentAttempt, "")
 
 		return &AdvanceResult{
 			Issue:   issue,
 			Action:  "escalated",
-			Stage:   ps.CurrentStage,
+			Stage:   currentStage,
 			Outcome: "fail",
 			Message: "stage escalated, human intervention required",
 		}, nil
 	}
 
+	// Validate on_fail target stage exists (if routing to a different stage)
+	if target != "" && target != currentStage {
+		if o.findStage(target) == nil {
+			return nil, fmt.Errorf("on_fail target stage %q not found in config", target)
+		}
+	}
+
 	// Check max attempts
 	maxAttempts := 3
-	if target == ps.CurrentStage || target == "" {
+	if target == currentStage || target == "" {
 		// Retrying same stage
-		if ps.CurrentAttempt >= maxAttempts {
-			_ = o.store.Update(issue, func(ps *pipeline.PipelineState) {
+		if currentAttempt >= maxAttempts {
+			if err := o.store.Update(issue, func(ps *pipeline.PipelineState) {
 				ps.Status = "failed"
-			})
-			_ = o.db.LogPipelineEvent(issue, "max_attempts_reached", ps.CurrentStage, ps.CurrentAttempt, "")
+			}); err != nil {
+				return nil, fmt.Errorf("update failed status: %w", err)
+			}
+			_ = o.db.LogPipelineEvent(issue, "max_attempts_reached", currentStage, currentAttempt, "")
 
 			return &AdvanceResult{
 				Issue:   issue,
 				Action:  "failed",
-				Stage:   ps.CurrentStage,
+				Stage:   currentStage,
 				Outcome: "fail",
-				Message: fmt.Sprintf("max attempts (%d) reached for stage %q", maxAttempts, ps.CurrentStage),
+				Message: fmt.Sprintf("max attempts (%d) reached for stage %q", maxAttempts, currentStage),
 			}, nil
 		}
 
 		// Increment attempt
-		_ = o.store.Update(issue, func(ps *pipeline.PipelineState) {
-			ps.CurrentAttempt++
+		newAttempt := currentAttempt + 1
+		if err := o.store.Update(issue, func(ps *pipeline.PipelineState) {
+			ps.CurrentAttempt = newAttempt
 			ps.CurrentFixRound = 0
 			ps.CurrentSession = ""
-		})
-		_ = o.db.LogPipelineEvent(issue, "retry", ps.CurrentStage, ps.CurrentAttempt+1, "auto")
+		}); err != nil {
+			return nil, fmt.Errorf("increment attempt: %w", err)
+		}
+		_ = o.db.LogPipelineEvent(issue, "retry", currentStage, newAttempt, "auto")
 
 		return &AdvanceResult{
 			Issue:     issue,
-			Action:    "ran_stage",
-			Stage:     ps.CurrentStage,
+			Action:    "retry",
+			Stage:     currentStage,
 			Outcome:   "fail",
 			FixRounds: runResult.FixRounds,
-			Message:   fmt.Sprintf("stage failed, will retry (attempt %d)", ps.CurrentAttempt+1),
+			Message:   fmt.Sprintf("stage failed, will retry (attempt %d)", newAttempt),
 		}, nil
 	}
 
 	// Route to different stage
-	_ = o.store.Update(issue, func(ps *pipeline.PipelineState) {
+	if err := o.store.Update(issue, func(ps *pipeline.PipelineState) {
 		ps.CurrentStage = target
 		ps.CurrentAttempt = 1
 		ps.CurrentFixRound = 0
 		ps.CurrentSession = ""
-	})
-	_ = o.db.LogPipelineEvent(issue, "on_fail_routed", target, 1, fmt.Sprintf("from=%s", ps.CurrentStage))
+	}); err != nil {
+		return nil, fmt.Errorf("route to stage %q: %w", target, err)
+	}
+	_ = o.db.LogPipelineEvent(issue, "on_fail_routed", target, 1, fmt.Sprintf("from=%s", currentStage))
 
 	return &AdvanceResult{
 		Issue:     issue,
-		Action:    "ran_stage",
-		Stage:     ps.CurrentStage,
+		Action:    "routed",
+		Stage:     currentStage,
 		NextStage: target,
 		Outcome:   "fail",
 		FixRounds: runResult.FixRounds,
@@ -321,7 +357,8 @@ type RetryOpts struct {
 	Reason string
 }
 
-// Retry manually retries the current stage.
+// Retry manually retries the current stage. This intentionally overrides
+// the automatic max-attempt limit to allow human-directed recovery.
 func (o *Orchestrator) Retry(opts RetryOpts) error {
 	ps, err := o.store.Get(opts.Issue)
 	if err != nil {
@@ -332,18 +369,21 @@ func (o *Orchestrator) Retry(opts RetryOpts) error {
 		return fmt.Errorf("pipeline %d is already completed", opts.Issue)
 	}
 
-	_ = o.store.Update(opts.Issue, func(ps *pipeline.PipelineState) {
-		ps.CurrentAttempt++
+	newAttempt := ps.CurrentAttempt + 1
+	if err := o.store.Update(opts.Issue, func(ps *pipeline.PipelineState) {
+		ps.CurrentAttempt = newAttempt
 		ps.CurrentFixRound = 0
 		ps.CurrentSession = ""
 		ps.Status = "in_progress"
-	})
+	}); err != nil {
+		return fmt.Errorf("update pipeline: %w", err)
+	}
 
 	detail := "manual"
 	if opts.Reason != "" {
 		detail = fmt.Sprintf("manual: %s", opts.Reason)
 	}
-	_ = o.db.LogPipelineEvent(opts.Issue, "retry", ps.CurrentStage, ps.CurrentAttempt+1, detail)
+	_ = o.db.LogPipelineEvent(opts.Issue, "retry", ps.CurrentStage, newAttempt, detail)
 
 	return nil
 }
@@ -366,9 +406,11 @@ func (o *Orchestrator) Fail(opts FailOpts) error {
 		_, _ = o.sessions.Kill(ps.CurrentSession)
 	}
 
-	_ = o.store.Update(opts.Issue, func(ps *pipeline.PipelineState) {
+	if err := o.store.Update(opts.Issue, func(ps *pipeline.PipelineState) {
 		ps.Status = "failed"
-	})
+	}); err != nil {
+		return fmt.Errorf("update pipeline: %w", err)
+	}
 
 	detail := ""
 	if opts.Reason != "" {
@@ -399,12 +441,16 @@ func (o *Orchestrator) Abort(opts AbortOpts) error {
 
 	// Optionally remove worktree
 	if opts.RemoveWorktree && o.wt != nil {
-		_ = o.wt.Remove(opts.Issue, true)
+		if err := o.wt.Remove(opts.Issue, true); err != nil {
+			return fmt.Errorf("remove worktree: %w", err)
+		}
 	}
 
-	_ = o.store.Update(opts.Issue, func(ps *pipeline.PipelineState) {
+	if err := o.store.Update(opts.Issue, func(ps *pipeline.PipelineState) {
 		ps.Status = "failed"
-	})
+	}); err != nil {
+		return fmt.Errorf("update pipeline: %w", err)
+	}
 	_ = o.db.LogPipelineEvent(opts.Issue, "aborted", ps.CurrentStage, ps.CurrentAttempt, "")
 
 	return nil
@@ -456,7 +502,7 @@ func (o *Orchestrator) Status(issue int) (*StatusInfo, error) {
 	return info, nil
 }
 
-// StatusAll returns summary status for all active pipelines.
+// StatusAll returns summary status for all pipelines.
 func (o *Orchestrator) StatusAll() ([]StatusInfo, error) {
 	pipelines, err := o.store.List("")
 	if err != nil {
@@ -466,14 +512,16 @@ func (o *Orchestrator) StatusAll() ([]StatusInfo, error) {
 	var result []StatusInfo
 	for _, ps := range pipelines {
 		info := StatusInfo{
-			Issue:    ps.Issue,
-			Title:    ps.Title,
-			Status:   ps.Status,
-			Stage:    ps.CurrentStage,
-			Attempt:  ps.CurrentAttempt,
-			Session:  ps.CurrentSession,
-			Branch:   ps.Branch,
-			FixRound: ps.CurrentFixRound,
+			Issue:        ps.Issue,
+			Title:        ps.Title,
+			Status:       ps.Status,
+			Stage:        ps.CurrentStage,
+			Attempt:      ps.CurrentAttempt,
+			Session:      ps.CurrentSession,
+			Branch:       ps.Branch,
+			FixRound:     ps.CurrentFixRound,
+			StageHistory: ps.StageHistory,
+			GoalGates:    ps.GoalGates,
 		}
 
 		if ps.CurrentSession != "" {

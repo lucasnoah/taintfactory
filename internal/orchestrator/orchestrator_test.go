@@ -675,6 +675,57 @@ func TestStatusAll(t *testing.T) {
 	}
 }
 
+func TestAdvance_OnFail_InvalidTarget(t *testing.T) {
+	cfg := &config.PipelineConfig{
+		Pipeline: config.Pipeline{
+			Checks: map[string]config.Check{
+				"lint": {Command: "lint", Parser: "generic"},
+			},
+			Stages: []config.Stage{
+				{ID: "validate", Type: "checks_only", Checks: []string{"lint"}, OnFail: "nonexistent_stage"},
+			},
+		},
+	}
+	env := setupTest(t, cfg)
+
+	env.checkCmd.results = []cmdResult{{exitCode: 1}}
+
+	worktreeDir := t.TempDir()
+	env.store.Create(42, "Test", "feature/test", worktreeDir, "validate", nil)
+
+	_, err := env.orch.Advance(42)
+	if err == nil {
+		t.Fatal("expected error for on_fail routing to nonexistent stage")
+	}
+	if !strings.Contains(err.Error(), "not found in config") {
+		t.Errorf("expected 'not found in config' error, got %q", err.Error())
+	}
+}
+
+func TestRetry_BlockedPipeline(t *testing.T) {
+	env := setupTest(t, defaultConfig())
+
+	worktreeDir := t.TempDir()
+	env.store.Create(42, "Test", "feature/test", worktreeDir, "implement", nil)
+	env.store.Update(42, func(ps *pipeline.PipelineState) {
+		ps.CurrentAttempt = 1
+		ps.Status = "blocked"
+	})
+
+	err := env.orch.Retry(RetryOpts{Issue: 42, Reason: "manual override"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ps, _ := env.store.Get(42)
+	if ps.CurrentAttempt != 2 {
+		t.Errorf("expected attempt 2, got %d", ps.CurrentAttempt)
+	}
+	if ps.Status != "in_progress" {
+		t.Errorf("expected status 'in_progress', got %q", ps.Status)
+	}
+}
+
 func TestResolveOnFail(t *testing.T) {
 	tests := []struct {
 		name     string
