@@ -22,17 +22,36 @@ type StageDuration struct {
 	P95   float64 `json:"p95_minutes"`
 }
 
+// timestamp formats to try when parsing timestamps from the database
+var timestampFormats = []string{
+	"2006-01-02 15:04:05",
+	"2006-01-02T15:04:05Z",
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04:05.000",
+}
+
+func parseTimestamp(s string) (time.Time, error) {
+	for _, f := range timestampFormats {
+		if t, err := time.Parse(f, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unrecognized timestamp format: %q", s)
+}
+
 // QueryStageDurations returns average and percentile durations per stage.
-// Duration is computed from 'created'/'stage_advanced' to next stage_advanced/completed event per issue.
+// Each stage_advanced/completed event is paired with the most recent prior
+// created/stage_advanced event for the same issue. Duration > 0 is attributed
+// to the end event's stage.
 func QueryStageDurations(database DB, since string) ([]StageDuration, error) {
 	query := `
-		SELECT pe1.issue, pe1.stage, pe1.timestamp as start_ts,
-			(SELECT MIN(pe2.timestamp) FROM pipeline_events pe2
+		SELECT pe1.issue, pe1.stage, pe1.timestamp as end_ts,
+			(SELECT MAX(pe2.timestamp) FROM pipeline_events pe2
 			 WHERE pe2.issue = pe1.issue
-			 AND pe2.event IN ('stage_advanced', 'completed')
-			 AND pe2.timestamp > pe1.timestamp) as end_ts
+			 AND pe2.event IN ('created', 'stage_advanced')
+			 AND pe2.id < pe1.id) as start_ts
 		FROM pipeline_events pe1
-		WHERE pe1.event IN ('created', 'stage_advanced')
+		WHERE pe1.event IN ('stage_advanced', 'completed')
 		AND pe1.stage != ''`
 
 	args := []interface{}{}
@@ -47,29 +66,28 @@ func QueryStageDurations(database DB, since string) ([]StageDuration, error) {
 	}
 	defer rows.Close()
 
-	// Collect durations per stage
 	stageDurations := make(map[string][]float64)
 	for rows.Next() {
 		var issue int
 		var stage string
-		var startTS string
-		var endTS sql.NullString
-		if err := rows.Scan(&issue, &stage, &startTS, &endTS); err != nil {
+		var endTS string
+		var startTS sql.NullString
+		if err := rows.Scan(&issue, &stage, &endTS, &startTS); err != nil {
 			return nil, fmt.Errorf("scan stage duration: %w", err)
 		}
-		if !endTS.Valid {
-			continue // stage not yet completed
+		if !startTS.Valid {
+			continue
 		}
-		start, err := time.Parse("2006-01-02 15:04:05", startTS)
+		start, err := parseTimestamp(startTS.String)
 		if err != nil {
 			continue
 		}
-		end, err := time.Parse("2006-01-02 15:04:05", endTS.String)
+		end, err := parseTimestamp(endTS)
 		if err != nil {
 			continue
 		}
 		minutes := end.Sub(start).Minutes()
-		if minutes >= 0 {
+		if minutes > 0 {
 			stageDurations[stage] = append(stageDurations[stage], minutes)
 		}
 	}
@@ -97,20 +115,21 @@ func QueryStageDurations(database DB, since string) ([]StageDuration, error) {
 
 // CheckFailureRate holds check failure stats per stage.
 type CheckFailureRate struct {
-	Stage      string  `json:"stage"`
-	Total      int     `json:"total"`
-	FirstPass  float64 `json:"first_pass_pct"`
-	AfterFix   float64 `json:"after_fix_pct"`
-	Escalated  float64 `json:"escalated_pct"`
+	Stage     string  `json:"stage"`
+	Total     int     `json:"total"`
+	FirstPass float64 `json:"first_pass_pct"`
+	AfterFix  float64 `json:"after_fix_pct"`
+	Escalated float64 `json:"escalated_pct"`
 }
 
 // QueryCheckFailureRates returns check failure rates by stage.
+// All percentages use pipeline_events total as denominator for consistency.
 func QueryCheckFailureRates(database DB, since string) ([]CheckFailureRate, error) {
-	// Count total stage runs, first-pass successes, fix-loop successes, and escalations
+	// Terminal event counts per stage from pipeline_events
 	query := `
 		SELECT stage,
 			COUNT(*) as total,
-			SUM(CASE WHEN event = 'stage_advanced' OR event = 'completed' THEN 1 ELSE 0 END) as successes,
+			SUM(CASE WHEN event IN ('stage_advanced', 'completed') THEN 1 ELSE 0 END) as successes,
 			SUM(CASE WHEN event = 'escalated' THEN 1 ELSE 0 END) as escalated
 		FROM pipeline_events
 		WHERE event IN ('stage_advanced', 'completed', 'fix_loop_exhausted', 'max_attempts_reached', 'escalated')
@@ -129,28 +148,25 @@ func QueryCheckFailureRates(database DB, since string) ([]CheckFailureRate, erro
 	}
 	defer rows.Close()
 
-	stageData := make(map[string]*CheckFailureRate)
+	type stageInfo struct {
+		total, successes, escalated int
+	}
+	stageData := make(map[string]*stageInfo)
 	for rows.Next() {
 		var stage string
 		var total, successes, escalated int
 		if err := rows.Scan(&stage, &total, &successes, &escalated); err != nil {
 			return nil, fmt.Errorf("scan check failure rate: %w", err)
 		}
-		stageData[stage] = &CheckFailureRate{
-			Stage:     stage,
-			Total:     total,
-			Escalated: pct(escalated, total),
-		}
-		_ = successes
+		stageData[stage] = &stageInfo{total: total, successes: successes, escalated: escalated}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	// Get first-pass rates from check_runs (fix_round=0 and passed)
+	// First-pass success counts from check_runs
 	fpQuery := `
 		SELECT stage,
-			COUNT(DISTINCT issue || '-' || attempt) as total_runs,
 			SUM(CASE WHEN all_passed = 1 THEN 1 ELSE 0 END) as first_pass
 		FROM (
 			SELECT issue, stage, attempt,
@@ -174,27 +190,34 @@ func QueryCheckFailureRates(database DB, since string) ([]CheckFailureRate, erro
 	}
 	defer fpRows.Close()
 
+	firstPassCounts := make(map[string]int)
 	for fpRows.Next() {
 		var stage string
-		var totalRuns, firstPass int
-		if err := fpRows.Scan(&stage, &totalRuns, &firstPass); err != nil {
+		var firstPass int
+		if err := fpRows.Scan(&stage, &firstPass); err != nil {
 			return nil, fmt.Errorf("scan first-pass rate: %w", err)
 		}
-		if d, ok := stageData[stage]; ok {
-			d.FirstPass = pct(firstPass, totalRuns)
-			d.AfterFix = pct(totalRuns-firstPass, totalRuns) - d.Escalated
-			if d.AfterFix < 0 {
-				d.AfterFix = 0
-			}
-		}
+		firstPassCounts[stage] = firstPass
 	}
 	if err := fpRows.Err(); err != nil {
 		return nil, err
 	}
 
+	// Compute rates using pipeline_events total as denominator
 	var results []CheckFailureRate
-	for _, d := range stageData {
-		results = append(results, *d)
+	for stage, info := range stageData {
+		fp := firstPassCounts[stage]
+		if fp > info.successes {
+			fp = info.successes // cap first-pass at successes
+		}
+		afterFix := info.successes - fp
+		results = append(results, CheckFailureRate{
+			Stage:     stage,
+			Total:     info.total,
+			FirstPass: pct(fp, info.total),
+			AfterFix:  pct(afterFix, info.total),
+			Escalated: pct(info.escalated, info.total),
+		})
 	}
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Stage < results[j].Stage
@@ -217,7 +240,7 @@ func QueryCheckFailures(database DB, since string) ([]CheckFailure, error) {
 		SELECT check_name,
 			COUNT(*) as total,
 			SUM(CASE WHEN passed = 0 THEN 1 ELSE 0 END) as failed,
-			SUM(CASE WHEN auto_fixed = 1 THEN 1 ELSE 0 END) as auto_fixed
+			SUM(CASE WHEN auto_fixed = 1 AND passed = 0 THEN 1 ELSE 0 END) as auto_fixed
 		FROM check_runs
 		WHERE fix_round = 0`
 
@@ -280,6 +303,7 @@ func QueryCheckFailures(database DB, since string) ([]CheckFailure, error) {
 				rules = append(rules, summary)
 			}
 		}
+		_ = sRows.Err()
 		sRows.Close()
 		if len(rules) > 0 {
 			results[i].CommonRules = rules[0]
@@ -294,11 +318,11 @@ func QueryCheckFailures(database DB, since string) ([]CheckFailure, error) {
 
 // FixRoundDist holds fix round distribution for a stage.
 type FixRoundDist struct {
-	Stage    string  `json:"stage"`
-	Total    int     `json:"total"`
-	Zero     float64 `json:"zero_rounds_pct"`
-	One      float64 `json:"one_round_pct"`
-	Two      float64 `json:"two_rounds_pct"`
+	Stage     string  `json:"stage"`
+	Total     int     `json:"total"`
+	Zero      float64 `json:"zero_rounds_pct"`
+	One       float64 `json:"one_round_pct"`
+	Two       float64 `json:"two_rounds_pct"`
 	ThreePlus float64 `json:"three_plus_pct"`
 }
 
@@ -340,7 +364,6 @@ func QueryFixRounds(database DB, since string) ([]FixRoundDist, error) {
 		rc := stageRounds[stage]
 		rc.total++
 
-		// Parse fix rounds from detail if available, otherwise count as 0
 		rounds := 0
 		if detail.Valid {
 			fmt.Sscanf(detail.String, "rounds=%d", &rounds)
@@ -392,7 +415,7 @@ type PipelineThroughput struct {
 func QueryPipelineThroughput(database DB, since string) ([]PipelineThroughput, error) {
 	query := `
 		SELECT
-			strftime('%%Y-W%%W', timestamp) as period,
+			strftime('%Y-W%W', timestamp) as period,
 			SUM(CASE WHEN event = 'created' THEN 1 ELSE 0 END) as created,
 			SUM(CASE WHEN event = 'completed' THEN 1 ELSE 0 END) as completed,
 			SUM(CASE WHEN event IN ('failed', 'max_attempts_reached') THEN 1 ELSE 0 END) as failed,
@@ -425,17 +448,23 @@ func QueryPipelineThroughput(database DB, since string) ([]PipelineThroughput, e
 		return nil, err
 	}
 
-	// Compute avg duration for completed pipelines per period
+	// Compute avg duration: pair each created with the nearest subsequent completed
 	for i := range results {
 		durQuery := `
 			SELECT AVG(
-				(julianday(pe2.timestamp) - julianday(pe1.timestamp)) * 24
+				(julianday(
+					(SELECT MIN(pe2.timestamp) FROM pipeline_events pe2
+					 WHERE pe2.issue = pe1.issue AND pe2.event = 'completed'
+					 AND pe2.timestamp > pe1.timestamp)
+				) - julianday(pe1.timestamp)) * 24
 			) as avg_hours
 			FROM pipeline_events pe1
-			INNER JOIN pipeline_events pe2 ON pe1.issue = pe2.issue
 			WHERE pe1.event = 'created'
-			AND pe2.event = 'completed'
-			AND strftime('%%Y-W%%W', pe2.timestamp) = ?`
+			AND strftime('%Y-W%W',
+				(SELECT MIN(pe2.timestamp) FROM pipeline_events pe2
+				 WHERE pe2.issue = pe1.issue AND pe2.event = 'completed'
+				 AND pe2.timestamp > pe1.timestamp)
+			) = ?`
 		dArgs := []interface{}{results[i].Period}
 
 		var avgHours sql.NullFloat64
@@ -609,11 +638,4 @@ func pct(n, total int) float64 {
 		return 0
 	}
 	return math.Round(float64(n)/float64(total)*1000) / 10
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
