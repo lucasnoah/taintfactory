@@ -1,0 +1,392 @@
+package analytics
+
+import (
+	"database/sql"
+	"testing"
+
+	"github.com/lucasnoah/taintfactory/internal/db"
+)
+
+func testDB(t *testing.T) *db.DB {
+	t.Helper()
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+	if err := d.Migrate(); err != nil {
+		t.Fatalf("migrate test db: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	return d
+}
+
+func exec(t *testing.T, conn *sql.DB, query string, args ...interface{}) {
+	t.Helper()
+	if _, err := conn.Exec(query, args...); err != nil {
+		t.Fatalf("exec %q: %v", query, err)
+	}
+}
+
+// --- QueryStageDurations ---
+
+func TestQueryStageDurations(t *testing.T) {
+	d := testDB(t)
+	c := d.Conn()
+
+	// Issue 1: plan stage takes 10 min (created → completed)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'created', 'plan', 1, '2024-06-01 10:00:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'completed', 'plan', 1, '2024-06-01 10:10:00')`)
+
+	// Issue 2: plan stage takes 20 min
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (2, 'created', 'plan', 1, '2024-06-02 10:00:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (2, 'completed', 'plan', 1, '2024-06-02 10:20:00')`)
+
+	results, err := QueryStageDurations(d, "")
+	if err != nil {
+		t.Fatalf("QueryStageDurations: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 stage duration result, got %d", len(results))
+	}
+
+	planResult := results[0]
+	if planResult.Stage != "plan" {
+		t.Errorf("stage = %q, want plan", planResult.Stage)
+	}
+	if planResult.Count != 2 {
+		t.Errorf("plan count = %d, want 2", planResult.Count)
+	}
+	// Avg of 10 and 20 = 15
+	if planResult.Avg != 15.0 {
+		t.Errorf("plan avg = %f, want 15.0", planResult.Avg)
+	}
+}
+
+func TestQueryStageDurations_Since(t *testing.T) {
+	d := testDB(t)
+	c := d.Conn()
+
+	// Old event
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'created', 'plan', 1, '2024-01-01 10:00:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'stage_advanced', 'plan', 1, '2024-01-01 10:10:00')`)
+
+	// Recent event
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (2, 'created', 'plan', 1, '2024-06-01 10:00:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (2, 'stage_advanced', 'plan', 1, '2024-06-01 10:30:00')`)
+
+	results, err := QueryStageDurations(d, "2024-06-01")
+	if err != nil {
+		t.Fatalf("QueryStageDurations: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result with since filter, got %d", len(results))
+	}
+	if results[0].Avg != 30.0 {
+		t.Errorf("avg = %f, want 30.0", results[0].Avg)
+	}
+}
+
+func TestQueryStageDurations_Empty(t *testing.T) {
+	d := testDB(t)
+
+	results, err := QueryStageDurations(d, "")
+	if err != nil {
+		t.Fatalf("QueryStageDurations: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
+// --- QueryCheckFailureRates ---
+
+func TestQueryCheckFailureRates(t *testing.T) {
+	d := testDB(t)
+	c := d.Conn()
+
+	// Pipeline events: 2 successes, 1 escalation for 'code' stage
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'stage_advanced', 'code', 1, '2024-06-01 10:00:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (2, 'stage_advanced', 'code', 1, '2024-06-02 10:00:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (3, 'escalated', 'code', 1, '2024-06-03 10:00:00')`)
+
+	// Check runs (fix_round=0): 2 first-pass pass, 1 first-pass fail
+	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, timestamp) VALUES (1, 'code', 1, 0, 'lint', 1, 0, 100, '2024-06-01 09:55:00')`)
+	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, timestamp) VALUES (2, 'code', 1, 0, 'lint', 1, 0, 100, '2024-06-02 09:55:00')`)
+	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, timestamp) VALUES (3, 'code', 1, 0, 'lint', 0, 0, 100, '2024-06-03 09:55:00')`)
+
+	results, err := QueryCheckFailureRates(d, "")
+	if err != nil {
+		t.Fatalf("QueryCheckFailureRates: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Stage != "code" {
+		t.Errorf("stage = %q, want code", results[0].Stage)
+	}
+	if results[0].Total != 3 {
+		t.Errorf("total = %d, want 3", results[0].Total)
+	}
+}
+
+// --- QueryCheckFailures ---
+
+func TestQueryCheckFailures(t *testing.T) {
+	d := testDB(t)
+	c := d.Conn()
+
+	// lint: 3 runs, 1 failed, 1 auto-fixed
+	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, summary, timestamp) VALUES (1, 'code', 1, 0, 'lint', 1, 0, 100, '', '2024-06-01 10:00:00')`)
+	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, summary, timestamp) VALUES (2, 'code', 1, 0, 'lint', 0, 1, 200, 'trailing whitespace', '2024-06-02 10:00:00')`)
+	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, summary, timestamp) VALUES (3, 'code', 1, 0, 'lint', 1, 0, 100, '', '2024-06-03 10:00:00')`)
+
+	// test: 2 runs, 2 failed
+	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, summary, timestamp) VALUES (1, 'code', 1, 0, 'test', 0, 0, 5000, 'nil pointer', '2024-06-01 10:01:00')`)
+	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, summary, timestamp) VALUES (2, 'code', 1, 0, 'test', 0, 0, 4800, 'nil pointer', '2024-06-02 10:01:00')`)
+
+	results, err := QueryCheckFailures(d, "")
+	if err != nil {
+		t.Fatalf("QueryCheckFailures: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	// test should be first (more failures)
+	if results[0].Check != "test" {
+		t.Errorf("results[0].Check = %q, want test", results[0].Check)
+	}
+	if results[0].Total != 2 {
+		t.Errorf("test total = %d, want 2", results[0].Total)
+	}
+	if results[0].FailRate != 100.0 {
+		t.Errorf("test fail rate = %f, want 100.0", results[0].FailRate)
+	}
+	if results[0].CommonRules != "nil pointer" {
+		t.Errorf("test common rules = %q, want 'nil pointer'", results[0].CommonRules)
+	}
+
+	// lint should be second
+	if results[1].Check != "lint" {
+		t.Errorf("results[1].Check = %q, want lint", results[1].Check)
+	}
+	if results[1].Total != 3 {
+		t.Errorf("lint total = %d, want 3", results[1].Total)
+	}
+}
+
+func TestQueryCheckFailures_Empty(t *testing.T) {
+	d := testDB(t)
+
+	results, err := QueryCheckFailures(d, "")
+	if err != nil {
+		t.Fatalf("QueryCheckFailures: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
+// --- QueryFixRounds ---
+
+func TestQueryFixRounds(t *testing.T) {
+	d := testDB(t)
+	c := d.Conn()
+
+	// code stage: 3 completions with different fix rounds
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, detail, timestamp) VALUES (1, 'stage_advanced', 'code', 1, 'rounds=0', '2024-06-01 10:00:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, detail, timestamp) VALUES (2, 'stage_advanced', 'code', 1, 'rounds=2', '2024-06-02 10:00:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, detail, timestamp) VALUES (3, 'completed', 'code', 1, 'rounds=1', '2024-06-03 10:00:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, detail, timestamp) VALUES (4, 'fix_loop_exhausted', 'code', 1, 'rounds=5', '2024-06-04 10:00:00')`)
+
+	results, err := QueryFixRounds(d, "")
+	if err != nil {
+		t.Fatalf("QueryFixRounds: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 stage result, got %d", len(results))
+	}
+
+	r := results[0]
+	if r.Stage != "code" {
+		t.Errorf("stage = %q, want code", r.Stage)
+	}
+	if r.Total != 4 {
+		t.Errorf("total = %d, want 4", r.Total)
+	}
+	// 1 zero, 1 one, 1 two, 1 three+
+	if r.Zero != 25.0 {
+		t.Errorf("zero = %f, want 25.0", r.Zero)
+	}
+	if r.One != 25.0 {
+		t.Errorf("one = %f, want 25.0", r.One)
+	}
+	if r.Two != 25.0 {
+		t.Errorf("two = %f, want 25.0", r.Two)
+	}
+	if r.ThreePlus != 25.0 {
+		t.Errorf("three_plus = %f, want 25.0", r.ThreePlus)
+	}
+}
+
+func TestQueryFixRounds_NoDetail(t *testing.T) {
+	d := testDB(t)
+	c := d.Conn()
+
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'stage_advanced', 'code', 1, '2024-06-01 10:00:00')`)
+
+	results, err := QueryFixRounds(d, "")
+	if err != nil {
+		t.Fatalf("QueryFixRounds: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	// No detail means rounds=0
+	if results[0].Zero != 100.0 {
+		t.Errorf("zero = %f, want 100.0", results[0].Zero)
+	}
+}
+
+// --- QueryPipelineThroughput ---
+
+func TestQueryPipelineThroughput(t *testing.T) {
+	d := testDB(t)
+	c := d.Conn()
+
+	// Week 22: 2 created, 1 completed, 1 failed
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'created', 'plan', 1, '2024-06-03 10:00:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (2, 'created', 'plan', 1, '2024-06-03 11:00:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'completed', 'code', 1, '2024-06-04 10:00:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (2, 'failed', 'code', 1, '2024-06-04 11:00:00')`)
+
+	results, err := QueryPipelineThroughput(d, "")
+	if err != nil {
+		t.Fatalf("QueryPipelineThroughput: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result")
+	}
+
+	r := results[0]
+	if r.Created != 2 {
+		t.Errorf("created = %d, want 2", r.Created)
+	}
+	if r.Completed != 1 {
+		t.Errorf("completed = %d, want 1", r.Completed)
+	}
+	if r.Failed != 1 {
+		t.Errorf("failed = %d, want 1", r.Failed)
+	}
+}
+
+func TestQueryPipelineThroughput_Empty(t *testing.T) {
+	d := testDB(t)
+
+	results, err := QueryPipelineThroughput(d, "")
+	if err != nil {
+		t.Fatalf("QueryPipelineThroughput: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
+// --- QueryIssueDetail ---
+
+func TestQueryIssueDetail(t *testing.T) {
+	d := testDB(t)
+	c := d.Conn()
+
+	// Pipeline events
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, detail, timestamp) VALUES (42, 'created', 'plan', 1, '', '2024-06-01 10:00:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, detail, timestamp) VALUES (42, 'stage_advanced', 'plan', 1, 'done', '2024-06-01 10:10:00')`)
+
+	// Check runs
+	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, summary, timestamp) VALUES (42, 'plan', 1, 0, 'lint', 1, 0, 200, 'ok', '2024-06-01 10:08:00')`)
+
+	// Session events
+	exec(t, c, `INSERT INTO session_events (session_id, issue, stage, event, timestamp) VALUES ('s1', 42, 'plan', 'started', '2024-06-01 10:00:01')`)
+	exec(t, c, `INSERT INTO session_events (session_id, issue, stage, event, timestamp) VALUES ('s1', 42, 'plan', 'exited', '2024-06-01 10:09:00')`)
+
+	// Other issue (should not appear)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (99, 'created', 'plan', 1, '2024-06-01 10:00:00')`)
+
+	results, err := QueryIssueDetail(d, 42)
+	if err != nil {
+		t.Fatalf("QueryIssueDetail: %v", err)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 events, got %d", len(results))
+	}
+
+	// Verify chronological order
+	for i := 1; i < len(results); i++ {
+		if results[i].Timestamp < results[i-1].Timestamp {
+			t.Errorf("events not in order: [%d]=%s > [%d]=%s", i-1, results[i-1].Timestamp, i, results[i].Timestamp)
+		}
+	}
+
+	// Verify event types present
+	types := map[string]int{}
+	for _, e := range results {
+		types[e.Type]++
+	}
+	if types["pipeline"] != 2 {
+		t.Errorf("pipeline events = %d, want 2", types["pipeline"])
+	}
+	if types["check"] != 1 {
+		t.Errorf("check events = %d, want 1", types["check"])
+	}
+	if types["session"] != 2 {
+		t.Errorf("session events = %d, want 2", types["session"])
+	}
+}
+
+func TestQueryIssueDetail_Empty(t *testing.T) {
+	d := testDB(t)
+
+	results, err := QueryIssueDetail(d, 999)
+	if err != nil {
+		t.Fatalf("QueryIssueDetail: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
+// --- Helper tests ---
+
+func TestAvg(t *testing.T) {
+	if v := avg([]float64{10, 20, 30}); v != 20.0 {
+		t.Errorf("avg([10,20,30]) = %f, want 20.0", v)
+	}
+	if v := avg(nil); v != 0.0 {
+		t.Errorf("avg(nil) = %f, want 0.0", v)
+	}
+}
+
+func TestPercentile(t *testing.T) {
+	values := []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	p50 := percentile(values, 50)
+	if p50 < 5.0 || p50 > 6.0 {
+		t.Errorf("p50 = %f, expected ~5.5", p50)
+	}
+	p95 := percentile(values, 95)
+	if p95 < 9.0 || p95 > 10.0 {
+		t.Errorf("p95 = %f, expected ~9.6", p95)
+	}
+	if v := percentile(nil, 50); v != 0.0 {
+		t.Errorf("percentile(nil, 50) = %f, want 0.0", v)
+	}
+}
+
+func TestPct(t *testing.T) {
+	if v := pct(1, 4); v != 25.0 {
+		t.Errorf("pct(1,4) = %f, want 25.0", v)
+	}
+	if v := pct(0, 0); v != 0.0 {
+		t.Errorf("pct(0,0) = %f, want 0.0", v)
+	}
+}
