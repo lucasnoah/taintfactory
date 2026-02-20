@@ -84,6 +84,39 @@ func (d *DB) GetSessionState(sessionID string) (*SessionEvent, error) {
 	return &e, nil
 }
 
+// GetSessionStartedAt returns the timestamp of the first "started" event for a session.
+func (d *DB) GetSessionStartedAt(sessionID string) (string, error) {
+	var timestamp string
+	err := d.conn.QueryRow(
+		`SELECT timestamp FROM session_events
+		 WHERE session_id = ? AND event = 'started'
+		 ORDER BY id ASC LIMIT 1`,
+		sessionID,
+	).Scan(&timestamp)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("no started event for session %q", sessionID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("get session started_at: %w", err)
+	}
+	return timestamp, nil
+}
+
+// HasRecentSteer returns true if a steer event was logged for the session within the given duration.
+func (d *DB) HasRecentSteer(sessionID string, within string) (bool, error) {
+	var count int
+	err := d.conn.QueryRow(
+		`SELECT COUNT(*) FROM session_events
+		 WHERE session_id = ? AND event = 'steer'
+		 AND timestamp >= datetime('now', ?)`,
+		sessionID, within,
+	).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("check recent steer: %w", err)
+	}
+	return count > 0, nil
+}
+
 // GetAllActiveSessions returns sessions whose most recent event is 'started' or 'active'.
 func (d *DB) GetAllActiveSessions() ([]SessionEvent, error) {
 	rows, err := d.conn.Query(`

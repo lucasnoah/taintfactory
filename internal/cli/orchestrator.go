@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"text/tabwriter"
 
@@ -76,12 +75,7 @@ var orchestratorStatusCmd = &cobra.Command{
 
 		format, _ := cmd.Flags().GetString("format")
 		if format == "json" {
-			data, err := json.MarshalIndent(infos, "", "  ")
-			if err != nil {
-				return fmt.Errorf("marshal json: %w", err)
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), string(data))
-			return nil
+			return writeJSON(cmd, infos)
 		}
 
 		if len(infos) == 0 {

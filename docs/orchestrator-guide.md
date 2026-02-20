@@ -12,9 +12,9 @@ The orchestrator is a stateless agent that wakes up on a schedule, inspects all 
 │  (every 5m)   │       │   Agent      │       │   CLI    │
 └──────────────┘       └─────────────┘       └──────────┘
                               │                     │
-                              │  factory status     │
-                              │  factory advance    │
-                              │  factory check-in   │
+                              │  factory orchestrator status    │
+                              │  factory pipeline advance       │
+                              │  factory orchestrator check-in  │
                               ▼                     ▼
                         ┌──────────┐         ┌──────────┐
                         │  SQLite  │         │  tmux    │
@@ -70,18 +70,23 @@ For a Claude Code orchestrator agent, configure the check-in as a tool call on a
 The `factory orchestrator check-in` command implements this decision tree for each active pipeline:
 
 ```
-For each pipeline where status NOT IN (completed, failed):
+For each pipeline where status NOT IN (completed, failed, in_progress):
 
   IF status == "blocked":
     → SKIP (human intervention needed)
 
   IF current_session exists:
+    IF human detection fails (DB error):
+      → SKIP (conservative: assume human present)
+
     IF human intervention detected:
       → SKIP (human is driving)
 
-    IF session state == "started" or "active":
-      IF elapsed < timeout:
+    IF session state == "started" or "active" or "steer" or "factory_send":
+      IF elapsed since session start < timeout:
         → SKIP (let it work)
+      ELSE IF steer already sent in last 10 minutes:
+        → SKIP (avoid repeated steers)
       ELSE:
         → STEER "wrap up" (session exceeded timeout)
 
@@ -91,8 +96,20 @@ For each pipeline where status NOT IN (completed, failed):
     IF session state == "exited":
       → ADVANCE pipeline
 
+    IF session state == "human_input":
+      → SKIP (human is typing)
+
+    IF session state unknown:
+      → SKIP (avoid interfering)
+
+  IF session lookup fails (orphaned reference):
+    → Clear session reference, then ADVANCE
+
   ELSE (no session):
     → ADVANCE pipeline
+
+  IF ADVANCE errors:
+    → ESCALATE (mark pipeline blocked to prevent infinite loops)
 ```
 
 The `ADVANCE` action calls `factory pipeline advance <issue>`, which internally:
