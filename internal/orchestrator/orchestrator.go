@@ -537,6 +537,156 @@ func (o *Orchestrator) StatusAll() ([]StatusInfo, error) {
 	return result, nil
 }
 
+// CheckInAction describes a single action taken during a check-in tick.
+type CheckInAction struct {
+	Issue   int    `json:"issue"`
+	Action  string `json:"action"`  // "skip", "steer", "advance", "retry", "escalate", "fail"
+	Stage   string `json:"stage"`
+	Message string `json:"message"`
+}
+
+// CheckInResult is the summary returned by a check-in tick.
+type CheckInResult struct {
+	Actions []CheckInAction `json:"actions"`
+}
+
+// CheckIn runs the orchestrator decision loop for all in-flight pipelines.
+// This is meant to be called on a cron schedule (e.g. every 5 minutes).
+func (o *Orchestrator) CheckIn() (*CheckInResult, error) {
+	pipelines, err := o.store.List("")
+	if err != nil {
+		return nil, fmt.Errorf("list pipelines: %w", err)
+	}
+
+	result := &CheckInResult{Actions: []CheckInAction{}}
+
+	for _, ps := range pipelines {
+		// Only process active pipelines
+		if ps.Status == "completed" || ps.Status == "failed" {
+			continue
+		}
+
+		action := o.checkInPipeline(&ps)
+		result.Actions = append(result.Actions, action)
+	}
+
+	return result, nil
+}
+
+// checkInPipeline evaluates a single pipeline and takes the appropriate action.
+func (o *Orchestrator) checkInPipeline(ps *pipeline.PipelineState) CheckInAction {
+	// Blocked pipelines need human intervention
+	if ps.Status == "blocked" {
+		return CheckInAction{
+			Issue:   ps.Issue,
+			Action:  "skip",
+			Stage:   ps.CurrentStage,
+			Message: "blocked — waiting for human intervention",
+		}
+	}
+
+	// Check for human intervention on active session
+	if ps.CurrentSession != "" {
+		human, _ := o.sessions.DetectHuman(ps.CurrentSession)
+		if human {
+			return CheckInAction{
+				Issue:   ps.Issue,
+				Action:  "skip",
+				Stage:   ps.CurrentStage,
+				Message: "human intervention detected, skipping",
+			}
+		}
+	}
+
+	// Check session state
+	if ps.CurrentSession != "" {
+		si, err := o.sessions.Status(ps.CurrentSession)
+		if err == nil {
+			switch si.State {
+			case "started", "active":
+				return o.handleActiveSession(ps, si)
+			case "idle":
+				return o.handleIdleSession(ps)
+			case "exited":
+				return o.handleExitedSession(ps)
+			}
+		}
+		// Session state unknown — try to advance
+	}
+
+	// No session or unknown state — try to advance
+	return o.handleAdvance(ps)
+}
+
+// handleActiveSession decides what to do with a running session.
+func (o *Orchestrator) handleActiveSession(ps *pipeline.PipelineState, si *session.StatusInfo) CheckInAction {
+	timeout := 30 * time.Minute
+	if o.cfg.Pipeline.Defaults.Timeout != "" {
+		if d, err := time.ParseDuration(o.cfg.Pipeline.Defaults.Timeout); err == nil {
+			timeout = d
+		}
+	}
+
+	elapsed, err := time.Parse("2006-01-02 15:04:05", si.Timestamp)
+	if err != nil {
+		return CheckInAction{
+			Issue:   ps.Issue,
+			Action:  "skip",
+			Stage:   ps.CurrentStage,
+			Message: "active session, cannot parse timestamp",
+		}
+	}
+
+	if time.Since(elapsed) > timeout {
+		_ = o.sessions.Steer(ps.CurrentSession, "Please wrap up your current work and finalize changes.")
+		return CheckInAction{
+			Issue:   ps.Issue,
+			Action:  "steer",
+			Stage:   ps.CurrentStage,
+			Message: fmt.Sprintf("session exceeded timeout, sent wrap-up steer"),
+		}
+	}
+
+	return CheckInAction{
+		Issue:   ps.Issue,
+		Action:  "skip",
+		Stage:   ps.CurrentStage,
+		Message: "session active, within timeout",
+	}
+}
+
+// handleIdleSession handles a session that finished and is waiting.
+func (o *Orchestrator) handleIdleSession(ps *pipeline.PipelineState) CheckInAction {
+	return o.handleAdvance(ps)
+}
+
+// handleExitedSession handles a session that has exited.
+func (o *Orchestrator) handleExitedSession(ps *pipeline.PipelineState) CheckInAction {
+	// Session exited — try to advance the pipeline.
+	// Advance will run checks and handle success/failure/retry internally.
+	return o.handleAdvance(ps)
+}
+
+// handleAdvance attempts to advance a pipeline.
+func (o *Orchestrator) handleAdvance(ps *pipeline.PipelineState) CheckInAction {
+	advResult, err := o.Advance(ps.Issue)
+	if err != nil {
+		return CheckInAction{
+			Issue:   ps.Issue,
+			Action:  "fail",
+			Stage:   ps.CurrentStage,
+			Message: fmt.Sprintf("advance error: %v", err),
+		}
+	}
+
+	return CheckInAction{
+		Issue:   ps.Issue,
+		Action:  advResult.Action,
+		Stage:   ps.CurrentStage,
+		Message: advResult.Message,
+	}
+}
+
 // --- Helpers ---
 
 // findStage finds a stage config by ID.

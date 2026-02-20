@@ -767,6 +767,276 @@ func TestNextStageID(t *testing.T) {
 	}
 }
 
+func TestCheckIn_NoPipelines(t *testing.T) {
+	env := setupTest(t, defaultConfig())
+
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Actions) != 0 {
+		t.Errorf("expected 0 actions, got %d", len(result.Actions))
+	}
+}
+
+func TestCheckIn_SkipsCompletedAndFailed(t *testing.T) {
+	env := setupTest(t, defaultConfig())
+
+	wtDir1 := t.TempDir()
+	wtDir2 := t.TempDir()
+	env.store.Create(42, "Completed", "b-a", wtDir1, "implement", nil)
+	env.store.Update(42, func(ps *pipeline.PipelineState) {
+		ps.Status = "completed"
+	})
+	env.store.Create(43, "Failed", "b-b", wtDir2, "implement", nil)
+	env.store.Update(43, func(ps *pipeline.PipelineState) {
+		ps.Status = "failed"
+	})
+
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Actions) != 0 {
+		t.Errorf("expected 0 actions for completed/failed pipelines, got %d", len(result.Actions))
+	}
+}
+
+func TestCheckIn_BlockedSkipped(t *testing.T) {
+	env := setupTest(t, defaultConfig())
+
+	wtDir := t.TempDir()
+	env.store.Create(42, "Blocked", "b-a", wtDir, "review", nil)
+	env.store.Update(42, func(ps *pipeline.PipelineState) {
+		ps.Status = "blocked"
+	})
+
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(result.Actions))
+	}
+	if result.Actions[0].Action != "skip" {
+		t.Errorf("expected 'skip' for blocked, got %q", result.Actions[0].Action)
+	}
+}
+
+func TestCheckIn_AdvancesPendingNoSession(t *testing.T) {
+	cfg := &config.PipelineConfig{
+		Pipeline: config.Pipeline{
+			Checks: map[string]config.Check{
+				"lint": {Command: "echo ok", Parser: "generic"},
+			},
+			Stages: []config.Stage{
+				{ID: "validate", Type: "checks_only", Checks: []string{"lint"}},
+				{ID: "final", Type: "checks_only", Checks: []string{"lint"}},
+			},
+		},
+	}
+	env := setupTest(t, cfg)
+
+	// checks pass
+	env.checkCmd.results = []cmdResult{{exitCode: 0}}
+
+	wtDir := t.TempDir()
+	env.store.Create(42, "Test", "b-a", wtDir, "validate", nil)
+	env.store.Update(42, func(ps *pipeline.PipelineState) {
+		ps.CurrentAttempt = 1
+	})
+
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(result.Actions))
+	}
+	if result.Actions[0].Action != "advanced" {
+		t.Errorf("expected 'advanced', got %q", result.Actions[0].Action)
+	}
+}
+
+func TestCheckIn_ActiveSessionWithinTimeout(t *testing.T) {
+	cfg := &config.PipelineConfig{
+		Pipeline: config.Pipeline{
+			Defaults: config.StageDefaults{Timeout: "30m"},
+			Stages:   []config.Stage{{ID: "implement", Type: "agent"}},
+		},
+	}
+	env := setupTest(t, cfg)
+
+	wtDir := t.TempDir()
+	env.store.Create(42, "Test", "b-a", wtDir, "implement", nil)
+	env.store.Update(42, func(ps *pipeline.PipelineState) {
+		ps.CurrentSession = "sess-42"
+		ps.CurrentAttempt = 1
+	})
+
+	// Create session in tmux mock + DB
+	env.tmux.sessions["sess-42"] = true
+	env.database.LogSessionEvent("sess-42", 42, "implement", "started", nil, "")
+
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(result.Actions))
+	}
+	if result.Actions[0].Action != "skip" {
+		t.Errorf("expected 'skip' for active within timeout, got %q", result.Actions[0].Action)
+	}
+}
+
+func TestCheckIn_IdleSessionAdvances(t *testing.T) {
+	cfg := &config.PipelineConfig{
+		Pipeline: config.Pipeline{
+			Checks: map[string]config.Check{
+				"lint": {Command: "echo ok", Parser: "generic"},
+			},
+			Stages: []config.Stage{
+				{ID: "validate", Type: "checks_only", Checks: []string{"lint"}},
+				{ID: "final", Type: "checks_only", Checks: []string{"lint"}},
+			},
+		},
+	}
+	env := setupTest(t, cfg)
+
+	// checks pass
+	env.checkCmd.results = []cmdResult{{exitCode: 0}}
+
+	wtDir := t.TempDir()
+	env.store.Create(42, "Test", "b-a", wtDir, "validate", nil)
+	env.store.Update(42, func(ps *pipeline.PipelineState) {
+		ps.CurrentSession = "sess-42"
+		ps.CurrentAttempt = 1
+	})
+
+	env.tmux.sessions["sess-42"] = true
+	env.database.LogSessionEvent("sess-42", 42, "validate", "idle", nil, "")
+
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(result.Actions))
+	}
+	if result.Actions[0].Action != "advanced" {
+		t.Errorf("expected 'advanced' for idle session, got %q", result.Actions[0].Action)
+	}
+}
+
+func TestCheckIn_ExitedSessionAdvances(t *testing.T) {
+	cfg := &config.PipelineConfig{
+		Pipeline: config.Pipeline{
+			Checks: map[string]config.Check{
+				"lint": {Command: "echo ok", Parser: "generic"},
+			},
+			Stages: []config.Stage{
+				{ID: "validate", Type: "checks_only", Checks: []string{"lint"}},
+			},
+		},
+	}
+	env := setupTest(t, cfg)
+
+	env.checkCmd.results = []cmdResult{{exitCode: 0}}
+
+	wtDir := t.TempDir()
+	env.store.Create(42, "Test", "b-a", wtDir, "validate", nil)
+	env.store.Update(42, func(ps *pipeline.PipelineState) {
+		ps.CurrentSession = "sess-42"
+		ps.CurrentAttempt = 1
+	})
+
+	env.tmux.sessions["sess-42"] = true
+	env.database.LogSessionEvent("sess-42", 42, "validate", "exited", nil, "")
+
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(result.Actions))
+	}
+	if result.Actions[0].Action != "completed" {
+		t.Errorf("expected 'completed' for exited session, got %q", result.Actions[0].Action)
+	}
+}
+
+func TestCheckIn_MultiplePipelines(t *testing.T) {
+	cfg := &config.PipelineConfig{
+		Pipeline: config.Pipeline{
+			Checks: map[string]config.Check{
+				"lint": {Command: "echo ok", Parser: "generic"},
+			},
+			Stages: []config.Stage{
+				{ID: "validate", Type: "checks_only", Checks: []string{"lint"}},
+			},
+		},
+	}
+	env := setupTest(t, cfg)
+
+	// Two checks needed: one for each pipeline
+	env.checkCmd.results = []cmdResult{{exitCode: 0}, {exitCode: 0}}
+
+	wtDir1 := t.TempDir()
+	wtDir2 := t.TempDir()
+	env.store.Create(42, "Issue A", "b-a", wtDir1, "validate", nil)
+	env.store.Update(42, func(ps *pipeline.PipelineState) {
+		ps.CurrentAttempt = 1
+	})
+	env.store.Create(43, "Issue B", "b-b", wtDir2, "validate", nil)
+	env.store.Update(43, func(ps *pipeline.PipelineState) {
+		ps.CurrentAttempt = 1
+	})
+
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Actions) != 2 {
+		t.Fatalf("expected 2 actions, got %d", len(result.Actions))
+	}
+}
+
+func TestCheckIn_HumanInterventionSkipped(t *testing.T) {
+	cfg := &config.PipelineConfig{
+		Pipeline: config.Pipeline{
+			Stages: []config.Stage{{ID: "implement", Type: "agent"}},
+		},
+	}
+	env := setupTest(t, cfg)
+
+	wtDir := t.TempDir()
+	env.store.Create(42, "Test", "b-a", wtDir, "implement", nil)
+	env.store.Update(42, func(ps *pipeline.PipelineState) {
+		ps.CurrentSession = "sess-42"
+		ps.CurrentAttempt = 1
+	})
+
+	env.tmux.sessions["sess-42"] = true
+	// Log started, then active WITHOUT a factory_send → human intervention
+	env.database.LogSessionEvent("sess-42", 42, "implement", "started", nil, "")
+	env.database.LogSessionEvent("sess-42", 42, "implement", "active", nil, "")
+
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(result.Actions))
+	}
+	if result.Actions[0].Action != "skip" {
+		t.Errorf("expected 'skip' for human intervention, got %q", result.Actions[0].Action)
+	}
+	if !strings.Contains(result.Actions[0].Message, "human") {
+		t.Errorf("expected human-related message, got %q", result.Actions[0].Message)
+	}
+}
+
 func TestFormatCheckStateSummary(t *testing.T) {
 	summary := formatCheckStateSummary(map[string]string{
 		"lint": "pass",
