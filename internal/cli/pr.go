@@ -36,7 +36,8 @@ var prCreateCmd = &cobra.Command{
 		}
 
 		// Push branch first
-		gh := github.NewClient(&github.ExecRunner{})
+		runner := &github.ExecRunner{}
+		gh := github.NewClientWithGit(runner, runner)
 		if err := gh.PushBranch(ps.Worktree, ps.Branch); err != nil {
 			return fmt.Errorf("push branch: %w", err)
 		}
