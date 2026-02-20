@@ -33,6 +33,15 @@ func openAnalyticsDB() (*db.DB, error) {
 	return d, nil
 }
 
+func writeJSON(cmd *cobra.Command, v interface{}) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal json: %w", err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), string(data))
+	return nil
+}
+
 var analyticsStageDurationCmd = &cobra.Command{
 	Use:   "stage-duration",
 	Short: "Average and percentile durations per stage",
@@ -51,9 +60,7 @@ var analyticsStageDurationCmd = &cobra.Command{
 
 		format, _ := cmd.Flags().GetString("format")
 		if format == "json" {
-			data, _ := json.MarshalIndent(results, "", "  ")
-			fmt.Fprintln(cmd.OutOrStdout(), string(data))
-			return nil
+			return writeJSON(cmd, results)
 		}
 
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
@@ -83,9 +90,7 @@ var analyticsCheckFailureRateCmd = &cobra.Command{
 
 		format, _ := cmd.Flags().GetString("format")
 		if format == "json" {
-			data, _ := json.MarshalIndent(results, "", "  ")
-			fmt.Fprintln(cmd.OutOrStdout(), string(data))
-			return nil
+			return writeJSON(cmd, results)
 		}
 
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
@@ -115,9 +120,7 @@ var analyticsCheckFailuresCmd = &cobra.Command{
 
 		format, _ := cmd.Flags().GetString("format")
 		if format == "json" {
-			data, _ := json.MarshalIndent(results, "", "  ")
-			fmt.Fprintln(cmd.OutOrStdout(), string(data))
-			return nil
+			return writeJSON(cmd, results)
 		}
 
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
@@ -151,9 +154,7 @@ var analyticsFixRoundsCmd = &cobra.Command{
 
 		format, _ := cmd.Flags().GetString("format")
 		if format == "json" {
-			data, _ := json.MarshalIndent(results, "", "  ")
-			fmt.Fprintln(cmd.OutOrStdout(), string(data))
-			return nil
+			return writeJSON(cmd, results)
 		}
 
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
@@ -183,9 +184,7 @@ var analyticsPipelineThroughputCmd = &cobra.Command{
 
 		format, _ := cmd.Flags().GetString("format")
 		if format == "json" {
-			data, _ := json.MarshalIndent(results, "", "  ")
-			fmt.Fprintln(cmd.OutOrStdout(), string(data))
-			return nil
+			return writeJSON(cmd, results)
 		}
 
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
@@ -220,9 +219,7 @@ var analyticsIssueDetailCmd = &cobra.Command{
 
 		format, _ := cmd.Flags().GetString("format")
 		if format == "json" {
-			data, _ := json.MarshalIndent(results, "", "  ")
-			fmt.Fprintln(cmd.OutOrStdout(), string(data))
-			return nil
+			return writeJSON(cmd, results)
 		}
 
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
@@ -241,17 +238,20 @@ var analyticsIssueDetailCmd = &cobra.Command{
 }
 
 func init() {
-	cmds := []*cobra.Command{
+	sinceCommands := []*cobra.Command{
 		analyticsStageDurationCmd,
 		analyticsCheckFailureRateCmd,
 		analyticsCheckFailuresCmd,
 		analyticsFixRoundsCmd,
 		analyticsPipelineThroughputCmd,
-		analyticsIssueDetailCmd,
 	}
-	for _, cmd := range cmds {
+	for _, cmd := range sinceCommands {
 		cmd.Flags().String("format", "text", "Output format: text or json")
 		cmd.Flags().String("since", "", "Filter events since date (YYYY-MM-DD)")
 		analyticsCmd.AddCommand(cmd)
 	}
+
+	// issue-detail only gets --format (--since doesn't apply)
+	analyticsIssueDetailCmd.Flags().String("format", "text", "Output format: text or json")
+	analyticsCmd.AddCommand(analyticsIssueDetailCmd)
 }

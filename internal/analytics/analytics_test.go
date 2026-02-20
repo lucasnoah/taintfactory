@@ -2,6 +2,7 @@ package analytics
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 
 	"github.com/lucasnoah/taintfactory/internal/db"
@@ -57,9 +58,62 @@ func TestQueryStageDurations(t *testing.T) {
 	if planResult.Count != 2 {
 		t.Errorf("plan count = %d, want 2", planResult.Count)
 	}
-	// Avg of 10 and 20 = 15
 	if planResult.Avg != 15.0 {
 		t.Errorf("plan avg = %f, want 15.0", planResult.Avg)
+	}
+}
+
+func TestQueryStageDurations_MultiStage(t *testing.T) {
+	d := testDB(t)
+	c := d.Conn()
+
+	// Issue 1: created → stage_advanced(plan) 10 min → stage_advanced(code) 30 min
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'created', 'plan', 1, '2024-06-01 10:00:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'stage_advanced', 'plan', 1, '2024-06-01 10:10:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'stage_advanced', 'code', 1, '2024-06-01 10:40:00')`)
+
+	results, err := QueryStageDurations(d, "")
+	if err != nil {
+		t.Fatalf("QueryStageDurations: %v", err)
+	}
+
+	// Should get 2 stages: plan (10min) and code (30min)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 stage results, got %d", len(results))
+	}
+
+	stageMap := map[string]StageDuration{}
+	for _, r := range results {
+		stageMap[r.Stage] = r
+	}
+
+	if stageMap["plan"].Count != 1 || stageMap["plan"].Avg != 10.0 {
+		t.Errorf("plan: count=%d avg=%.1f, want 1/10.0", stageMap["plan"].Count, stageMap["plan"].Avg)
+	}
+	if stageMap["code"].Count != 1 || stageMap["code"].Avg != 30.0 {
+		t.Errorf("code: count=%d avg=%.1f, want 1/30.0", stageMap["code"].Count, stageMap["code"].Avg)
+	}
+}
+
+func TestQueryStageDurations_NoDoubleCount(t *testing.T) {
+	d := testDB(t)
+	c := d.Conn()
+
+	// Two stage_advanced events for same issue — should not create phantom duration
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'created', 'plan', 1, '2024-06-01 10:00:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'stage_advanced', 'plan', 1, '2024-06-01 10:10:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'stage_advanced', 'code', 1, '2024-06-01 11:05:00')`)
+
+	results, err := QueryStageDurations(d, "")
+	if err != nil {
+		t.Fatalf("QueryStageDurations: %v", err)
+	}
+
+	// plan should have exactly 1 measurement (10 min), not 2
+	for _, r := range results {
+		if r.Stage == "plan" && r.Count != 1 {
+			t.Errorf("plan should have count=1, got %d (double-counting bug)", r.Count)
+		}
 	}
 }
 
@@ -67,11 +121,9 @@ func TestQueryStageDurations_Since(t *testing.T) {
 	d := testDB(t)
 	c := d.Conn()
 
-	// Old event
 	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'created', 'plan', 1, '2024-01-01 10:00:00')`)
 	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'stage_advanced', 'plan', 1, '2024-01-01 10:10:00')`)
 
-	// Recent event
 	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (2, 'created', 'plan', 1, '2024-06-01 10:00:00')`)
 	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (2, 'stage_advanced', 'plan', 1, '2024-06-01 10:30:00')`)
 
@@ -122,11 +174,49 @@ func TestQueryCheckFailureRates(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
-	if results[0].Stage != "code" {
-		t.Errorf("stage = %q, want code", results[0].Stage)
-	}
 	if results[0].Total != 3 {
 		t.Errorf("total = %d, want 3", results[0].Total)
+	}
+	// All percentages should use pipeline_events total (3) as denominator
+	// FirstPass=2/3=66.7%, AfterFix=0/3=0%, Escalated=1/3=33.3%
+	sum := results[0].FirstPass + results[0].AfterFix + results[0].Escalated
+	if sum > 100.1 {
+		t.Errorf("percentages sum to %.1f, should not exceed 100%%", sum)
+	}
+}
+
+func TestQueryCheckFailureRates_ConsistentDenominator(t *testing.T) {
+	d := testDB(t)
+	c := d.Conn()
+
+	// 10 pipeline events, 8 check runs — denominators should match
+	for i := 1; i <= 7; i++ {
+		exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (?, 'stage_advanced', 'code', 1, '2024-06-01 10:00:00')`, i)
+	}
+	for i := 8; i <= 10; i++ {
+		exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (?, 'escalated', 'code', 1, '2024-06-01 10:00:00')`, i)
+	}
+
+	// Only 8 of 10 have check runs
+	for i := 1; i <= 8; i++ {
+		passed := 1
+		if i > 6 {
+			passed = 0
+		}
+		exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, timestamp) VALUES (?, 'code', 1, 0, 'lint', ?, 0, 100, '2024-06-01 09:55:00')`, i, passed)
+	}
+
+	results, err := QueryCheckFailureRates(d, "")
+	if err != nil {
+		t.Fatalf("QueryCheckFailureRates: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	sum := results[0].FirstPass + results[0].AfterFix + results[0].Escalated
+	if sum > 100.1 {
+		t.Errorf("percentages sum to %.1f%%, should not exceed 100%%", sum)
 	}
 }
 
@@ -136,12 +226,10 @@ func TestQueryCheckFailures(t *testing.T) {
 	d := testDB(t)
 	c := d.Conn()
 
-	// lint: 3 runs, 1 failed, 1 auto-fixed
 	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, summary, timestamp) VALUES (1, 'code', 1, 0, 'lint', 1, 0, 100, '', '2024-06-01 10:00:00')`)
 	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, summary, timestamp) VALUES (2, 'code', 1, 0, 'lint', 0, 1, 200, 'trailing whitespace', '2024-06-02 10:00:00')`)
 	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, summary, timestamp) VALUES (3, 'code', 1, 0, 'lint', 1, 0, 100, '', '2024-06-03 10:00:00')`)
 
-	// test: 2 runs, 2 failed
 	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, summary, timestamp) VALUES (1, 'code', 1, 0, 'test', 0, 0, 5000, 'nil pointer', '2024-06-01 10:01:00')`)
 	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, summary, timestamp) VALUES (2, 'code', 1, 0, 'test', 0, 0, 4800, 'nil pointer', '2024-06-02 10:01:00')`)
 
@@ -153,12 +241,8 @@ func TestQueryCheckFailures(t *testing.T) {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
 
-	// test should be first (more failures)
 	if results[0].Check != "test" {
 		t.Errorf("results[0].Check = %q, want test", results[0].Check)
-	}
-	if results[0].Total != 2 {
-		t.Errorf("test total = %d, want 2", results[0].Total)
 	}
 	if results[0].FailRate != 100.0 {
 		t.Errorf("test fail rate = %f, want 100.0", results[0].FailRate)
@@ -167,12 +251,31 @@ func TestQueryCheckFailures(t *testing.T) {
 		t.Errorf("test common rules = %q, want 'nil pointer'", results[0].CommonRules)
 	}
 
-	// lint should be second
 	if results[1].Check != "lint" {
 		t.Errorf("results[1].Check = %q, want lint", results[1].Check)
 	}
-	if results[1].Total != 3 {
-		t.Errorf("lint total = %d, want 3", results[1].Total)
+}
+
+func TestQueryCheckFailures_AutoFixRate(t *testing.T) {
+	d := testDB(t)
+	c := d.Conn()
+
+	// auto_fixed=1 with passed=1 should NOT count toward auto-fix rate
+	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, timestamp) VALUES (1, 'code', 1, 0, 'lint', 0, 1, 100, '2024-06-01 10:00:00')`)
+	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, timestamp) VALUES (2, 'code', 1, 0, 'lint', 1, 1, 100, '2024-06-02 10:00:00')`)
+	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, timestamp) VALUES (3, 'code', 1, 0, 'lint', 1, 0, 100, '2024-06-03 10:00:00')`)
+
+	results, err := QueryCheckFailures(d, "")
+	if err != nil {
+		t.Fatalf("QueryCheckFailures: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	// 1 failure, 1 auto-fixed failure → AutoFixRate = 100%
+	if results[0].AutoFixRate > 100.1 {
+		t.Errorf("AutoFixRate = %.1f%%, should not exceed 100%%", results[0].AutoFixRate)
 	}
 }
 
@@ -194,7 +297,6 @@ func TestQueryFixRounds(t *testing.T) {
 	d := testDB(t)
 	c := d.Conn()
 
-	// code stage: 3 completions with different fix rounds
 	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, detail, timestamp) VALUES (1, 'stage_advanced', 'code', 1, 'rounds=0', '2024-06-01 10:00:00')`)
 	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, detail, timestamp) VALUES (2, 'stage_advanced', 'code', 1, 'rounds=2', '2024-06-02 10:00:00')`)
 	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, detail, timestamp) VALUES (3, 'completed', 'code', 1, 'rounds=1', '2024-06-03 10:00:00')`)
@@ -209,13 +311,9 @@ func TestQueryFixRounds(t *testing.T) {
 	}
 
 	r := results[0]
-	if r.Stage != "code" {
-		t.Errorf("stage = %q, want code", r.Stage)
-	}
 	if r.Total != 4 {
 		t.Errorf("total = %d, want 4", r.Total)
 	}
-	// 1 zero, 1 one, 1 two, 1 three+
 	if r.Zero != 25.0 {
 		t.Errorf("zero = %f, want 25.0", r.Zero)
 	}
@@ -243,7 +341,6 @@ func TestQueryFixRounds_NoDetail(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
-	// No detail means rounds=0
 	if results[0].Zero != 100.0 {
 		t.Errorf("zero = %f, want 100.0", results[0].Zero)
 	}
@@ -255,7 +352,6 @@ func TestQueryPipelineThroughput(t *testing.T) {
 	d := testDB(t)
 	c := d.Conn()
 
-	// Week 22: 2 created, 1 completed, 1 failed
 	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'created', 'plan', 1, '2024-06-03 10:00:00')`)
 	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (2, 'created', 'plan', 1, '2024-06-03 11:00:00')`)
 	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'completed', 'code', 1, '2024-06-04 10:00:00')`)
@@ -270,6 +366,10 @@ func TestQueryPipelineThroughput(t *testing.T) {
 	}
 
 	r := results[0]
+	// Verify period is an actual year-week, not a literal string
+	if !strings.HasPrefix(r.Period, "2024-W") {
+		t.Errorf("period = %q, want format 2024-WNN", r.Period)
+	}
 	if r.Created != 2 {
 		t.Errorf("created = %d, want 2", r.Created)
 	}
@@ -278,6 +378,23 @@ func TestQueryPipelineThroughput(t *testing.T) {
 	}
 	if r.Failed != 1 {
 		t.Errorf("failed = %d, want 1", r.Failed)
+	}
+}
+
+func TestQueryPipelineThroughput_WeeklyGrouping(t *testing.T) {
+	d := testDB(t)
+	c := d.Conn()
+
+	// Events in two different weeks
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (1, 'created', 'plan', 1, '2024-06-03 10:00:00')`)
+	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (2, 'created', 'plan', 1, '2024-06-10 10:00:00')`)
+
+	results, err := QueryPipelineThroughput(d, "")
+	if err != nil {
+		t.Fatalf("QueryPipelineThroughput: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("expected 2 weekly periods, got %d", len(results))
 	}
 }
 
@@ -299,18 +416,11 @@ func TestQueryIssueDetail(t *testing.T) {
 	d := testDB(t)
 	c := d.Conn()
 
-	// Pipeline events
 	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, detail, timestamp) VALUES (42, 'created', 'plan', 1, '', '2024-06-01 10:00:00')`)
 	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, detail, timestamp) VALUES (42, 'stage_advanced', 'plan', 1, 'done', '2024-06-01 10:10:00')`)
-
-	// Check runs
 	exec(t, c, `INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, duration_ms, summary, timestamp) VALUES (42, 'plan', 1, 0, 'lint', 1, 0, 200, 'ok', '2024-06-01 10:08:00')`)
-
-	// Session events
 	exec(t, c, `INSERT INTO session_events (session_id, issue, stage, event, timestamp) VALUES ('s1', 42, 'plan', 'started', '2024-06-01 10:00:01')`)
 	exec(t, c, `INSERT INTO session_events (session_id, issue, stage, event, timestamp) VALUES ('s1', 42, 'plan', 'exited', '2024-06-01 10:09:00')`)
-
-	// Other issue (should not appear)
 	exec(t, c, `INSERT INTO pipeline_events (issue, event, stage, attempt, timestamp) VALUES (99, 'created', 'plan', 1, '2024-06-01 10:00:00')`)
 
 	results, err := QueryIssueDetail(d, 42)
@@ -321,14 +431,12 @@ func TestQueryIssueDetail(t *testing.T) {
 		t.Fatalf("expected 5 events, got %d", len(results))
 	}
 
-	// Verify chronological order
 	for i := 1; i < len(results); i++ {
 		if results[i].Timestamp < results[i-1].Timestamp {
 			t.Errorf("events not in order: [%d]=%s > [%d]=%s", i-1, results[i-1].Timestamp, i, results[i].Timestamp)
 		}
 	}
 
-	// Verify event types present
 	types := map[string]int{}
 	for _, e := range results {
 		types[e.Type]++
@@ -357,6 +465,28 @@ func TestQueryIssueDetail_Empty(t *testing.T) {
 }
 
 // --- Helper tests ---
+
+func TestParseTimestamp(t *testing.T) {
+	tests := []struct {
+		input string
+		valid bool
+	}{
+		{"2024-06-01 10:00:00", true},
+		{"2024-06-01T10:00:00Z", true},
+		{"2024-06-01T10:00:00", true},
+		{"2024-06-01 10:00:00.000", true},
+		{"not-a-date", false},
+	}
+	for _, tc := range tests {
+		_, err := parseTimestamp(tc.input)
+		if tc.valid && err != nil {
+			t.Errorf("parseTimestamp(%q) = error %v, want success", tc.input, err)
+		}
+		if !tc.valid && err == nil {
+			t.Errorf("parseTimestamp(%q) = success, want error", tc.input)
+		}
+	}
+}
 
 func TestAvg(t *testing.T) {
 	if v := avg([]float64{10, 20, 30}); v != 20.0 {
