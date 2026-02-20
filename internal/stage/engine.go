@@ -2,6 +2,7 @@ package stage
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/lucasnoah/taintfactory/internal/checks"
@@ -176,6 +177,14 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 		freshAfter = 2
 	}
 
+	// Track which checks were failing before the fix loop for accurate AgentFixes counting
+	failingChecks := make(map[string]bool)
+	for _, c := range gate.Checks {
+		if !c.Passed {
+			failingChecks[c.Check] = true
+		}
+	}
+
 	for round := 1; round <= maxFixRounds; round++ {
 		result.FixRounds = round
 		_ = e.db.LogPipelineEvent(opts.Issue, "fix_round_start", opts.Stage, ps.CurrentAttempt, fmt.Sprintf("round=%d", round))
@@ -194,11 +203,13 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 		} else {
 			// Send fix prompt to existing session
 			if err := e.sessions.SendFromCheckFailures(sessionName, opts.Issue, opts.Stage); err != nil {
+				e.cleanupSession(sessionName)
 				return nil, fmt.Errorf("send fix prompt: %w", err)
 			}
 			// Wait for idle
 			waitResult, err := e.sessions.WaitIdle(sessionName, opts.Timeout, e.pollInterval)
 			if err != nil {
+				e.cleanupSession(sessionName)
 				return nil, fmt.Errorf("wait idle (fix): %w", err)
 			}
 			if waitResult.State == "exited" {
@@ -214,15 +225,17 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 			return nil, fmt.Errorf("re-check (round %d): %w", round, err)
 		}
 
-		// Update check state
+		// Update check state — only count AgentFixes for fail→pass transitions
 		for _, c := range gate.Checks {
 			if c.Passed {
 				result.FinalCheckState[c.Check] = "pass"
-				if !c.AutoFixed {
+				if failingChecks[c.Check] && !c.AutoFixed {
 					result.AgentFixes[c.Check]++
+					delete(failingChecks, c.Check)
 				}
 			} else {
 				result.FinalCheckState[c.Check] = "fail"
+				failingChecks[c.Check] = true
 			}
 		}
 
@@ -336,12 +349,14 @@ func (e *Engine) createAndRunSession(name string, ps *pipeline.PipelineState, op
 
 	// Send the rendered prompt
 	if err := e.sessions.Send(name, rendered); err != nil {
+		e.cleanupSession(name)
 		return fmt.Errorf("send prompt: %w", err)
 	}
 
 	// Wait for session to become idle
 	waitResult, err := e.sessions.WaitIdle(name, opts.Timeout, e.pollInterval)
 	if err != nil {
+		e.cleanupSession(name)
 		return fmt.Errorf("wait idle: %w", err)
 	}
 
@@ -388,11 +403,13 @@ func (e *Engine) runGate(ps *pipeline.PipelineState, opts RunOpts, checkNames []
 
 	// Log individual check results to DB (needed by SendFromCheckFailures)
 	for _, r := range results {
-		_ = e.db.LogCheckRun(
+		if dbErr := e.db.LogCheckRun(
 			opts.Issue, opts.Stage, ps.CurrentAttempt, fixRound,
 			r.CheckName, r.Passed, r.AutoFixed, r.ExitCode,
 			r.DurationMs, r.Summary, r.Findings,
-		)
+		); dbErr != nil {
+			return nil, nil, fmt.Errorf("log check run %q: %w", r.CheckName, dbErr)
+		}
 	}
 
 	return gate, results, err
@@ -435,18 +452,21 @@ func (e *Engine) findStageConfig(stageID string) (*config.Stage, error) {
 	return nil, fmt.Errorf("stage %q not found in config", stageID)
 }
 
-// formatGateFailures formats gate failures into a readable string.
+// formatGateFailures formats gate failures into a deterministic readable string.
 func formatGateFailures(gate *checks.GateResult) string {
-	var lines []string
-	for name, failure := range gate.RemainingFailures {
-		lines = append(lines, fmt.Sprintf("- %s: %s", name, failure.Summary))
-	}
-	if len(lines) == 0 {
+	if len(gate.RemainingFailures) == 0 {
 		return "checks failed"
 	}
+	// Sort keys for deterministic output
+	names := make([]string, 0, len(gate.RemainingFailures))
+	for name := range gate.RemainingFailures {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	result := ""
-	for _, l := range lines {
-		result += l + "\n"
+	for _, name := range names {
+		result += fmt.Sprintf("- %s: %s\n", name, gate.RemainingFailures[name].Summary)
 	}
 	return result
 }
