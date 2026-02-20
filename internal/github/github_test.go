@@ -29,6 +29,27 @@ func (m *mockCmd) Run(args ...string) (string, error) {
 	return r.output, r.err
 }
 
+type mockGitRunner struct {
+	calls   []gitCall
+	results []mockResult
+	idx     int
+}
+
+type gitCall struct {
+	Dir  string
+	Args []string
+}
+
+func (m *mockGitRunner) RunGit(dir string, args ...string) (string, error) {
+	m.calls = append(m.calls, gitCall{Dir: dir, Args: args})
+	if m.idx >= len(m.results) {
+		return "", nil
+	}
+	r := m.results[m.idx]
+	m.idx++
+	return r.output, r.err
+}
+
 func TestGetIssue(t *testing.T) {
 	issueJSON := `{
 		"number": 42,
@@ -64,6 +85,26 @@ func TestGetIssue(t *testing.T) {
 	// Verify acceptance criteria parsed
 	if !strings.Contains(issue.AcceptanceCriteria, "Login works") {
 		t.Errorf("expected AC to contain 'Login works', got %q", issue.AcceptanceCriteria)
+	}
+}
+
+func TestGetIssue_InvalidNumber(t *testing.T) {
+	mock := &mockCmd{}
+	client := NewClient(mock)
+
+	_, err := client.GetIssue(0)
+	if err == nil {
+		t.Fatal("expected error for issue 0")
+	}
+
+	_, err = client.GetIssue(-1)
+	if err == nil {
+		t.Fatal("expected error for negative issue")
+	}
+
+	// Should not have made any gh calls
+	if len(mock.calls) != 0 {
+		t.Errorf("expected 0 calls for invalid issue numbers, got %d", len(mock.calls))
 	}
 }
 
@@ -190,6 +231,87 @@ func TestMergePR_DefaultStrategy(t *testing.T) {
 	}
 }
 
+func TestMergePR_InvalidStrategy(t *testing.T) {
+	mock := &mockCmd{}
+	client := NewClient(mock)
+
+	err := client.MergePR("feature/issue-42", "admin")
+	if err == nil {
+		t.Fatal("expected error for invalid strategy")
+	}
+	if !strings.Contains(err.Error(), "invalid merge strategy") {
+		t.Errorf("expected 'invalid merge strategy' in error, got %q", err.Error())
+	}
+
+	// Should not have made any gh calls
+	if len(mock.calls) != 0 {
+		t.Errorf("expected 0 calls for invalid strategy, got %d", len(mock.calls))
+	}
+}
+
+func TestMergePR_ValidStrategies(t *testing.T) {
+	for _, strategy := range []string{"squash", "merge", "rebase"} {
+		mock := &mockCmd{
+			results: []mockResult{{output: ""}},
+		}
+		client := NewClient(mock)
+		if err := client.MergePR("feature/issue-42", strategy); err != nil {
+			t.Errorf("strategy %q should be valid, got error: %v", strategy, err)
+		}
+	}
+}
+
+func TestPushBranch(t *testing.T) {
+	gitMock := &mockGitRunner{
+		results: []mockResult{{output: ""}},
+	}
+
+	client := NewClientWithGit(&mockCmd{}, gitMock)
+	err := client.PushBranch("/tmp/worktree", "feature/issue-42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(gitMock.calls) != 1 {
+		t.Fatalf("expected 1 git call, got %d", len(gitMock.calls))
+	}
+	call := gitMock.calls[0]
+	if call.Dir != "/tmp/worktree" {
+		t.Errorf("expected dir /tmp/worktree, got %q", call.Dir)
+	}
+	expectedArgs := []string{"push", "-u", "origin", "feature/issue-42"}
+	if len(call.Args) != len(expectedArgs) {
+		t.Fatalf("expected args %v, got %v", expectedArgs, call.Args)
+	}
+	for i, arg := range expectedArgs {
+		if call.Args[i] != arg {
+			t.Errorf("arg[%d]: expected %q, got %q", i, arg, call.Args[i])
+		}
+	}
+}
+
+func TestPushBranch_RejectsDashPrefix(t *testing.T) {
+	client := NewClientWithGit(&mockCmd{}, &mockGitRunner{})
+	err := client.PushBranch("/tmp", "--delete")
+	if err == nil {
+		t.Fatal("expected error for branch starting with -")
+	}
+	if !strings.Contains(err.Error(), "must not start with -") {
+		t.Errorf("expected rejection message, got %q", err.Error())
+	}
+}
+
+func TestPushBranch_NoGitRunner(t *testing.T) {
+	client := NewClient(&mockCmd{}) // mockCmd doesn't implement GitRunner
+	err := client.PushBranch("/tmp", "feature/issue-42")
+	if err == nil {
+		t.Fatal("expected error when git runner not configured")
+	}
+	if !strings.Contains(err.Error(), "git runner not configured") {
+		t.Errorf("expected 'git runner not configured', got %q", err.Error())
+	}
+}
+
 func TestExtractAcceptanceCriteria_Header(t *testing.T) {
 	body := `## Overview
 Some intro.
@@ -226,10 +348,36 @@ func TestExtractAcceptanceCriteria_CheckboxFallback(t *testing.T) {
 	}
 }
 
+func TestExtractAcceptanceCriteria_IndentedCheckboxes(t *testing.T) {
+	body := `Tasks:
+  - [ ] Indented item
+  - [X] Uppercase X item`
+
+	ac := extractAcceptanceCriteria(body)
+	if !strings.Contains(ac, "Indented item") {
+		t.Errorf("expected indented checkbox in AC, got %q", ac)
+	}
+	if !strings.Contains(ac, "Uppercase X item") {
+		t.Errorf("expected uppercase X checkbox in AC, got %q", ac)
+	}
+}
+
 func TestExtractAcceptanceCriteria_NoAC(t *testing.T) {
 	body := "Just a plain description with no criteria."
 	ac := extractAcceptanceCriteria(body)
 	if ac != "" {
 		t.Errorf("expected empty AC, got %q", ac)
+	}
+}
+
+func TestValidateIssueNumber(t *testing.T) {
+	if err := ValidateIssueNumber(1); err != nil {
+		t.Errorf("expected no error for 1, got %v", err)
+	}
+	if err := ValidateIssueNumber(0); err == nil {
+		t.Error("expected error for 0")
+	}
+	if err := ValidateIssueNumber(-1); err == nil {
+		t.Error("expected error for -1")
 	}
 }

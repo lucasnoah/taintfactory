@@ -59,9 +59,7 @@ func TestCreate_HappyPath(t *testing.T) {
 	if call.Dir != "/repo" {
 		t.Errorf("expected dir /repo, got %q", call.Dir)
 	}
-	if !containsAll(call.Args, "worktree", "add", "-b", "feature/issue-42") {
-		t.Errorf("unexpected args: %v", call.Args)
-	}
+	assertArgs(t, call.Args, "worktree", "add", "/repo/worktrees/issue-42", "-b", "feature/issue-42")
 }
 
 func TestCreate_CustomBranch(t *testing.T) {
@@ -77,6 +75,22 @@ func TestCreate_CustomBranch(t *testing.T) {
 
 	if result.Branch != "custom/my-branch" {
 		t.Errorf("expected custom branch, got %q", result.Branch)
+	}
+}
+
+func TestCreate_CustomBranchSanitized(t *testing.T) {
+	git := &mockGit{
+		results: []mockResult{{Output: ""}},
+	}
+
+	mgr := NewManager(git, "/repo", "/repo/worktrees")
+	result, err := mgr.Create(CreateOpts{Issue: 42, Branch: "my branch!!"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Branch != "my-branch" {
+		t.Errorf("expected sanitized branch 'my-branch', got %q", result.Branch)
 	}
 }
 
@@ -123,6 +137,20 @@ func TestCreate_Error(t *testing.T) {
 	}
 }
 
+func TestCreate_InvalidIssueNumber(t *testing.T) {
+	mgr := NewManager(&mockGit{}, "/repo", "/repo/worktrees")
+
+	_, err := mgr.Create(CreateOpts{Issue: 0})
+	if err == nil {
+		t.Fatal("expected error for issue 0")
+	}
+
+	_, err = mgr.Create(CreateOpts{Issue: -1})
+	if err == nil {
+		t.Fatal("expected error for negative issue")
+	}
+}
+
 func TestRemove_HappyPath(t *testing.T) {
 	git := &mockGit{
 		results: []mockResult{
@@ -140,6 +168,14 @@ func TestRemove_HappyPath(t *testing.T) {
 
 	if len(git.calls) != 3 {
 		t.Fatalf("expected 3 git calls, got %d", len(git.calls))
+	}
+
+	// Verify worktree remove does NOT include --force
+	removeCall := git.calls[1]
+	for _, arg := range removeCall.Args {
+		if arg == "--force" {
+			t.Error("worktree remove should not use --force by default")
+		}
 	}
 }
 
@@ -162,11 +198,30 @@ func TestRemove_NoBranchDelete(t *testing.T) {
 	}
 }
 
+func TestRemove_BranchDeleteError(t *testing.T) {
+	git := &mockGit{
+		results: []mockResult{
+			{Output: "feature/issue-42"},                            // rev-parse HEAD
+			{Output: ""},                                            // worktree remove
+			{Err: fmt.Errorf("branch has unmerged changes")},       // branch -d fails
+		},
+	}
+
+	mgr := NewManager(git, "/repo", "/repo/worktrees")
+	err := mgr.Remove(42, true)
+	if err == nil {
+		t.Fatal("expected error when branch delete fails")
+	}
+	if !strings.Contains(err.Error(), "delete branch") {
+		t.Errorf("expected 'delete branch' in error, got %q", err.Error())
+	}
+}
+
 func TestRemove_ProtectsMain(t *testing.T) {
 	git := &mockGit{
 		results: []mockResult{
-			{Output: "main"},  // rev-parse HEAD returns main
-			{Output: ""},      // worktree remove
+			{Output: "main"}, // rev-parse HEAD returns main
+			{Output: ""},     // worktree remove
 		},
 	}
 
@@ -181,6 +236,20 @@ func TestRemove_ProtectsMain(t *testing.T) {
 		if len(call.Args) >= 2 && call.Args[0] == "branch" && call.Args[1] == "-d" {
 			t.Error("should not delete main branch")
 		}
+	}
+}
+
+func TestRemove_InvalidIssueNumber(t *testing.T) {
+	mgr := NewManager(&mockGit{}, "/repo", "/repo/worktrees")
+
+	err := mgr.Remove(0, false)
+	if err == nil {
+		t.Fatal("expected error for issue 0")
+	}
+
+	err = mgr.Remove(-1, false)
+	if err == nil {
+		t.Fatal("expected error for negative issue")
 	}
 }
 
@@ -210,12 +279,16 @@ func TestSanitizeBranch(t *testing.T) {
 	}
 }
 
-func containsAll(args []string, targets ...string) bool {
-	joined := strings.Join(args, " ")
-	for _, t := range targets {
-		if !strings.Contains(joined, t) {
-			return false
+// assertArgs verifies exact argument match (no substring false positives).
+func assertArgs(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Errorf("args length mismatch: got %v, want %v", got, want)
+		return
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("arg[%d] mismatch: got %q, want %q", i, got[i], want[i])
 		}
 	}
-	return true
 }

@@ -55,9 +55,15 @@ type CreateResult struct {
 
 // Create creates a new git worktree for an issue.
 func (m *Manager) Create(opts CreateOpts) (*CreateResult, error) {
+	if opts.Issue <= 0 {
+		return nil, fmt.Errorf("invalid issue number %d: must be positive", opts.Issue)
+	}
+
 	branch := opts.Branch
 	if branch == "" {
 		branch = sanitizeBranch(fmt.Sprintf("feature/issue-%d", opts.Issue))
+	} else {
+		branch = sanitizeBranch(branch)
 	}
 
 	worktreePath := filepath.Join(m.baseDir, fmt.Sprintf("issue-%d", opts.Issue))
@@ -84,6 +90,10 @@ func (m *Manager) Create(opts CreateOpts) (*CreateResult, error) {
 
 // Remove removes a git worktree and optionally deletes the branch.
 func (m *Manager) Remove(issue int, deleteBranch bool) error {
+	if issue <= 0 {
+		return fmt.Errorf("invalid issue number %d: must be positive", issue)
+	}
+
 	worktreePath := filepath.Join(m.baseDir, fmt.Sprintf("issue-%d", issue))
 
 	// Get the branch name before removing
@@ -95,15 +105,17 @@ func (m *Manager) Remove(issue int, deleteBranch bool) error {
 		}
 	}
 
-	// Remove the worktree
-	_, err := m.git.Run(m.repoDir, "worktree", "remove", worktreePath, "--force")
+	// Remove the worktree (without --force to protect uncommitted work)
+	_, err := m.git.Run(m.repoDir, "worktree", "remove", worktreePath)
 	if err != nil {
 		return fmt.Errorf("remove worktree: %w", err)
 	}
 
 	// Delete the branch if requested
 	if deleteBranch && branch != "" && branch != "main" && branch != "master" {
-		_, _ = m.git.Run(m.repoDir, "branch", "-d", branch)
+		if _, err := m.git.Run(m.repoDir, "branch", "-d", branch); err != nil {
+			return fmt.Errorf("delete branch %q: %w", branch, err)
+		}
 	}
 
 	return nil
