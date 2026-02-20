@@ -28,13 +28,19 @@ var qaDetectBrowserCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("invalid issue number: %s", args[0])
 		}
+		if issue <= 0 {
+			return fmt.Errorf("issue number must be positive, got %d", issue)
+		}
 
 		ghClient := github.NewClient(&github.ExecRunner{})
 
 		// Load config for stage browser_check flag
-		cfg, _ := config.LoadDefault()
+		cfg, cfgErr := config.LoadDefault()
 		forceFlag := false
 		stageID, _ := cmd.Flags().GetString("stage")
+		if cfgErr != nil && stageID != "" {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not load config: %v\n", cfgErr)
+		}
 		if cfg != nil && stageID != "" {
 			for _, s := range cfg.Pipeline.Stages {
 				if s.ID == stageID && s.BrowserCheck {
@@ -57,6 +63,7 @@ var qaDetectBrowserCmd = &cobra.Command{
 			if psErr == nil && ps.Worktree != "" {
 				git := &appctx.ExecGit{}
 				if output, err := git.FilesChanged(ps.Worktree); err == nil && output != "" {
+					output = strings.TrimRight(output, "\n")
 					filesChanged = strings.Split(output, "\n")
 				}
 			}
@@ -70,7 +77,10 @@ var qaDetectBrowserCmd = &cobra.Command{
 
 		format, _ := cmd.Flags().GetString("format")
 		if format == "json" {
-			data, _ := json.MarshalIndent(result, "", "  ")
+			data, err := json.MarshalIndent(result, "", "  ")
+			if err != nil {
+				return fmt.Errorf("marshal result: %w", err)
+			}
 			fmt.Fprintln(cmd.OutOrStdout(), string(data))
 			return nil
 		}
