@@ -239,6 +239,7 @@ func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, runRes
 
 	// Move to next stage
 	if err := o.store.Update(issue, func(ps *pipeline.PipelineState) {
+		ps.Status = "pending"
 		ps.CurrentStage = nextStage
 		ps.CurrentAttempt = 1
 		ps.CurrentFixRound = 0
@@ -311,6 +312,7 @@ func (o *Orchestrator) handleStageFailure(issue int, currentStage string, curren
 		// Increment attempt
 		newAttempt := currentAttempt + 1
 		if err := o.store.Update(issue, func(ps *pipeline.PipelineState) {
+			ps.Status = "pending"
 			ps.CurrentAttempt = newAttempt
 			ps.CurrentFixRound = 0
 			ps.CurrentSession = ""
@@ -331,6 +333,7 @@ func (o *Orchestrator) handleStageFailure(issue int, currentStage string, curren
 
 	// Route to different stage
 	if err := o.store.Update(issue, func(ps *pipeline.PipelineState) {
+		ps.Status = "pending"
 		ps.CurrentStage = target
 		ps.CurrentAttempt = 1
 		ps.CurrentFixRound = 0
@@ -560,13 +563,25 @@ func (o *Orchestrator) CheckIn() (*CheckInResult, error) {
 
 	result := &CheckInResult{Actions: []CheckInAction{}}
 
-	for _, ps := range pipelines {
+	for i := range pipelines {
+		ps := &pipelines[i]
 		// Only process active pipelines
 		if ps.Status == "completed" || ps.Status == "failed" {
 			continue
 		}
 
-		action := o.checkInPipeline(&ps)
+		// Skip pipelines that are currently being advanced by another process
+		if ps.Status == "in_progress" {
+			result.Actions = append(result.Actions, CheckInAction{
+				Issue:   ps.Issue,
+				Action:  "skip",
+				Stage:   ps.CurrentStage,
+				Message: "in_progress, another advance may be running",
+			})
+			continue
+		}
+
+		action := o.checkInPipeline(ps)
 		result.Actions = append(result.Actions, action)
 	}
 
@@ -581,13 +596,22 @@ func (o *Orchestrator) checkInPipeline(ps *pipeline.PipelineState) CheckInAction
 			Issue:   ps.Issue,
 			Action:  "skip",
 			Stage:   ps.CurrentStage,
-			Message: "blocked — waiting for human intervention",
+			Message: "blocked, waiting for human intervention",
 		}
 	}
 
 	// Check for human intervention on active session
 	if ps.CurrentSession != "" {
-		human, _ := o.sessions.DetectHuman(ps.CurrentSession)
+		human, err := o.sessions.DetectHuman(ps.CurrentSession)
+		if err != nil {
+			// DB error during human detection: be conservative, skip
+			return CheckInAction{
+				Issue:   ps.Issue,
+				Action:  "skip",
+				Stage:   ps.CurrentStage,
+				Message: "human detection error, skipping conservatively",
+			}
+		}
 		if human {
 			return CheckInAction{
 				Issue:   ps.Issue,
@@ -604,22 +628,46 @@ func (o *Orchestrator) checkInPipeline(ps *pipeline.PipelineState) CheckInAction
 		if err == nil {
 			switch si.State {
 			case "started", "active":
-				return o.handleActiveSession(ps, si)
+				return o.handleActiveSession(ps)
 			case "idle":
 				return o.handleIdleSession(ps)
 			case "exited":
 				return o.handleExitedSession(ps)
+			case "steer", "factory_send":
+				// These are intermediate states logged by the factory.
+				// The session is still running, treat as active.
+				return o.handleActiveSession(ps)
+			case "human_input":
+				// Human is typing in the session, don't interfere.
+				return CheckInAction{
+					Issue:   ps.Issue,
+					Action:  "skip",
+					Stage:   ps.CurrentStage,
+					Message: "human input detected in session, skipping",
+				}
+			default:
+				// Unknown session state - skip to avoid interfering
+				return CheckInAction{
+					Issue:   ps.Issue,
+					Action:  "skip",
+					Stage:   ps.CurrentStage,
+					Message: fmt.Sprintf("unknown session state %q, skipping", si.State),
+				}
 			}
 		}
-		// Session state unknown — try to advance
+		// Session lookup failed - session may be orphaned.
+		// Clear the session reference and try to advance.
+		_ = o.store.Update(ps.Issue, func(ps *pipeline.PipelineState) {
+			ps.CurrentSession = ""
+		})
 	}
 
-	// No session or unknown state — try to advance
+	// No session or orphaned session cleared - try to advance
 	return o.handleAdvance(ps)
 }
 
 // handleActiveSession decides what to do with a running session.
-func (o *Orchestrator) handleActiveSession(ps *pipeline.PipelineState, si *session.StatusInfo) CheckInAction {
+func (o *Orchestrator) handleActiveSession(ps *pipeline.PipelineState) CheckInAction {
 	timeout := 30 * time.Minute
 	if o.cfg.Pipeline.Defaults.Timeout != "" {
 		if d, err := time.ParseDuration(o.cfg.Pipeline.Defaults.Timeout); err == nil {
@@ -627,31 +675,63 @@ func (o *Orchestrator) handleActiveSession(ps *pipeline.PipelineState, si *sessi
 		}
 	}
 
-	elapsed, err := time.Parse("2006-01-02 15:04:05", si.Timestamp)
+	// Use the session's original "started" timestamp for timeout comparison,
+	// not the latest event timestamp (which would be reset by steers/sends).
+	startedAt, err := o.db.GetSessionStartedAt(ps.CurrentSession)
 	if err != nil {
 		return CheckInAction{
 			Issue:   ps.Issue,
 			Action:  "skip",
 			Stage:   ps.CurrentStage,
-			Message: "active session, cannot parse timestamp",
+			Message: "active session, cannot find start time",
 		}
 	}
 
-	if time.Since(elapsed) > timeout {
-		_ = o.sessions.Steer(ps.CurrentSession, "Please wrap up your current work and finalize changes.")
+	startTime, err := time.Parse("2006-01-02 15:04:05", startedAt)
+	if err != nil {
 		return CheckInAction{
 			Issue:   ps.Issue,
-			Action:  "steer",
+			Action:  "skip",
 			Stage:   ps.CurrentStage,
-			Message: fmt.Sprintf("session exceeded timeout, sent wrap-up steer"),
+			Message: "active session, cannot parse start timestamp",
+		}
+	}
+
+	if time.Since(startTime) <= timeout {
+		return CheckInAction{
+			Issue:   ps.Issue,
+			Action:  "skip",
+			Stage:   ps.CurrentStage,
+			Message: "session active, within timeout",
+		}
+	}
+
+	// Session exceeded timeout. Check if we already sent a recent steer
+	// to avoid flooding the session with repeated messages.
+	recentlysteered, _ := o.db.HasRecentSteer(ps.CurrentSession, "-10 minutes")
+	if recentlysteered {
+		return CheckInAction{
+			Issue:   ps.Issue,
+			Action:  "skip",
+			Stage:   ps.CurrentStage,
+			Message: "session exceeded timeout, steer already sent recently",
+		}
+	}
+
+	if err := o.sessions.Steer(ps.CurrentSession, "Please wrap up your current work and finalize changes."); err != nil {
+		return CheckInAction{
+			Issue:   ps.Issue,
+			Action:  "skip",
+			Stage:   ps.CurrentStage,
+			Message: fmt.Sprintf("session exceeded timeout, steer failed: %v", err),
 		}
 	}
 
 	return CheckInAction{
 		Issue:   ps.Issue,
-		Action:  "skip",
+		Action:  "steer",
 		Stage:   ps.CurrentStage,
-		Message: "session active, within timeout",
+		Message: "session exceeded timeout, sent wrap-up steer",
 	}
 }
 
@@ -662,8 +742,6 @@ func (o *Orchestrator) handleIdleSession(ps *pipeline.PipelineState) CheckInActi
 
 // handleExitedSession handles a session that has exited.
 func (o *Orchestrator) handleExitedSession(ps *pipeline.PipelineState) CheckInAction {
-	// Session exited — try to advance the pipeline.
-	// Advance will run checks and handle success/failure/retry internally.
 	return o.handleAdvance(ps)
 }
 
@@ -671,11 +749,16 @@ func (o *Orchestrator) handleExitedSession(ps *pipeline.PipelineState) CheckInAc
 func (o *Orchestrator) handleAdvance(ps *pipeline.PipelineState) CheckInAction {
 	advResult, err := o.Advance(ps.Issue)
 	if err != nil {
+		// Mark pipeline as blocked so it doesn't loop forever on errors
+		_ = o.store.Update(ps.Issue, func(ps *pipeline.PipelineState) {
+			ps.Status = "blocked"
+		})
+		_ = o.db.LogPipelineEvent(ps.Issue, "escalated", ps.CurrentStage, ps.CurrentAttempt, fmt.Sprintf("check-in advance error: %v", err))
 		return CheckInAction{
 			Issue:   ps.Issue,
-			Action:  "fail",
+			Action:  "escalate",
 			Stage:   ps.CurrentStage,
-			Message: fmt.Sprintf("advance error: %v", err),
+			Message: fmt.Sprintf("advance error, escalated: %v", err),
 		}
 	}
 

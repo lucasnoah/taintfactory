@@ -1037,6 +1037,260 @@ func TestCheckIn_HumanInterventionSkipped(t *testing.T) {
 	}
 }
 
+func TestCheckIn_InProgressSkipped(t *testing.T) {
+	env := setupTest(t, defaultConfig())
+
+	wtDir := t.TempDir()
+	env.store.Create(42, "Test", "b-a", wtDir, "implement", nil)
+	env.store.Update(42, func(ps *pipeline.PipelineState) {
+		ps.Status = "in_progress"
+		ps.CurrentAttempt = 1
+	})
+
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(result.Actions))
+	}
+	if result.Actions[0].Action != "skip" {
+		t.Errorf("expected 'skip' for in_progress, got %q", result.Actions[0].Action)
+	}
+	if !strings.Contains(result.Actions[0].Message, "in_progress") {
+		t.Errorf("expected in_progress message, got %q", result.Actions[0].Message)
+	}
+}
+
+func TestCheckIn_ActiveSessionPastTimeout_Steers(t *testing.T) {
+	cfg := &config.PipelineConfig{
+		Pipeline: config.Pipeline{
+			Defaults: config.StageDefaults{Timeout: "1s"}, // 1-second timeout for testing
+			Stages:   []config.Stage{{ID: "implement", Type: "agent"}},
+		},
+	}
+	env := setupTest(t, cfg)
+
+	wtDir := t.TempDir()
+	env.store.Create(42, "Test", "b-a", wtDir, "implement", nil)
+	env.store.Update(42, func(ps *pipeline.PipelineState) {
+		ps.CurrentSession = "sess-42"
+		ps.CurrentAttempt = 1
+	})
+
+	env.tmux.sessions["sess-42"] = true
+	// Log started event in the past so timeout is exceeded
+	env.database.LogSessionEvent("sess-42", 42, "implement", "started", nil, "")
+
+	// Wait for timeout to expire
+	time.Sleep(1100 * time.Millisecond)
+
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(result.Actions))
+	}
+	if result.Actions[0].Action != "steer" {
+		t.Errorf("expected 'steer' for timed-out session, got %q", result.Actions[0].Action)
+	}
+	if !strings.Contains(result.Actions[0].Message, "wrap-up") {
+		t.Errorf("expected wrap-up message, got %q", result.Actions[0].Message)
+	}
+}
+
+func TestCheckIn_ActiveSessionPastTimeout_SteerGuard(t *testing.T) {
+	cfg := &config.PipelineConfig{
+		Pipeline: config.Pipeline{
+			Defaults: config.StageDefaults{Timeout: "1s"},
+			Stages:   []config.Stage{{ID: "implement", Type: "agent"}},
+		},
+	}
+	env := setupTest(t, cfg)
+
+	wtDir := t.TempDir()
+	env.store.Create(42, "Test", "b-a", wtDir, "implement", nil)
+	env.store.Update(42, func(ps *pipeline.PipelineState) {
+		ps.CurrentSession = "sess-42"
+		ps.CurrentAttempt = 1
+	})
+
+	env.tmux.sessions["sess-42"] = true
+	env.database.LogSessionEvent("sess-42", 42, "implement", "started", nil, "")
+	// Log a recent steer event so the guard fires
+	env.database.LogSessionEvent("sess-42", 42, "implement", "steer", nil, "")
+
+	time.Sleep(1100 * time.Millisecond)
+
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(result.Actions))
+	}
+	if result.Actions[0].Action != "skip" {
+		t.Errorf("expected 'skip' (steer guard), got %q", result.Actions[0].Action)
+	}
+	if !strings.Contains(result.Actions[0].Message, "steer already sent") {
+		t.Errorf("expected steer guard message, got %q", result.Actions[0].Message)
+	}
+}
+
+func TestCheckIn_HumanInputState(t *testing.T) {
+	cfg := &config.PipelineConfig{
+		Pipeline: config.Pipeline{
+			Stages: []config.Stage{{ID: "implement", Type: "agent"}},
+		},
+	}
+	env := setupTest(t, cfg)
+
+	wtDir := t.TempDir()
+	env.store.Create(42, "Test", "b-a", wtDir, "implement", nil)
+	env.store.Update(42, func(ps *pipeline.PipelineState) {
+		ps.CurrentSession = "sess-42"
+		ps.CurrentAttempt = 1
+	})
+
+	env.tmux.sessions["sess-42"] = true
+	env.database.LogSessionEvent("sess-42", 42, "implement", "started", nil, "")
+	// Most recent event is human_input — should skip
+	env.database.LogSessionEvent("sess-42", 42, "implement", "human_input", nil, "")
+
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(result.Actions))
+	}
+	if result.Actions[0].Action != "skip" {
+		t.Errorf("expected 'skip' for human_input state, got %q", result.Actions[0].Action)
+	}
+	if !strings.Contains(result.Actions[0].Message, "human input") {
+		t.Errorf("expected human input message, got %q", result.Actions[0].Message)
+	}
+}
+
+func TestCheckIn_OrphanedSessionCleared(t *testing.T) {
+	cfg := &config.PipelineConfig{
+		Pipeline: config.Pipeline{
+			Checks: map[string]config.Check{
+				"lint": {Command: "echo ok", Parser: "generic"},
+			},
+			Stages: []config.Stage{
+				{ID: "validate", Type: "checks_only", Checks: []string{"lint"}},
+				{ID: "final", Type: "checks_only", Checks: []string{"lint"}},
+			},
+		},
+	}
+	env := setupTest(t, cfg)
+
+	env.checkCmd.results = []cmdResult{{exitCode: 0}}
+
+	wtDir := t.TempDir()
+	env.store.Create(42, "Test", "b-a", wtDir, "validate", nil)
+	env.store.Update(42, func(ps *pipeline.PipelineState) {
+		ps.CurrentSession = "orphaned-sess"
+		ps.CurrentAttempt = 1
+	})
+
+	// No tmux session, no DB events → Status will fail → orphan path
+	// Don't add "orphaned-sess" to tmux mock or DB
+
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(result.Actions))
+	}
+	// Should have cleared the orphan and then advanced
+	if result.Actions[0].Action != "advanced" {
+		t.Errorf("expected 'advanced' after orphan cleanup, got %q", result.Actions[0].Action)
+	}
+
+	// Verify session reference was cleared
+	ps, _ := env.store.Get(42)
+	if ps.CurrentSession != "" {
+		t.Errorf("expected empty session after orphan cleanup, got %q", ps.CurrentSession)
+	}
+}
+
+func TestCheckIn_AdvanceError_Escalates(t *testing.T) {
+	cfg := &config.PipelineConfig{
+		Pipeline: config.Pipeline{
+			Stages: []config.Stage{
+				// Reference a nonexistent stage config (only the listed stage exists).
+				// The stage ID is "implement" but its prompt_template is empty and the
+				// engine will likely error when trying to run it with no check. We need
+				// the advance to error. Easiest: put the pipeline on a stage that
+				// doesn't exist in the config.
+				{ID: "implement", Type: "agent"},
+			},
+		},
+	}
+	env := setupTest(t, cfg)
+
+	wtDir := t.TempDir()
+	env.store.Create(42, "Test", "b-a", wtDir, "nonexistent_stage", nil)
+	env.store.Update(42, func(ps *pipeline.PipelineState) {
+		ps.CurrentAttempt = 1
+	})
+
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(result.Actions))
+	}
+	if result.Actions[0].Action != "escalate" {
+		t.Errorf("expected 'escalate' on advance error, got %q", result.Actions[0].Action)
+	}
+
+	// Verify pipeline was marked as blocked
+	ps, _ := env.store.Get(42)
+	if ps.Status != "blocked" {
+		t.Errorf("expected status 'blocked' after escalation, got %q", ps.Status)
+	}
+}
+
+func TestCheckIn_SteerFactorySendState(t *testing.T) {
+	cfg := &config.PipelineConfig{
+		Pipeline: config.Pipeline{
+			Defaults: config.StageDefaults{Timeout: "30m"},
+			Stages:   []config.Stage{{ID: "implement", Type: "agent"}},
+		},
+	}
+	env := setupTest(t, cfg)
+
+	wtDir := t.TempDir()
+	env.store.Create(42, "Test", "b-a", wtDir, "implement", nil)
+	env.store.Update(42, func(ps *pipeline.PipelineState) {
+		ps.CurrentSession = "sess-42"
+		ps.CurrentAttempt = 1
+	})
+
+	env.tmux.sessions["sess-42"] = true
+	env.database.LogSessionEvent("sess-42", 42, "implement", "started", nil, "")
+	// Most recent event is factory_send — should be treated as active
+	env.database.LogSessionEvent("sess-42", 42, "implement", "factory_send", nil, "")
+
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(result.Actions))
+	}
+	// factory_send is treated as active; within timeout → skip
+	if result.Actions[0].Action != "skip" {
+		t.Errorf("expected 'skip' for factory_send state, got %q", result.Actions[0].Action)
+	}
+}
+
 func TestFormatCheckStateSummary(t *testing.T) {
 	summary := formatCheckStateSummary(map[string]string{
 		"lint": "pass",
