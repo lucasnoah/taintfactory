@@ -35,7 +35,7 @@ func TestRootHelp(t *testing.T) {
 	expectedSubcommands := []string{
 		"pipeline", "session", "check", "context", "event",
 		"status", "analytics", "worktree", "pr", "config",
-		"db", "qa", "stage", "version",
+		"db", "qa", "stage", "version", "queue",
 	}
 	for _, sub := range expectedSubcommands {
 		if !strings.Contains(out, sub) {
@@ -92,6 +92,19 @@ func TestContextSubcommands(t *testing.T) {
 		}
 		if out == "" {
 			t.Errorf("context %s --help produced no output", sub)
+		}
+	}
+}
+
+func TestQueueSubcommands(t *testing.T) {
+	subcmds := []string{"add", "list", "remove", "clear"}
+	for _, sub := range subcmds {
+		out, err := executeCommand("queue", sub, "--help")
+		if err != nil {
+			t.Errorf("queue %s --help failed: %v", sub, err)
+		}
+		if out == "" {
+			t.Errorf("queue %s --help produced no output", sub)
 		}
 	}
 }

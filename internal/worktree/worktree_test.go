@@ -35,6 +35,7 @@ func (m *mockGit) Run(dir string, args ...string) (string, error) {
 func TestCreate_HappyPath(t *testing.T) {
 	git := &mockGit{
 		results: []mockResult{
+			{Output: ""}, // fetch origin main
 			{Output: ""}, // worktree add
 		},
 	}
@@ -52,19 +53,50 @@ func TestCreate_HappyPath(t *testing.T) {
 		t.Errorf("expected branch feature/issue-42, got %q", result.Branch)
 	}
 
-	if len(git.calls) != 1 {
-		t.Fatalf("expected 1 git call, got %d", len(git.calls))
+	if len(git.calls) != 2 {
+		t.Fatalf("expected 2 git calls, got %d", len(git.calls))
 	}
-	call := git.calls[0]
+	// First call: fetch origin main
+	assertArgs(t, git.calls[0].Args, "fetch", "origin", "main")
+	// Second call: worktree add
+	call := git.calls[1]
 	if call.Dir != "/repo" {
 		t.Errorf("expected dir /repo, got %q", call.Dir)
 	}
 	assertArgs(t, call.Args, "worktree", "add", "/repo/worktrees/issue-42", "-b", "feature/issue-42")
 }
 
+func TestCreate_FetchFailsGracefully(t *testing.T) {
+	git := &mockGit{
+		results: []mockResult{
+			{Err: fmt.Errorf("network unreachable")}, // fetch fails
+			{Output: ""},                              // worktree add still succeeds
+		},
+	}
+
+	mgr := NewManager(git, "/repo", "/repo/worktrees")
+	result, err := mgr.Create(CreateOpts{Issue: 42})
+	if err != nil {
+		t.Fatalf("expected no error when fetch fails, got: %v", err)
+	}
+
+	if result.Branch != "feature/issue-42" {
+		t.Errorf("expected branch, got %q", result.Branch)
+	}
+
+	// Should have 2 calls: fetch (failed) + worktree add
+	if len(git.calls) != 2 {
+		t.Fatalf("expected 2 git calls, got %d", len(git.calls))
+	}
+	assertArgs(t, git.calls[0].Args, "fetch", "origin", "main")
+}
+
 func TestCreate_CustomBranch(t *testing.T) {
 	git := &mockGit{
-		results: []mockResult{{Output: ""}},
+		results: []mockResult{
+			{Output: ""}, // fetch
+			{Output: ""}, // worktree add
+		},
 	}
 
 	mgr := NewManager(git, "/repo", "/repo/worktrees")
@@ -80,7 +112,10 @@ func TestCreate_CustomBranch(t *testing.T) {
 
 func TestCreate_CustomBranchSanitized(t *testing.T) {
 	git := &mockGit{
-		results: []mockResult{{Output: ""}},
+		results: []mockResult{
+			{Output: ""}, // fetch
+			{Output: ""}, // worktree add
+		},
 	}
 
 	mgr := NewManager(git, "/repo", "/repo/worktrees")
@@ -97,6 +132,7 @@ func TestCreate_CustomBranchSanitized(t *testing.T) {
 func TestCreate_BranchAlreadyExists(t *testing.T) {
 	git := &mockGit{
 		results: []mockResult{
+			{Output: ""},                         // fetch
 			{Err: fmt.Errorf("already exists")}, // first attempt fails
 			{Output: ""},                         // retry without -b
 		},
@@ -108,12 +144,12 @@ func TestCreate_BranchAlreadyExists(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(git.calls) != 2 {
-		t.Fatalf("expected 2 git calls (retry), got %d", len(git.calls))
+	if len(git.calls) != 3 {
+		t.Fatalf("expected 3 git calls (fetch + retry), got %d", len(git.calls))
 	}
-	// Second call should NOT have -b flag
-	secondCall := git.calls[1]
-	for _, arg := range secondCall.Args {
+	// Third call (retry) should NOT have -b flag
+	thirdCall := git.calls[2]
+	for _, arg := range thirdCall.Args {
 		if arg == "-b" {
 			t.Error("retry should not include -b flag")
 		}
@@ -126,7 +162,8 @@ func TestCreate_BranchAlreadyExists(t *testing.T) {
 func TestCreate_Error(t *testing.T) {
 	git := &mockGit{
 		results: []mockResult{
-			{Err: fmt.Errorf("some git error")},
+			{Output: ""},                         // fetch
+			{Err: fmt.Errorf("some git error")}, // worktree add
 		},
 	}
 

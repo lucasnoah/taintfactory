@@ -11,18 +11,23 @@ import (
 func TestGenerateHooksConfig(t *testing.T) {
 	cfg := GenerateHooksConfig("42-impl", 42, "impl")
 
+	// Should have 3 event types: UserPromptSubmit, Stop, SessionEnd
 	if len(cfg.Hooks) != 3 {
-		t.Fatalf("expected 3 hooks, got %d", len(cfg.Hooks))
+		t.Fatalf("expected 3 event types, got %d", len(cfg.Hooks))
 	}
 
-	events := map[string]string{}
-	for _, h := range cfg.Hooks {
-		events[h.Event] = h.Command
+	// Collect all commands by event name
+	eventCmds := make(map[string]string)
+	for event, groups := range cfg.Hooks {
+		if len(groups) != 1 || len(groups[0].Hooks) != 1 {
+			t.Fatalf("event %q: expected 1 group with 1 handler", event)
+		}
+		eventCmds[event] = groups[0].Hooks[0].Command
 	}
 
-	// Verify all expected events present
-	for _, ev := range []string{"on_active", "on_idle", "on_exit"} {
-		cmd, ok := events[ev]
+	// Verify expected events
+	for _, ev := range []string{"UserPromptSubmit", "Stop", "SessionEnd"} {
+		cmd, ok := eventCmds[ev]
 		if !ok {
 			t.Errorf("missing hook for event %q", ev)
 			continue
@@ -38,15 +43,22 @@ func TestGenerateHooksConfig(t *testing.T) {
 		}
 	}
 
-	// Verify event types in commands match
-	if !strings.Contains(events["on_active"], "--event active") {
-		t.Error("on_active hook should log 'active' event")
+	// Verify event types in commands
+	if !strings.Contains(eventCmds["UserPromptSubmit"], "--event active") {
+		t.Error("UserPromptSubmit hook should log 'active' event")
 	}
-	if !strings.Contains(events["on_idle"], "--event idle") {
-		t.Error("on_idle hook should log 'idle' event")
+	if !strings.Contains(eventCmds["Stop"], "--event idle") {
+		t.Error("Stop hook should log 'idle' event")
 	}
-	if !strings.Contains(events["on_exit"], "--event exited") {
-		t.Error("on_exit hook should log 'exited' event")
+	if !strings.Contains(eventCmds["SessionEnd"], "--event exited") {
+		t.Error("SessionEnd hook should log 'exited' event")
+	}
+
+	// Verify handler type is "command"
+	for event, groups := range cfg.Hooks {
+		if groups[0].Hooks[0].Type != "command" {
+			t.Errorf("event %q: handler type = %q, want 'command'", event, groups[0].Hooks[0].Type)
+		}
 	}
 }
 
@@ -59,38 +71,79 @@ func TestWriteHooksFile(t *testing.T) {
 		t.Fatalf("WriteHooksFile: %v", err)
 	}
 
-	expectedPath := filepath.Join(tmpDir, ".claude", "hooks.json")
+	expectedPath := filepath.Join(tmpDir, ".claude", "settings.local.json")
 	if path != expectedPath {
 		t.Errorf("path = %q, want %q", path, expectedPath)
 	}
 
-	// Read back and verify
+	// Read back and verify structure
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read hooks file: %v", err)
+		t.Fatalf("read settings file: %v", err)
 	}
 
-	var got HooksConfig
+	var got map[string]interface{}
 	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal hooks: %v", err)
+		t.Fatalf("unmarshal settings: %v", err)
 	}
 
-	if len(got.Hooks) != 3 {
-		t.Errorf("got %d hooks, want 3", len(got.Hooks))
+	hooks, ok := got["hooks"]
+	if !ok {
+		t.Fatal("missing 'hooks' key in settings")
+	}
+
+	hooksMap, ok := hooks.(map[string]interface{})
+	if !ok {
+		t.Fatal("'hooks' should be a map")
+	}
+
+	if len(hooksMap) != 3 {
+		t.Errorf("got %d event types, want 3", len(hooksMap))
+	}
+}
+
+func TestWriteHooksFile_MergesExisting(t *testing.T) {
+	tmpDir := t.TempDir()
+	claudeDir := filepath.Join(tmpDir, ".claude")
+	os.MkdirAll(claudeDir, 0o755)
+
+	// Write existing settings
+	existing := `{"allowedTools": ["Read", "Write"], "other": true}`
+	os.WriteFile(filepath.Join(claudeDir, "settings.local.json"), []byte(existing), 0o644)
+
+	cfg := GenerateHooksConfig("merge-test", 1, "plan")
+	_, err := WriteHooksFile(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("WriteHooksFile: %v", err)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(claudeDir, "settings.local.json"))
+	var got map[string]interface{}
+	json.Unmarshal(data, &got)
+
+	// Hooks should be present
+	if _, ok := got["hooks"]; !ok {
+		t.Error("missing hooks after merge")
+	}
+	// Existing keys should be preserved
+	if _, ok := got["allowedTools"]; !ok {
+		t.Error("existing allowedTools key was lost during merge")
+	}
+	if _, ok := got["other"]; !ok {
+		t.Error("existing 'other' key was lost during merge")
 	}
 }
 
 func TestWriteHooksFile_CreatesDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	nestedDir := filepath.Join(tmpDir, "deep", "project")
-	cfg := &HooksConfig{Hooks: []HookEntry{{Event: "on_idle", Command: "echo test"}}}
+	cfg := GenerateHooksConfig("nested-test", 1, "plan")
 
 	_, err := WriteHooksFile(nestedDir, cfg)
 	if err != nil {
 		t.Fatalf("WriteHooksFile: %v", err)
 	}
 
-	// Verify .claude dir was created
 	info, err := os.Stat(filepath.Join(nestedDir, ".claude"))
 	if err != nil {
 		t.Fatalf("stat .claude dir: %v", err)

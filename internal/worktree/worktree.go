@@ -68,6 +68,9 @@ func (m *Manager) Create(opts CreateOpts) (*CreateResult, error) {
 
 	worktreePath := filepath.Join(m.baseDir, fmt.Sprintf("issue-%d", opts.Issue))
 
+	// Best-effort fetch to ensure we branch from up-to-date main
+	m.git.Run(m.repoDir, "fetch", "origin", "main")
+
 	// Create the worktree with a new branch
 	_, err := m.git.Run(m.repoDir, "worktree", "add", worktreePath, "-b", branch)
 	if err != nil {

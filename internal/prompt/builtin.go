@@ -14,6 +14,11 @@ const implementTemplate = `# Implement: {{issue_title}}
 ## Issue #{{issue_number}}
 {{issue_body}}
 
+{{#if feature_intent}}
+## Feature Intent
+{{feature_intent}}
+{{/if}}
+
 {{#if acceptance_criteria}}
 ## Acceptance Criteria
 {{acceptance_criteria}}
@@ -51,6 +56,11 @@ const reviewTemplate = `# Code Review: {{issue_title}}
 ## Issue #{{issue_number}}
 {{issue_body}}
 
+{{#if feature_intent}}
+## Feature Intent
+{{feature_intent}}
+{{/if}}
+
 {{#if acceptance_criteria}}
 ## Acceptance Criteria
 {{acceptance_criteria}}
@@ -71,25 +81,31 @@ Stage: {{stage_id}} (attempt {{attempt}})
 {{files_changed}}
 {{/if}}
 
-{{#if git_diff}}
-## Full Diff
-` + "```diff" + `
-{{git_diff}}
-` + "```" + `
+{{#if git_commits}}
+### Commits
+{{git_commits}}
 {{/if}}
 
 ## Review Instructions
-1. Review all changed files for correctness, security, and edge cases
-2. Check that the implementation matches the acceptance criteria
-3. Look for bugs, race conditions, missing error handling
-4. Verify test coverage is adequate
-5. Report findings with specific file:line references
+1. Use git to explore the changes: ` + "`git log`" + `, ` + "`git show <commit>`" + `, ` + "`git diff main...HEAD`" + `, and read the changed files directly
+2. Review all changed files for correctness, security, and edge cases
+3. Check that the implementation matches the feature intent and acceptance criteria
+4. Look for bugs, race conditions, missing error handling, and edge cases
+5. Verify test coverage is adequate
+6. **Fix every issue you find.** Do not just report problems — actually edit the code to resolve them. Commit your fixes.
+7. If you find issues in the tests (wrong mocks, missing coverage), fix those too
+8. Run all relevant checks/tests after your fixes to confirm they pass
 `
 
 const qaTemplate = `# QA Testing: {{issue_title}}
 
 ## Issue #{{issue_number}}
 {{issue_body}}
+
+{{#if feature_intent}}
+## Feature Intent
+{{feature_intent}}
+{{/if}}
 
 {{#if acceptance_criteria}}
 ## Acceptance Criteria
@@ -106,12 +122,24 @@ Stage: {{stage_id}} (attempt {{attempt}})
 {{git_diff_summary}}
 {{/if}}
 
+{{#if files_changed}}
+### Files Changed
+{{files_changed}}
+{{/if}}
+
+{{#if git_commits}}
+### Commits
+{{git_commits}}
+{{/if}}
+
 ## QA Instructions
-1. Review the acceptance criteria carefully
-2. Write and run tests that exercise each criterion
-3. Test edge cases and error conditions
-4. Verify no regressions in existing functionality
-5. Report any issues found with reproduction steps
+1. Use git to explore the changes: ` + "`git log`" + `, ` + "`git show <commit>`" + `, ` + "`git diff main...HEAD`" + `, and read the changed files directly
+2. Review the acceptance criteria and feature intent carefully
+3. Write and run tests that exercise each criterion
+4. Test edge cases and error conditions
+5. Verify no regressions in existing functionality
+6. **Fix every issue you find.** Do not just report problems — actually edit the code to resolve them. Commit your fixes.
+7. Run all relevant checks/tests after your fixes to confirm they pass
 {{#if prior_stage_summary}}
 
 ## Implementation Summary

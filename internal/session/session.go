@@ -103,6 +103,11 @@ func (m *Manager) Create(opts CreateOpts) error {
 		}
 	}
 
+	// Unset CLAUDECODE to allow nested Claude Code sessions in tmux
+	if err := m.tmux.SendKeys(opts.Name, "unset CLAUDECODE"); err != nil {
+		return fmt.Errorf("unset CLAUDECODE: %w", err)
+	}
+
 	// Build and send claude command
 	cmd := buildClaudeCommand(opts)
 	if err := m.tmux.SendKeys(opts.Name, cmd); err != nil {
@@ -283,20 +288,9 @@ func (m *Manager) Send(name string, prompt string) error {
 		return fmt.Errorf("log factory_send: %w", err)
 	}
 
-	// Send the prompt — handle multiline by sending each line separately
-	lines := strings.Split(prompt, "\n")
-	for i, line := range lines {
-		if i == len(lines)-1 {
-			// Last line: send with Enter
-			if err := m.tmux.SendKeys(name, line); err != nil {
-				return fmt.Errorf("send keys: %w", err)
-			}
-		} else {
-			// Interior line: send with Enter
-			if err := m.tmux.SendKeys(name, line); err != nil {
-				return fmt.Errorf("send keys: %w", err)
-			}
-		}
+	// Send the prompt via tmux buffer paste (handles multiline correctly)
+	if err := m.tmux.SendBuffer(name, prompt); err != nil {
+		return fmt.Errorf("send buffer: %w", err)
 	}
 
 	return nil
@@ -374,6 +368,9 @@ type WaitIdleResult struct {
 }
 
 // WaitIdle polls the DB until the session reaches "idle" or "exited" state.
+// As a fallback, it also monitors the tmux pane content for stability —
+// if the pane doesn't change for multiple consecutive polls, Claude is
+// assumed idle (the Stop hook may not always fire reliably).
 func (m *Manager) WaitIdle(name string, timeout time.Duration, pollInterval time.Duration) (*WaitIdleResult, error) {
 	if pollInterval <= 0 {
 		pollInterval = 30 * time.Second
@@ -383,6 +380,10 @@ func (m *Manager) WaitIdle(name string, timeout time.Duration, pollInterval time
 	if timeout > 0 {
 		deadline = time.Now().Add(timeout)
 	}
+
+	var lastPane string
+	stableCount := 0
+	const stableThreshold = 2 // consecutive unchanged polls to declare idle
 
 	for {
 		state, err := m.db.GetSessionState(name)
@@ -399,6 +400,26 @@ func (m *Manager) WaitIdle(name string, timeout time.Duration, pollInterval time
 				Elapsed:  elapsed(state.Timestamp),
 				ExitCode: state.ExitCode,
 			}, nil
+		}
+
+		// Fallback: detect idle by pane content stability.
+		// When Claude is processing, the pane changes constantly (thinking
+		// timers, tool outputs, etc). A stable pane means Claude is idle.
+		if pane, pErr := m.tmux.CapturePaneLines(name, 15); pErr == nil && pane != "" {
+			if pane == lastPane {
+				stableCount++
+				if stableCount >= stableThreshold {
+					// Pane hasn't changed — fire idle event as fallback
+					_ = m.db.LogSessionEvent(name, state.Issue, state.Stage, "idle", nil, "pane_stable")
+					return &WaitIdleResult{
+						State:   "idle",
+						Elapsed: elapsed(state.Timestamp),
+					}, nil
+				}
+			} else {
+				stableCount = 0
+			}
+			lastPane = pane
 		}
 
 		if !deadline.IsZero() && time.Now().After(deadline) {

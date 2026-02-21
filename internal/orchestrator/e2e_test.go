@@ -112,7 +112,7 @@ func TestE2E_FullPipelineRun(t *testing.T) {
 	// Step 2: Advance through implement (agent, lint passes)
 	// ================================
 	t.Log("Step 2: Advance implement stage")
-	go simulateSessionIdle(env.database, "42-implement-1", 42, "implement", 100*time.Millisecond)
+	go simulateWorkIdle(env.database, "42-implement-1", 42, "implement", 100*time.Millisecond)
 
 	result, err := env.orch.Advance(42)
 	if err != nil {
@@ -138,8 +138,13 @@ func TestE2E_FullPipelineRun(t *testing.T) {
 	// Step 3: Advance through review (agent, fix loop: fail → fix → pass)
 	// ================================
 	t.Log("Step 3: Advance review stage (with fix loop)")
-	go simulateSessionIdle(env.database, "42-review-1", 42, "review", 100*time.Millisecond)
-	go simulateSessionIdle(env.database, "42-review-1", 42, "review", 350*time.Millisecond)
+	go func() {
+		simulateWorkIdle(env.database, "42-review-1", 42, "review", 100*time.Millisecond)
+		// Fix round: wait for factory_send from fix prompt, then fire idle
+		waitForSessionEvent(env.database, "42-review-1", "factory_send", 5*time.Second)
+		time.Sleep(10 * time.Millisecond)
+		_ = env.database.LogSessionEvent("42-review-1", 42, "review", "idle", nil, "")
+	}()
 
 	result, err = env.orch.Advance(42)
 	if err != nil {
@@ -307,8 +312,12 @@ func TestE2E_PipelineFailure(t *testing.T) {
 	installWorktreeTemplate(t, ps.Worktree, "impl.md", "Implement {{issue_number}}")
 
 	// Attempt 1: fail → retry
-	go simulateSessionIdle(env.database, "42-implement-1", 42, "implement", 100*time.Millisecond)
-	go simulateSessionIdle(env.database, "42-implement-1", 42, "implement", 300*time.Millisecond)
+	go func() {
+		simulateWorkIdle(env.database, "42-implement-1", 42, "implement", 100*time.Millisecond)
+		waitForSessionEvent(env.database, "42-implement-1", "factory_send", 5*time.Second)
+		time.Sleep(10 * time.Millisecond)
+		_ = env.database.LogSessionEvent("42-implement-1", 42, "implement", "idle", nil, "")
+	}()
 	result, err := env.orch.Advance(42)
 	if err != nil {
 		t.Fatalf("advance 1: %v", err)
@@ -318,8 +327,12 @@ func TestE2E_PipelineFailure(t *testing.T) {
 	}
 
 	// Attempt 2: fail → retry
-	go simulateSessionIdle(env.database, "42-implement-2", 42, "implement", 100*time.Millisecond)
-	go simulateSessionIdle(env.database, "42-implement-2", 42, "implement", 300*time.Millisecond)
+	go func() {
+		simulateWorkIdle(env.database, "42-implement-2", 42, "implement", 100*time.Millisecond)
+		waitForSessionEvent(env.database, "42-implement-2", "factory_send", 5*time.Second)
+		time.Sleep(10 * time.Millisecond)
+		_ = env.database.LogSessionEvent("42-implement-2", 42, "implement", "idle", nil, "")
+	}()
 	result, err = env.orch.Advance(42)
 	if err != nil {
 		t.Fatalf("advance 2: %v", err)
@@ -329,8 +342,12 @@ func TestE2E_PipelineFailure(t *testing.T) {
 	}
 
 	// Attempt 3: fail → failed (max attempts)
-	go simulateSessionIdle(env.database, "42-implement-3", 42, "implement", 100*time.Millisecond)
-	go simulateSessionIdle(env.database, "42-implement-3", 42, "implement", 300*time.Millisecond)
+	go func() {
+		simulateWorkIdle(env.database, "42-implement-3", 42, "implement", 100*time.Millisecond)
+		waitForSessionEvent(env.database, "42-implement-3", "factory_send", 5*time.Second)
+		time.Sleep(10 * time.Millisecond)
+		_ = env.database.LogSessionEvent("42-implement-3", 42, "implement", "idle", nil, "")
+	}()
 	result, err = env.orch.Advance(42)
 	if err != nil {
 		t.Fatalf("advance 3: %v", err)
@@ -591,6 +608,28 @@ func installWorktreeTemplate(t *testing.T, worktreeDir string, name string, cont
 
 func simulateSessionIdle(database *db.DB, sessionName string, issue int, stage string, delay time.Duration) {
 	time.Sleep(delay)
+	_ = database.LogSessionEvent(sessionName, issue, stage, "idle", nil, "")
+}
+
+// waitForSessionEvent polls until the session's latest event matches, or times out.
+func waitForSessionEvent(database *db.DB, sessionName string, target string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		state, _ := database.GetSessionState(sessionName)
+		if state != nil && state.Event == target {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+// simulateWorkIdle waits for factory_send then fires idle.
+// With bootDelay=0 in tests, no boot idle is needed.
+func simulateWorkIdle(database *db.DB, sessionName string, issue int, stage string, initialDelay time.Duration) {
+	time.Sleep(initialDelay)
+	waitForSessionEvent(database, sessionName, "factory_send", 5*time.Second)
+	time.Sleep(10 * time.Millisecond)
 	_ = database.LogSessionEvent(sessionName, issue, stage, "idle", nil, "")
 }
 

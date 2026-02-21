@@ -153,7 +153,15 @@ func (r *Runner) runOnce(dir string, cfg CheckConfig, timeout time.Duration) (*R
 
 	parsed := parser.Parse(stdout, stderr, exitCode)
 
-	findingsJSON, _ := json.Marshal(parsed.Findings)
+	// Convert findings to string for DB storage.
+	// If findings is already a string, use it directly to avoid JSON-escaping.
+	var findingsStr string
+	if s, ok := parsed.Findings.(string); ok {
+		findingsStr = s
+	} else {
+		findingsJSON, _ := json.Marshal(parsed.Findings)
+		findingsStr = string(findingsJSON)
+	}
 
 	return &Result{
 		CheckName:  cfg.Name,
@@ -161,7 +169,7 @@ func (r *Runner) runOnce(dir string, cfg CheckConfig, timeout time.Duration) (*R
 		ExitCode:   exitCode,
 		DurationMs: durationMs,
 		Summary:    parsed.Summary,
-		Findings:   string(findingsJSON),
+		Findings:   findingsStr,
 		Stdout:     stdout,
 		Stderr:     stderr,
 	}, nil

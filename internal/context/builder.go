@@ -38,6 +38,7 @@ type GitRunner interface {
 	Diff(dir string) (string, error)
 	DiffSummary(dir string) (string, error)
 	FilesChanged(dir string) (string, error)
+	Log(dir string) (string, error)
 }
 
 // Builder assembles context/prompt for a pipeline stage.
@@ -53,10 +54,11 @@ func NewBuilder(store *pipeline.Store, git GitRunner) *Builder {
 
 // BuildOpts configures what context to build.
 type BuildOpts struct {
-	Issue     int
-	Stage     string
-	StageCfg  *config.Stage
-	IssueBody string
+	Issue        int
+	Stage        string
+	StageCfg     *config.Stage
+	IssueBody    string
+	PipelineVars map[string]string // project-level custom vars from pipeline config
 }
 
 // BuildResult holds the assembled context.
@@ -74,14 +76,25 @@ func (b *Builder) Build(ps *pipeline.PipelineState, opts BuildOpts) (*BuildResul
 	}
 
 	vars := prompt.Vars{
-		"issue_number":  strconv.Itoa(ps.Issue),
-		"issue_title":   ps.Title,
-		"issue_body":    opts.IssueBody,
-		"worktree_path": ps.Worktree,
-		"branch":        ps.Branch,
-		"stage_id":      opts.Stage,
-		"attempt":       strconv.Itoa(ps.CurrentAttempt),
-		"goal":          buildGoal(ps),
+		"issue_number":   strconv.Itoa(ps.Issue),
+		"issue_title":    ps.Title,
+		"issue_body":     opts.IssueBody,
+		"feature_intent": ps.FeatureIntent,
+		"worktree_path":  ps.Worktree,
+		"branch":         ps.Branch,
+		"stage_id":       opts.Stage,
+		"attempt":        strconv.Itoa(ps.CurrentAttempt),
+		"goal":           buildGoal(ps),
+	}
+
+	// Merge custom vars: pipeline-level first, then stage-level overrides.
+	for k, v := range opts.PipelineVars {
+		vars[k] = v
+	}
+	if opts.StageCfg != nil {
+		for k, v := range opts.StageCfg.Vars {
+			vars[k] = v
+		}
 	}
 
 	switch mode {
@@ -113,10 +126,10 @@ func (b *Builder) Build(ps *pipeline.PipelineState, opts BuildOpts) (*BuildResul
 
 // addFullContext includes everything from prior stages.
 func (b *Builder) addFullContext(ps *pipeline.PipelineState, opts BuildOpts, vars prompt.Vars) {
-	// Git diff
+	// Git context — commits, summary, and file list (no full diff)
 	if b.git != nil {
-		if diff, err := b.git.Diff(ps.Worktree); err == nil && diff != "" {
-			vars["git_diff"] = diff
+		if log, err := b.git.Log(ps.Worktree); err == nil && log != "" {
+			vars["git_commits"] = log
 		}
 		if summary, err := b.git.DiffSummary(ps.Worktree); err == nil && summary != "" {
 			vars["git_diff_summary"] = summary
@@ -138,12 +151,12 @@ func (b *Builder) addFullContext(ps *pipeline.PipelineState, opts BuildOpts, var
 	}
 }
 
-// addCodeOnlyContext includes code diff but strips reasoning.
+// addCodeOnlyContext includes commits and file list but strips reasoning.
 func (b *Builder) addCodeOnlyContext(ps *pipeline.PipelineState, opts BuildOpts, vars prompt.Vars) {
-	// Git diff — the code itself
+	// Git context — commits, summary, and file list (no full diff)
 	if b.git != nil {
-		if diff, err := b.git.Diff(ps.Worktree); err == nil && diff != "" {
-			vars["git_diff"] = diff
+		if log, err := b.git.Log(ps.Worktree); err == nil && log != "" {
+			vars["git_commits"] = log
 		}
 		if summary, err := b.git.DiffSummary(ps.Worktree); err == nil && summary != "" {
 			vars["git_diff_summary"] = summary

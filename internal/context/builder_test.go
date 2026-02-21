@@ -15,6 +15,7 @@ type mockGit struct {
 	diff            string
 	diffSummary     string
 	filesChanged    string
+	log             string
 	diffErr         error
 	diffSummaryErr  error
 	filesChangedErr error
@@ -36,6 +37,10 @@ func (m *mockGit) FilesChanged(dir string) (string, error) {
 		return "", m.filesChangedErr
 	}
 	return m.filesChanged, m.diffErr
+}
+
+func (m *mockGit) Log(dir string) (string, error) {
+	return m.log, nil
 }
 
 func newTestStore(t *testing.T) *pipeline.Store {
@@ -95,6 +100,7 @@ func TestBuild_FullMode(t *testing.T) {
 		diff:         "+added line",
 		diffSummary:  "1 file changed",
 		filesChanged: "src/auth.ts",
+		log:          "abc1234 feat: add auth",
 	}
 
 	builder := NewBuilder(store, git)
@@ -111,8 +117,8 @@ func TestBuild_FullMode(t *testing.T) {
 	if result.Mode != ModeFull {
 		t.Errorf("expected full mode, got %q", result.Mode)
 	}
-	if result.Vars["git_diff"] != "+added line" {
-		t.Errorf("expected git diff, got %q", result.Vars["git_diff"])
+	if result.Vars["git_commits"] != "abc1234 feat: add auth" {
+		t.Errorf("expected git commits, got %q", result.Vars["git_commits"])
 	}
 	if result.Vars["git_diff_summary"] != "1 file changed" {
 		t.Errorf("expected diff summary, got %q", result.Vars["git_diff_summary"])
@@ -142,6 +148,7 @@ func TestBuild_CodeOnlyMode(t *testing.T) {
 		diff:         "+code change",
 		diffSummary:  "2 files changed",
 		filesChanged: "src/auth.ts\nsrc/login.ts",
+		log:          "def5678 refactor: auth flow",
 	}
 
 	builder := NewBuilder(store, git)
@@ -157,9 +164,9 @@ func TestBuild_CodeOnlyMode(t *testing.T) {
 	if result.Mode != ModeCodeOnly {
 		t.Errorf("expected code_only mode, got %q", result.Mode)
 	}
-	// Should have code
-	if result.Vars["git_diff"] != "+code change" {
-		t.Errorf("expected git diff, got %q", result.Vars["git_diff"])
+	// Should have commits
+	if result.Vars["git_commits"] != "def5678 refactor: auth flow" {
+		t.Errorf("expected git commits, got %q", result.Vars["git_commits"])
 	}
 	// Should NOT have prior stage summary (fresh eyes)
 	if _, ok := result.Vars["prior_stage_summary"]; ok {
@@ -550,6 +557,34 @@ func TestInstallAndLoadBuiltinTemplates(t *testing.T) {
 	tmplDir := filepath.Join(tmpDir, ".factory", "templates")
 	if _, err := os.Stat(tmplDir); !os.IsNotExist(err) {
 		t.Fatal("template dir should not exist yet")
+	}
+}
+
+func TestBuild_CustomVars(t *testing.T) {
+	store := newTestStore(t)
+	ps := newTestPipeline(t, store)
+
+	builder := NewBuilder(store, nil)
+	result, err := builder.Build(ps, BuildOpts{
+		Issue:    42,
+		Stage:    "qa",
+		StageCfg: &config.Stage{ID: "qa", ContextMode: "minimal", Vars: map[string]string{"stage_var": "from_stage"}},
+		PipelineVars: map[string]string{
+			"env_setup": "PostgreSQL on port 5433",
+			"stage_var": "from_pipeline",
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Pipeline var should be present
+	if result.Vars["env_setup"] != "PostgreSQL on port 5433" {
+		t.Errorf("expected pipeline var, got %q", result.Vars["env_setup"])
+	}
+	// Stage var should override pipeline var
+	if result.Vars["stage_var"] != "from_stage" {
+		t.Errorf("expected stage var to override pipeline var, got %q", result.Vars["stage_var"])
 	}
 }
 

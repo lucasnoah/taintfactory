@@ -2,19 +2,20 @@ package pipeline
 
 // PipelineState is the top-level persisted state for a single issue pipeline.
 type PipelineState struct {
-	Issue          int                 `json:"issue"`
-	Title          string              `json:"title"`
-	Branch         string              `json:"branch"`
-	Worktree       string              `json:"worktree"`
-	CurrentStage   string              `json:"current_stage"`
-	CurrentAttempt int                 `json:"current_attempt"`
-	CurrentSession string              `json:"current_session"`
-	CurrentFixRound int               `json:"current_fix_round"`
-	StageHistory   []StageHistoryEntry `json:"stage_history"`
-	GoalGates      map[string]string   `json:"goal_gates"`
-	Status         string              `json:"status"` // "pending", "in_progress", "completed", "failed", "blocked"
-	CreatedAt      string              `json:"created_at"`
-	UpdatedAt      string              `json:"updated_at"`
+	Issue           int                 `json:"issue"`
+	Title           string              `json:"title"`
+	FeatureIntent   string              `json:"feature_intent,omitempty"`
+	Branch          string              `json:"branch"`
+	Worktree        string              `json:"worktree"`
+	CurrentStage    string              `json:"current_stage"`
+	CurrentAttempt  int                 `json:"current_attempt"`
+	CurrentSession  string              `json:"current_session"`
+	CurrentFixRound int                 `json:"current_fix_round"`
+	StageHistory    []StageHistoryEntry `json:"stage_history"`
+	GoalGates       map[string]string   `json:"goal_gates"`
+	Status          string              `json:"status"` // "pending", "in_progress", "completed", "failed", "blocked"
+	CreatedAt       string              `json:"created_at"`
+	UpdatedAt       string              `json:"updated_at"`
 }
 
 // StageHistoryEntry records the outcome of a completed stage attempt.

@@ -122,17 +122,21 @@ func LoadTemplate(templatePath string, workdir string) (string, error) {
 		}
 	}
 
-	// Fall back to built-in templates
+	// Check user-level overrides at ~/.factory/templates/
 	dir := builtinTemplateDir()
-	if dir == "" {
-		return "", fmt.Errorf("template %q not found and could not determine home directory for built-in templates", templatePath)
+	if dir != "" {
+		userPath := filepath.Join(dir, templatePath)
+		if data, err := os.ReadFile(userPath); err == nil {
+			return string(data), nil
+		}
 	}
-	builtinPath := filepath.Join(dir, templatePath)
-	data, err := os.ReadFile(builtinPath)
-	if err != nil {
-		return "", fmt.Errorf("template not found at %q (also checked %q): %w", templatePath, builtinPath, err)
+
+	// Fall back to compiled-in templates
+	if content, ok := builtinTemplates[templatePath]; ok {
+		return content, nil
 	}
-	return string(data), nil
+
+	return "", fmt.Errorf("template %q not found (checked workdir, ~/.factory/templates/, and built-in templates)", templatePath)
 }
 
 // builtinTemplateDir returns the path to the built-in templates directory.

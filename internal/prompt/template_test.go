@@ -169,24 +169,27 @@ func TestRender_BuiltinTemplate(t *testing.T) {
 
 func TestRender_ReviewTemplate(t *testing.T) {
 	vars := Vars{
-		"issue_title":    "Add auth",
-		"issue_number":   "42",
-		"issue_body":     "Implement authentication.",
-		"worktree_path":  "/tmp/worktree",
-		"branch":         "feature/42",
-		"stage_id":       "review",
-		"attempt":        "1",
-		"git_diff":       "+added line",
+		"issue_title":      "Add auth",
+		"issue_number":     "42",
+		"issue_body":       "Implement authentication.",
+		"worktree_path":    "/tmp/worktree",
+		"branch":           "feature/42",
+		"stage_id":         "review",
+		"attempt":          "1",
+		"git_commits":      "abc1234 feat: add auth",
 		"git_diff_summary": "1 file changed",
-		"files_changed":  "src/auth.ts",
+		"files_changed":    "src/auth.ts",
 	}
 
 	result, err := Render(reviewTemplate, vars)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "+added line") {
-		t.Errorf("expected git diff in output")
+	if !strings.Contains(result, "abc1234 feat: add auth") {
+		t.Errorf("expected git commits in output")
+	}
+	if !strings.Contains(result, "git show") {
+		t.Errorf("expected git instructions in output")
 	}
 }
 
@@ -235,6 +238,23 @@ func TestLoadTemplate_NotFound(t *testing.T) {
 	_, err := LoadTemplate("nonexistent.md", "")
 	if err == nil {
 		t.Fatal("expected error for missing template")
+	}
+}
+
+func TestLoadTemplate_CompiledFallback(t *testing.T) {
+	// Use a temp dir as HOME so ~/.factory/templates/ is empty
+	tmpDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	// Loading a built-in template should fall back to compiled-in map
+	content, err := LoadTemplate("review.md", "")
+	if err != nil {
+		t.Fatalf("expected compiled-in fallback to work: %v", err)
+	}
+	if !strings.Contains(content, "Fix every issue you find") {
+		t.Errorf("expected compiled-in review template content, got: %q", content[:100])
 	}
 }
 

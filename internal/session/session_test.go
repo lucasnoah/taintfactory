@@ -6,16 +6,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lucasnoah/taintfactory/internal/db"
 )
 
 // mockTmux records calls and returns configurable results.
 type mockTmux struct {
-	calls       []string
-	sessions    map[string]bool // live sessions
-	captureText string
-	listErr     error
+	calls            []string
+	sessions         map[string]bool // live sessions
+	captureText      string
+	captureLinesFn   func() string // if set, overrides captureText for CapturePaneLines
+	listErr          error
 }
 
 func newMockTmux() *mockTmux {
@@ -33,6 +35,11 @@ func (m *mockTmux) SendKeys(session string, keys string) error {
 	return nil
 }
 
+func (m *mockTmux) SendBuffer(session string, content string) error {
+	m.calls = append(m.calls, fmt.Sprintf("send-buffer %s %q", session, content))
+	return nil
+}
+
 func (m *mockTmux) KillSession(name string) error {
 	m.calls = append(m.calls, fmt.Sprintf("kill-session %s", name))
 	delete(m.sessions, name)
@@ -46,6 +53,9 @@ func (m *mockTmux) CapturePane(name string) (string, error) {
 
 func (m *mockTmux) CapturePaneLines(name string, lines int) (string, error) {
 	m.calls = append(m.calls, fmt.Sprintf("capture-pane-lines %s %d", name, lines))
+	if m.captureLinesFn != nil {
+		return m.captureLinesFn(), nil
+	}
 	return m.captureText, nil
 }
 
@@ -93,9 +103,9 @@ func TestCreate_HappyPath(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Verify tmux calls
-	if len(tmux.calls) < 3 {
-		t.Fatalf("expected at least 3 tmux calls, got %d: %v", len(tmux.calls), tmux.calls)
+	// Verify tmux calls: new-session, cd, unset CLAUDECODE, claude command
+	if len(tmux.calls) < 4 {
+		t.Fatalf("expected at least 4 tmux calls, got %d: %v", len(tmux.calls), tmux.calls)
 	}
 	if tmux.calls[0] != "new-session test-1" {
 		t.Errorf("call[0] = %q, want %q", tmux.calls[0], "new-session test-1")
@@ -103,12 +113,15 @@ func TestCreate_HappyPath(t *testing.T) {
 	if !strings.Contains(tmux.calls[1], "cd '/tmp/myproject'") {
 		t.Errorf("call[1] = %q, want shell-quoted cd command", tmux.calls[1])
 	}
-	if !strings.Contains(tmux.calls[2], "claude") {
-		t.Errorf("call[2] = %q, want claude command", tmux.calls[2])
+	if !strings.Contains(tmux.calls[2], "unset CLAUDECODE") {
+		t.Errorf("call[2] = %q, want unset CLAUDECODE", tmux.calls[2])
+	}
+	if !strings.Contains(tmux.calls[3], "claude") {
+		t.Errorf("call[3] = %q, want claude command", tmux.calls[3])
 	}
 	// Non-interactive should include --print
-	if !strings.Contains(tmux.calls[2], "--print") {
-		t.Errorf("call[2] = %q, want --print flag for non-interactive", tmux.calls[2])
+	if !strings.Contains(tmux.calls[3], "--print") {
+		t.Errorf("call[3] = %q, want --print flag for non-interactive", tmux.calls[3])
 	}
 
 	// Verify DB event
@@ -166,9 +179,9 @@ func TestCreate_NoWorkdir(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Should have new-session + claude command (no cd)
-	if len(tmux.calls) != 2 {
-		t.Fatalf("expected 2 tmux calls (no cd), got %d: %v", len(tmux.calls), tmux.calls)
+	// Should have new-session + unset CLAUDECODE + claude command (no cd)
+	if len(tmux.calls) != 3 {
+		t.Fatalf("expected 3 tmux calls (no cd), got %d: %v", len(tmux.calls), tmux.calls)
 	}
 }
 
@@ -341,16 +354,16 @@ func TestCreate_WritesHooksConfig(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Verify hooks.json was written
-	data, err := os.ReadFile(filepath.Join(tmpDir, ".claude", "hooks.json"))
+	// Verify settings.local.json was written with hooks
+	data, err := os.ReadFile(filepath.Join(tmpDir, ".claude", "settings.local.json"))
 	if err != nil {
-		t.Fatalf("read hooks.json: %v", err)
+		t.Fatalf("read settings.local.json: %v", err)
 	}
 	if !strings.Contains(string(data), "--session 42-impl") {
-		t.Errorf("hooks.json missing session name: %s", data)
+		t.Errorf("settings.local.json missing session name: %s", data)
 	}
 	if !strings.Contains(string(data), "--issue 42") {
-		t.Errorf("hooks.json missing issue: %s", data)
+		t.Errorf("settings.local.json missing issue: %s", data)
 	}
 }
 
@@ -369,10 +382,10 @@ func TestCreate_NoHooksWithoutIssue(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// hooks.json should NOT be written when issue is 0
-	_, err = os.Stat(filepath.Join(tmpDir, ".claude", "hooks.json"))
+	// settings.local.json should NOT be written when issue is 0
+	_, err = os.Stat(filepath.Join(tmpDir, ".claude", "settings.local.json"))
 	if err == nil {
-		t.Error("hooks.json should not exist when issue is 0")
+		t.Error("settings.local.json should not exist when issue is 0")
 	}
 }
 
@@ -788,5 +801,64 @@ func TestBuildClaudeCommand(t *testing.T) {
 				t.Errorf("buildClaudeCommand() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestWaitIdle_PaneStabilityFallback(t *testing.T) {
+	tmux := newMockTmux()
+	tmux.sessions["test-pane"] = true
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	// Seed a started event so WaitIdle finds the session
+	d.LogSessionEvent("test-pane", 1, "impl", "started", nil, "")
+
+	// Return static content from CapturePaneLines — simulating an idle pane
+	tmux.captureLinesFn = func() string {
+		return "❯ \n────────\n  bypass permissions on"
+	}
+
+	result, err := mgr.WaitIdle("test-pane", 5*time.Second, 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("WaitIdle: %v", err)
+	}
+	if result.State != "idle" {
+		t.Errorf("state = %q, want %q", result.State, "idle")
+	}
+
+	// Verify the fallback logged an idle event with pane_stable metadata
+	state, _ := d.GetSessionState("test-pane")
+	if state.Event != "idle" {
+		t.Errorf("DB event = %q, want %q", state.Event, "idle")
+	}
+}
+
+func TestWaitIdle_PaneChanging_UsesDBEvent(t *testing.T) {
+	tmux := newMockTmux()
+	tmux.sessions["test-change"] = true
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	d.LogSessionEvent("test-change", 1, "impl", "started", nil, "")
+
+	// Return changing content — simulating an active session
+	callCount := 0
+	tmux.captureLinesFn = func() string {
+		callCount++
+		return fmt.Sprintf("Composing… (%ds)", callCount)
+	}
+
+	// Fire idle event via DB after a short delay
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		d.LogSessionEvent("test-change", 1, "impl", "idle", nil, "")
+	}()
+
+	result, err := mgr.WaitIdle("test-change", 5*time.Second, 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("WaitIdle: %v", err)
+	}
+	if result.State != "idle" {
+		t.Errorf("state = %q, want %q", result.State, "idle")
 	}
 }

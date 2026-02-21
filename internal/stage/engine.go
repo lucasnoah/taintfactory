@@ -2,13 +2,17 @@ package stage
 
 import (
 	"fmt"
+	"io"
+	"os/exec"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/lucasnoah/taintfactory/internal/checks"
 	"github.com/lucasnoah/taintfactory/internal/config"
 	appctx "github.com/lucasnoah/taintfactory/internal/context"
 	"github.com/lucasnoah/taintfactory/internal/db"
+	"github.com/lucasnoah/taintfactory/internal/github"
 	"github.com/lucasnoah/taintfactory/internal/pipeline"
 	"github.com/lucasnoah/taintfactory/internal/prompt"
 	"github.com/lucasnoah/taintfactory/internal/session"
@@ -23,6 +27,8 @@ type Engine struct {
 	db           *db.DB
 	cfg          *config.PipelineConfig
 	pollInterval time.Duration // for WaitIdle; defaults to 30s
+	bootDelay    time.Duration // delay after session create for Claude to boot; defaults to 15s
+	progress     io.Writer     // live progress output; nil = silent
 }
 
 // NewEngine creates a stage engine.
@@ -42,12 +48,30 @@ func NewEngine(
 		db:           database,
 		cfg:          cfg,
 		pollInterval: 30 * time.Second,
+		bootDelay:    15 * time.Second,
 	}
 }
 
 // SetPollInterval overrides the WaitIdle poll interval (for testing).
 func (e *Engine) SetPollInterval(d time.Duration) {
 	e.pollInterval = d
+}
+
+// SetBootDelay overrides the boot delay (for testing).
+func (e *Engine) SetBootDelay(d time.Duration) {
+	e.bootDelay = d
+}
+
+// SetProgress sets a writer for live progress output (e.g. os.Stderr).
+func (e *Engine) SetProgress(w io.Writer) {
+	e.progress = w
+}
+
+// logf prints a progress line if a progress writer is configured.
+func (e *Engine) logf(format string, args ...interface{}) {
+	if e.progress != nil {
+		fmt.Fprintf(e.progress, "  → "+format+"\n", args...)
+	}
 }
 
 // RunOpts configures a stage run.
@@ -62,6 +86,7 @@ type RunResult struct {
 	Issue           int               `json:"issue"`
 	Stage           string            `json:"stage"`
 	Attempt         int               `json:"attempt"`
+	Session         string            `json:"session,omitempty"`
 	Outcome         string            `json:"outcome"` // "success", "fail", "escalate"
 	AgentDuration   time.Duration     `json:"agent_duration"`
 	TotalDuration   time.Duration     `json:"total_duration"`
@@ -75,6 +100,7 @@ type RunResult struct {
 // Run executes the full stage lifecycle.
 func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 	start := time.Now()
+	e.logf("issue #%d: running stage %q", opts.Issue, opts.Stage)
 
 	ps, err := e.store.Get(opts.Issue)
 	if err != nil {
@@ -97,43 +123,56 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 
 	// For checks_only stages, skip agent and go straight to checks
 	if stageCfg.Type == "checks_only" {
+		e.logf("stage type is checks_only, running checks directly")
 		return e.runChecksOnly(ps, stageCfg, opts, result, start)
 	}
 
 	// Run checks_before if configured
 	if len(stageCfg.ChecksBefore) > 0 {
+		e.logf("running checks_before: %v", stageCfg.ChecksBefore)
 		gate, _, err := e.runGate(ps, opts, stageCfg.ChecksBefore, 0)
 		if err != nil {
 			return nil, fmt.Errorf("checks_before: %w", err)
 		}
 		if !gate.Passed {
+			e.logf("checks_before failed — stage aborted")
 			result.Outcome = "fail"
 			result.TotalDuration = time.Since(start)
 			_ = e.db.LogPipelineEvent(opts.Issue, "checks_before_failed", opts.Stage, ps.CurrentAttempt, "")
 			return result, nil
 		}
+		e.logf("checks_before passed")
 	}
 
 	// Build context and render prompt
+	e.logf("building context and rendering prompt...")
 	agentStart := time.Now()
 	rendered, err := e.buildAndRenderPrompt(ps, opts, stageCfg)
 	if err != nil {
 		return nil, fmt.Errorf("build prompt: %w", err)
 	}
+	e.logf("prompt rendered (%d bytes)", len(rendered))
 
 	// Save rendered prompt
 	_ = e.store.SavePrompt(opts.Issue, opts.Stage, ps.CurrentAttempt, rendered)
 
 	// Create session and send prompt
 	sessionName := fmt.Sprintf("%d-%s-%d", opts.Issue, opts.Stage, ps.CurrentAttempt)
+	result.Session = sessionName
+	e.logf("creating agent session: %s", sessionName)
 	if err := e.createAndRunSession(sessionName, ps, opts, stageCfg, rendered); err != nil {
 		return nil, fmt.Errorf("run session: %w", err)
 	}
 	result.AgentDuration = time.Since(agentStart)
+	e.logf("agent finished (%s)", result.AgentDuration.Round(time.Second))
+
+	// Steer agent to commit any uncommitted changes
+	e.ensureCommitted(sessionName, ps.Worktree, opts.Timeout)
 
 	// Run post-checks
 	checkNames := e.resolvePostChecks(stageCfg)
 	if len(checkNames) == 0 {
+		e.logf("no post-checks configured — stage passed")
 		result.Outcome = "success"
 		result.ChecksFirstPass = true
 		result.TotalDuration = time.Since(start)
@@ -141,6 +180,7 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 		return result, nil
 	}
 
+	e.logf("running post-checks: %v", checkNames)
 	gate, _, err := e.runGate(ps, opts, checkNames, 0)
 	if err != nil {
 		e.cleanupSession(sessionName)
@@ -160,12 +200,15 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 	}
 
 	if gate.Passed {
+		e.logf("all post-checks passed on first try")
 		result.Outcome = "success"
 		result.ChecksFirstPass = true
 		result.TotalDuration = time.Since(start)
 		e.cleanupSession(sessionName)
 		return result, nil
 	}
+
+	e.logf("post-checks failed, entering fix loop")
 
 	// Enter fix loop
 	maxFixRounds := e.cfg.Pipeline.MaxFixRounds
@@ -186,11 +229,13 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 	}
 
 	for round := 1; round <= maxFixRounds; round++ {
+		e.logf("fix round %d/%d", round, maxFixRounds)
 		result.FixRounds = round
 		_ = e.db.LogPipelineEvent(opts.Issue, "fix_round_start", opts.Stage, ps.CurrentAttempt, fmt.Sprintf("round=%d", round))
 
 		// Determine if we need a fresh session
 		if round > freshAfter {
+			e.logf("creating fresh fix session (round > %d)", freshAfter)
 			e.cleanupSession(sessionName)
 			sessionName = fmt.Sprintf("%d-%s-%d-fix-%d", opts.Issue, opts.Stage, ps.CurrentAttempt, round)
 			fixRendered, err := e.buildFixPrompt(ps, opts, stageCfg, gate)
@@ -201,6 +246,7 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 				return nil, fmt.Errorf("fix session: %w", err)
 			}
 		} else {
+			e.logf("sending fix prompt to existing session %s", sessionName)
 			// Send fix prompt to existing session
 			if err := e.sessions.SendFromCheckFailures(sessionName, opts.Issue, opts.Stage); err != nil {
 				e.cleanupSession(sessionName)
@@ -218,7 +264,11 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 			}
 		}
 
+		// Steer agent to commit any uncommitted changes from the fix round
+		e.ensureCommitted(sessionName, ps.Worktree, opts.Timeout)
+
 		// Re-run checks
+		e.logf("re-running checks after fix round %d", round)
 		gate, _, err = e.runGate(ps, opts, checkNames, round)
 		if err != nil {
 			e.cleanupSession(sessionName)
@@ -240,14 +290,17 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 		}
 
 		if gate.Passed {
+			e.logf("all checks passed after fix round %d", round)
 			result.Outcome = "success"
 			result.TotalDuration = time.Since(start)
 			e.cleanupSession(sessionName)
 			return result, nil
 		}
+		e.logf("checks still failing after fix round %d", round)
 	}
 
 	// Fix loop exhausted
+	e.logf("fix loop exhausted after %d rounds — stage failed", maxFixRounds)
 	result.Outcome = "fail"
 	result.TotalDuration = time.Since(start)
 	e.cleanupSession(sessionName)
@@ -259,12 +312,14 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 func (e *Engine) runChecksOnly(ps *pipeline.PipelineState, stageCfg *config.Stage, opts RunOpts, result *RunResult, start time.Time) (*RunResult, error) {
 	checkNames := stageCfg.Checks
 	if len(checkNames) == 0 {
+		e.logf("no checks configured — stage passed")
 		result.Outcome = "success"
 		result.ChecksFirstPass = true
 		result.TotalDuration = time.Since(start)
 		return result, nil
 	}
 
+	e.logf("running checks: %v", checkNames)
 	gate, _, err := e.runGate(ps, opts, checkNames, 0)
 	if err != nil {
 		return nil, fmt.Errorf("checks_only gate: %w", err)
@@ -279,12 +334,14 @@ func (e *Engine) runChecksOnly(ps *pipeline.PipelineState, stageCfg *config.Stag
 	}
 
 	if gate.Passed {
+		e.logf("all checks passed")
 		result.Outcome = "success"
 		result.ChecksFirstPass = true
 		result.TotalDuration = time.Since(start)
 		return result, nil
 	}
 
+	e.logf("checks failed — stage failed")
 	result.Outcome = "fail"
 	result.TotalDuration = time.Since(start)
 	return result, nil
@@ -292,10 +349,19 @@ func (e *Engine) runChecksOnly(ps *pipeline.PipelineState, stageCfg *config.Stag
 
 // buildAndRenderPrompt builds context and renders the stage prompt.
 func (e *Engine) buildAndRenderPrompt(ps *pipeline.PipelineState, opts RunOpts, stageCfg *config.Stage) (string, error) {
+	// Load cached issue body from pipeline directory
+	var issueBody string
+	pipelineDir := fmt.Sprintf("%s/%d", e.store.BaseDir(), opts.Issue)
+	if issue, err := github.LoadCachedIssue(pipelineDir); err == nil {
+		issueBody = issue.Body
+	}
+
 	buildResult, err := e.builder.Build(ps, appctx.BuildOpts{
-		Issue:    opts.Issue,
-		Stage:    opts.Stage,
-		StageCfg: stageCfg,
+		Issue:        opts.Issue,
+		Stage:        opts.Stage,
+		StageCfg:     stageCfg,
+		IssueBody:    issueBody,
+		PipelineVars: e.cfg.Pipeline.Vars,
 	})
 	if err != nil {
 		return "", err
@@ -311,10 +377,19 @@ func (e *Engine) buildAndRenderPrompt(ps *pipeline.PipelineState, opts RunOpts, 
 
 // buildFixPrompt builds a prompt for a fresh fix session.
 func (e *Engine) buildFixPrompt(ps *pipeline.PipelineState, opts RunOpts, stageCfg *config.Stage, gate *checks.GateResult) (string, error) {
+	// Load cached issue body
+	var issueBody string
+	pipelineDir := fmt.Sprintf("%s/%d", e.store.BaseDir(), opts.Issue)
+	if issue, err := github.LoadCachedIssue(pipelineDir); err == nil {
+		issueBody = issue.Body
+	}
+
 	// Build fix-checks template with failure details
 	vars := prompt.Vars{
 		"issue_title":    ps.Title,
 		"issue_number":   fmt.Sprintf("%d", ps.Issue),
+		"issue_body":     issueBody,
+		"feature_intent": ps.FeatureIntent,
 		"worktree_path":  ps.Worktree,
 		"branch":         ps.Branch,
 		"stage_id":       opts.Stage,
@@ -337,23 +412,33 @@ func (e *Engine) createAndRunSession(name string, ps *pipeline.PipelineState, op
 		flags = e.cfg.Pipeline.Defaults.Flags
 	}
 
+	e.logf("creating tmux session %s in %s", name, ps.Worktree)
 	if err := e.sessions.Create(session.CreateOpts{
-		Name:    name,
-		Workdir: ps.Worktree,
-		Flags:   flags,
-		Issue:   opts.Issue,
-		Stage:   opts.Stage,
+		Name:        name,
+		Workdir:     ps.Worktree,
+		Flags:       flags,
+		Issue:       opts.Issue,
+		Stage:       opts.Stage,
+		Interactive: true,
 	}); err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
 
+	// Wait for Claude to boot and become ready for input.
+	// Claude Code takes ~5-10s to start; we use a fixed delay since
+	// the Stop hook doesn't fire on initial boot (only after processing).
+	e.logf("waiting %s for Claude to boot...", e.bootDelay)
+	time.Sleep(e.bootDelay)
+
 	// Send the rendered prompt
+	e.logf("sending prompt to session %s", name)
 	if err := e.sessions.Send(name, rendered); err != nil {
 		e.cleanupSession(name)
 		return fmt.Errorf("send prompt: %w", err)
 	}
 
-	// Wait for session to become idle
+	// Wait for session to become idle after processing
+	e.logf("waiting for session %s to become idle (timeout: %s)...", name, opts.Timeout)
 	waitResult, err := e.sessions.WaitIdle(name, opts.Timeout, e.pollInterval)
 	if err != nil {
 		e.cleanupSession(name)
@@ -364,6 +449,7 @@ func (e *Engine) createAndRunSession(name string, ps *pipeline.PipelineState, op
 		return fmt.Errorf("session exited unexpectedly")
 	}
 
+	e.logf("session %s is idle", name)
 	return nil
 }
 
@@ -401,8 +487,13 @@ func (e *Engine) runGate(ps *pipeline.PipelineState, opts RunOpts, checkNames []
 		Continue: true,
 	})
 
-	// Log individual check results to DB (needed by SendFromCheckFailures)
+	// Log individual check results and report progress
 	for _, r := range results {
+		status := "PASS"
+		if !r.Passed {
+			status = "FAIL"
+		}
+		e.logf("check %s: %s (%dms)", r.CheckName, status, r.DurationMs)
 		if dbErr := e.db.LogCheckRun(
 			opts.Issue, opts.Stage, ps.CurrentAttempt, fixRound,
 			r.CheckName, r.Passed, r.AutoFixed, r.ExitCode,
@@ -437,9 +528,59 @@ func (e *Engine) resolvePostChecks(stageCfg *config.Stage) []string {
 	return result
 }
 
-// cleanupSession kills and cleans up a session, ignoring errors.
+// ensureCommitted checks for uncommitted changes and steers the agent to commit them.
+// This preserves the agent's context for writing meaningful commit messages.
+func (e *Engine) ensureCommitted(sessionName string, worktree string, timeout time.Duration) {
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = worktree
+	out, err := cmd.Output()
+	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
+		return // no changes or git error
+	}
+
+	e.logf("uncommitted changes detected — steering agent to commit")
+	if err := e.sessions.Steer(sessionName, "You have uncommitted changes. Please commit all your work now with a descriptive commit message."); err != nil {
+		e.logf("warning: steer to commit failed: %v", err)
+		return
+	}
+
+	result, err := e.sessions.WaitIdle(sessionName, timeout, e.pollInterval)
+	if err != nil {
+		e.logf("warning: wait for commit idle failed: %v", err)
+		return
+	}
+	if result.State == "exited" {
+		e.logf("warning: session exited while committing")
+		return
+	}
+	e.logf("agent committed changes")
+}
+
+// cleanupSession captures the session log, saves it, then kills the session.
 func (e *Engine) cleanupSession(name string) {
-	_, _ = e.sessions.Kill(name)
+	log, err := e.sessions.Kill(name)
+	if err != nil {
+		return
+	}
+	if log != "" {
+		// Parse issue/stage/attempt from session name (format: {issue}-{stage}-{attempt})
+		// Best-effort save — don't fail the pipeline if this doesn't work.
+		_ = e.saveSessionLog(name, log)
+	}
+}
+
+// saveSessionLog persists the captured tmux pane output to the pipeline store.
+func (e *Engine) saveSessionLog(sessionName string, log string) error {
+	// Look up session metadata from DB
+	state, err := e.db.GetSessionState(sessionName)
+	if err != nil || state == nil {
+		return err
+	}
+	ps, err := e.store.Get(state.Issue)
+	if err != nil {
+		return err
+	}
+	return e.store.SaveSessionLog(state.Issue, state.Stage, ps.CurrentAttempt, log)
 }
 
 // findStageConfig finds a stage in the pipeline config.

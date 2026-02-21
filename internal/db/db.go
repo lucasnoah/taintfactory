@@ -108,32 +108,95 @@ CREATE TABLE IF NOT EXISTS pipeline_events (
 CREATE INDEX IF NOT EXISTS idx_pipeline_issue ON pipeline_events(issue, timestamp DESC);
 `
 
+const schemaV2 = `
+CREATE TABLE IF NOT EXISTS issue_queue (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue       INTEGER NOT NULL UNIQUE,
+    status      TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending','active','completed','failed')),
+    position    INTEGER NOT NULL,
+    added_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    started_at  TEXT,
+    finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_queue_status_position ON issue_queue(status, position);
+`
+
+const schemaV3 = `
+ALTER TABLE issue_queue ADD COLUMN feature_intent TEXT NOT NULL DEFAULT '';
+`
+
 // Migrate applies the database schema.
 func (d *DB) Migrate() error {
-	var count int
-	err := d.conn.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version = 1").Scan(&count)
-	if err == nil && count > 0 {
-		return nil
+	// Apply v1 if needed
+	var v1Count int
+	err := d.conn.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version = 1").Scan(&v1Count)
+	if err != nil || v1Count == 0 {
+		tx, err := d.conn.Begin()
+		if err != nil {
+			return fmt.Errorf("begin transaction: %w", err)
+		}
+		defer tx.Rollback()
+
+		if _, err := tx.Exec(schemaV1); err != nil {
+			return fmt.Errorf("apply schema v1: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_version (version) VALUES (1)"); err != nil {
+			return fmt.Errorf("record schema version: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit v1: %w", err)
+		}
 	}
 
-	tx, err := d.conn.Begin()
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback()
+	// Apply v2 if needed
+	var v2Count int
+	err = d.conn.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version = 2").Scan(&v2Count)
+	if err != nil || v2Count == 0 {
+		tx, err := d.conn.Begin()
+		if err != nil {
+			return fmt.Errorf("begin transaction: %w", err)
+		}
+		defer tx.Rollback()
 
-	if _, err := tx.Exec(schemaV1); err != nil {
-		return fmt.Errorf("apply schema v1: %w", err)
+		if _, err := tx.Exec(schemaV2); err != nil {
+			return fmt.Errorf("apply schema v2: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_version (version) VALUES (2)"); err != nil {
+			return fmt.Errorf("record schema version v2: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit v2: %w", err)
+		}
 	}
-	if _, err := tx.Exec("INSERT INTO schema_version (version) VALUES (1)"); err != nil {
-		return fmt.Errorf("record schema version: %w", err)
+
+	// Apply v3 if needed
+	var v3Count int
+	err = d.conn.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version = 3").Scan(&v3Count)
+	if err != nil || v3Count == 0 {
+		tx, err := d.conn.Begin()
+		if err != nil {
+			return fmt.Errorf("begin transaction: %w", err)
+		}
+		defer tx.Rollback()
+
+		if _, err := tx.Exec(schemaV3); err != nil {
+			return fmt.Errorf("apply schema v3: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_version (version) VALUES (3)"); err != nil {
+			return fmt.Errorf("record schema version v3: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit v3: %w", err)
+		}
 	}
-	return tx.Commit()
+
+	return nil
 }
 
 // Reset drops all tables and re-applies the schema.
 func (d *DB) Reset() error {
-	tables := []string{"pipeline_events", "check_runs", "session_events", "schema_version"}
+	tables := []string{"issue_queue", "pipeline_events", "check_runs", "session_events", "schema_version"}
 	for _, t := range tables {
 		if _, err := d.conn.Exec("DROP TABLE IF EXISTS " + t); err != nil {
 			return fmt.Errorf("drop table %s: %w", t, err)
