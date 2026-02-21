@@ -2,14 +2,17 @@ package session
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // TmuxRunner abstracts tmux shell commands for testability.
 type TmuxRunner interface {
 	NewSession(name string) error
 	SendKeys(session string, keys string) error
+	SendBuffer(session string, content string) error
 	KillSession(name string) error
 	CapturePane(name string) (string, error)
 	CapturePaneLines(name string, lines int) (string, error)
@@ -31,6 +34,41 @@ func (e *ExecTmux) NewSession(name string) error {
 
 func (e *ExecTmux) SendKeys(session string, keys string) error {
 	return exec.Command("tmux", "send-keys", "-t", session, keys, "Enter").Run()
+}
+
+// SendBuffer writes content to a temp file, loads it into a tmux buffer,
+// pastes it into the target session, and submits with Enter.
+// This handles multiline prompts correctly for interactive Claude Code sessions.
+func (e *ExecTmux) SendBuffer(session string, content string) error {
+	// Write content to a temp file
+	f, err := os.CreateTemp("", "factory-prompt-*.txt")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	defer os.Remove(f.Name())
+
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	f.Close()
+
+	// Load into tmux buffer
+	if err := exec.Command("tmux", "load-buffer", f.Name()).Run(); err != nil {
+		return fmt.Errorf("load-buffer: %w", err)
+	}
+
+	// Paste into target session
+	if err := exec.Command("tmux", "paste-buffer", "-t", session).Run(); err != nil {
+		return fmt.Errorf("paste-buffer: %w", err)
+	}
+
+	// Wait for the terminal to finish processing the pasted content
+	// before sending Enter. Large pastes need time to be received.
+	time.Sleep(1 * time.Second)
+
+	// Submit with Enter
+	return exec.Command("tmux", "send-keys", "-t", session, "Enter").Run()
 }
 
 func (e *ExecTmux) KillSession(name string) error {

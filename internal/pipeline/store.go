@@ -210,6 +210,15 @@ func (s *Store) SavePrompt(issue int, stage string, attempt int, prompt string) 
 	return WriteAtomic(filepath.Join(dir, "prompt.md"), []byte(prompt))
 }
 
+// SaveSessionLog saves the captured tmux pane output for a stage attempt.
+func (s *Store) SaveSessionLog(issue int, stage string, attempt int, log string) error {
+	dir := s.stageAttemptDir(issue, stage, attempt)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir attempt dir: %w", err)
+	}
+	return WriteAtomic(filepath.Join(dir, "session.log"), []byte(log))
+}
+
 // GetPrompt reads the prompt markdown for a stage attempt.
 func (s *Store) GetPrompt(issue int, stage string, attempt int) (string, error) {
 	path := filepath.Join(s.stageAttemptDir(issue, stage, attempt), "prompt.md")

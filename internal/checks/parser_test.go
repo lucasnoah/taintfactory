@@ -2,6 +2,7 @@ package checks
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -250,30 +251,48 @@ func TestGenericParser_Pass(t *testing.T) {
 	if r.Summary != "passed (exit code 0)" {
 		t.Errorf("unexpected summary: %q", r.Summary)
 	}
-
-	result := r.Findings.(genericResult)
-	if result.StdoutLength != 11 {
-		t.Errorf("expected stdout_length=11, got %d", result.StdoutLength)
+	// On pass, findings should be empty
+	if r.Findings != "" {
+		t.Errorf("expected empty findings on pass, got %v", r.Findings)
 	}
 }
 
 func TestGenericParser_Fail(t *testing.T) {
 	p := &GenericParser{}
-	r := p.Parse("err", "", 1)
+	r := p.Parse("FAILED test_foo.py::test_bar\nAssertionError", "warning on stderr", 1)
 	if r.Passed {
 		t.Error("expected passed=false")
+	}
+	findings, ok := r.Findings.(string)
+	if !ok {
+		t.Fatalf("expected string findings, got %T", r.Findings)
+	}
+	if !strings.Contains(findings, "FAILED test_foo.py") {
+		t.Errorf("findings missing stdout content: %q", findings)
+	}
+	if !strings.Contains(findings, "warning on stderr") {
+		t.Errorf("findings missing stderr content: %q", findings)
+	}
+}
+
+func TestGenericParser_Fail_Truncation(t *testing.T) {
+	p := &GenericParser{}
+	big := strings.Repeat("x", maxOutputLen+1000)
+	r := p.Parse(big, "", 1)
+	findings := r.Findings.(string)
+	if len(findings) > maxOutputLen+50 {
+		t.Errorf("findings should be truncated, got %d bytes", len(findings))
+	}
+	if !strings.Contains(findings, "…(truncated)") {
+		t.Error("expected truncation marker")
 	}
 }
 
 func TestParseResult_JSONSerializable(t *testing.T) {
 	r := ParseResult{
-		Passed:  true,
-		Summary: "all good",
-		Findings: genericResult{
-			ExitCode:     0,
-			StdoutLength: 10,
-			StderrLength: 0,
-		},
+		Passed:   true,
+		Summary:  "all good",
+		Findings: "some findings text",
 	}
 	data, err := json.Marshal(r)
 	if err != nil {

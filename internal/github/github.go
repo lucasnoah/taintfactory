@@ -68,17 +68,25 @@ func NewClientWithGit(cmd CmdRunner, git GitRunner) *Client {
 
 // Issue represents a GitHub issue.
 type Issue struct {
-	Number             int     `json:"number"`
-	Title              string  `json:"title"`
-	Body               string  `json:"body"`
-	State              string  `json:"state"`
-	Labels             []Label `json:"labels"`
-	AcceptanceCriteria string  `json:"acceptance_criteria,omitempty"`
+	Number             int        `json:"number"`
+	Title              string     `json:"title"`
+	Body               string     `json:"body"`
+	State              string     `json:"state"`
+	Labels             []Label    `json:"labels"`
+	Milestone          *Milestone `json:"milestone,omitempty"`
+	AcceptanceCriteria string     `json:"acceptance_criteria,omitempty"`
 }
 
 // Label represents a GitHub label.
 type Label struct {
 	Name string `json:"name"`
+}
+
+// Milestone represents a GitHub milestone.
+type Milestone struct {
+	Number      int    `json:"number"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
 }
 
 // ValidateIssueNumber checks that an issue number is positive.
@@ -95,7 +103,7 @@ func (c *Client) GetIssue(number int) (*Issue, error) {
 		return nil, err
 	}
 
-	out, err := c.cmd.Run("issue", "view", fmt.Sprintf("%d", number), "--json", "number,title,body,state,labels")
+	out, err := c.cmd.Run("issue", "view", fmt.Sprintf("%d", number), "--json", "number,title,body,state,labels,milestone")
 	if err != nil {
 		return nil, fmt.Errorf("get issue %d: %w", number, err)
 	}
@@ -175,6 +183,26 @@ func (c *Client) CreatePR(opts PRCreateOpts) (*PRCreateResult, error) {
 	return &PRCreateResult{URL: out}, nil
 }
 
+// FindPRByBranch checks if a PR already exists for a given branch.
+// Returns the PR result if found, nil if none exist.
+func (c *Client) FindPRByBranch(branch string) (*PRCreateResult, error) {
+	out, err := c.cmd.Run("pr", "list", "--head", branch, "--json", "url", "--limit", "1")
+	if err != nil {
+		return nil, fmt.Errorf("find PR by branch: %w", err)
+	}
+
+	var prs []struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(out), &prs); err != nil {
+		return nil, fmt.Errorf("parse PR list JSON: %w", err)
+	}
+	if len(prs) == 0 {
+		return nil, nil
+	}
+	return &PRCreateResult{URL: prs[0].URL}, nil
+}
+
 // validMergeStrategies is the set of allowed merge strategies.
 var validMergeStrategies = map[string]bool{
 	"squash": true,
@@ -212,6 +240,63 @@ func (c *Client) PushBranch(dir string, branch string) error {
 		return fmt.Errorf("push branch: %w", err)
 	}
 	return nil
+}
+
+// LLMFunc sends a prompt to an LLM and returns the response text.
+type LLMFunc func(prompt string) (string, error)
+
+// DefaultClaudeFn calls `claude --print` to get a one-shot LLM response.
+func DefaultClaudeFn(prompt string) (string, error) {
+	cmd := exec.Command("claude", "--print", "--model", "haiku", prompt)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("claude --print: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// DeriveFeatureIntent uses an LLM to read the issue and synthesize a feature
+// intent statement describing the end-user value. Returns empty string if the
+// LLM determines no clear intent can be derived.
+func DeriveFeatureIntent(issue *Issue, askLLM LLMFunc) (string, error) {
+	prompt := buildIntentPrompt(issue)
+	response, err := askLLM(prompt)
+	if err != nil {
+		return "", fmt.Errorf("derive intent for issue #%d: %w", issue.Number, err)
+	}
+
+	response = strings.TrimSpace(response)
+	if response == "" || response == "NO_INTENT" {
+		return "", nil
+	}
+	return response, nil
+}
+
+// buildIntentPrompt constructs the prompt sent to the LLM for intent derivation.
+func buildIntentPrompt(issue *Issue) string {
+	var b strings.Builder
+	b.WriteString("Analyze this GitHub issue and derive a clear feature intent statement describing what value this change brings to end users and how they will use it.\n\n")
+	b.WriteString(fmt.Sprintf("Issue #%d: %s\n\n", issue.Number, issue.Title))
+	b.WriteString(issue.Body)
+	b.WriteString("\n")
+
+	if issue.Milestone != nil {
+		b.WriteString(fmt.Sprintf("\nMilestone: %s\n", issue.Milestone.Title))
+		if issue.Milestone.Description != "" {
+			b.WriteString(fmt.Sprintf("Milestone description: %s\n", issue.Milestone.Description))
+		}
+	}
+
+	if len(issue.Labels) > 0 {
+		var names []string
+		for _, l := range issue.Labels {
+			names = append(names, l.Name)
+		}
+		b.WriteString(fmt.Sprintf("\nLabels: %s\n", strings.Join(names, ", ")))
+	}
+
+	b.WriteString("\n---\nRespond with ONLY a concise statement (1-3 sentences) of the end-user value and how they will use this feature. No preamble, headers, markdown formatting, or explanation.\n\nIf the issue has no discernible user-facing value or intent, respond with exactly: NO_INTENT\n")
+	return b.String()
 }
 
 var acHeaderRe = regexp.MustCompile(`(?mi)^##\s+acceptance\s+criteria`)

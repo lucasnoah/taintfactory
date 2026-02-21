@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // SessionEvent represents a row in the session_events table.
@@ -357,6 +358,191 @@ func (d *DB) GetLatestFailedChecks(issue int, stage string) ([]CheckRun, error) 
 		runs = append(runs, r)
 	}
 	return runs, rows.Err()
+}
+
+// QueueItem represents a row in the issue_queue table.
+type QueueItem struct {
+	ID            int
+	Issue         int
+	Status        string
+	Position      int
+	FeatureIntent string
+	AddedAt       string
+	StartedAt     string
+	FinishedAt    string
+}
+
+// QueueAddItem holds an issue number and its feature intent for queue insertion.
+type QueueAddItem struct {
+	Issue         int
+	FeatureIntent string
+}
+
+// QueueAdd inserts issues into the queue with sequential positions.
+func (d *DB) QueueAdd(items []QueueAddItem) error {
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var maxPos sql.NullInt64
+	if err := tx.QueryRow("SELECT MAX(position) FROM issue_queue").Scan(&maxPos); err != nil {
+		return fmt.Errorf("get max position: %w", err)
+	}
+	nextPos := 1
+	if maxPos.Valid {
+		nextPos = int(maxPos.Int64) + 1
+	}
+
+	stmt, err := tx.Prepare("INSERT INTO issue_queue (issue, position, feature_intent) VALUES (?, ?, ?)")
+	if err != nil {
+		return fmt.Errorf("prepare insert: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, item := range items {
+		if _, err := stmt.Exec(item.Issue, nextPos, item.FeatureIntent); err != nil {
+			if strings.Contains(err.Error(), "UNIQUE") {
+				return fmt.Errorf("issue %d is already in the queue", item.Issue)
+			}
+			return fmt.Errorf("insert issue %d: %w", item.Issue, err)
+		}
+		nextPos++
+	}
+
+	return tx.Commit()
+}
+
+// QueueSetIntent updates the feature intent for an existing queue item.
+func (d *DB) QueueSetIntent(issue int, intent string) error {
+	res, err := d.conn.Exec("UPDATE issue_queue SET feature_intent = ? WHERE issue = ?", intent, issue)
+	if err != nil {
+		return fmt.Errorf("set intent: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("issue %d not found in queue", issue)
+	}
+	return nil
+}
+
+// QueueList returns all queue items ordered by position.
+func (d *DB) QueueList() ([]QueueItem, error) {
+	rows, err := d.conn.Query(
+		`SELECT id, issue, status, position, feature_intent, added_at, started_at, finished_at
+		 FROM issue_queue ORDER BY position`)
+	if err != nil {
+		return nil, fmt.Errorf("list queue: %w", err)
+	}
+	defer rows.Close()
+
+	var items []QueueItem
+	for rows.Next() {
+		var item QueueItem
+		var startedAt, finishedAt sql.NullString
+		if err := rows.Scan(&item.ID, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &item.AddedAt, &startedAt, &finishedAt); err != nil {
+			return nil, fmt.Errorf("scan queue item: %w", err)
+		}
+		if startedAt.Valid {
+			item.StartedAt = startedAt.String
+		}
+		if finishedAt.Valid {
+			item.FinishedAt = finishedAt.String
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// QueueNext returns the next pending item (lowest position), or nil if none.
+func (d *DB) QueueNext() (*QueueItem, error) {
+	row := d.conn.QueryRow(
+		`SELECT id, issue, status, position, feature_intent, added_at, started_at, finished_at
+		 FROM issue_queue WHERE status = 'pending' ORDER BY position ASC LIMIT 1`)
+
+	var item QueueItem
+	var startedAt, finishedAt sql.NullString
+	err := row.Scan(&item.ID, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &item.AddedAt, &startedAt, &finishedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get next queue item: %w", err)
+	}
+	if startedAt.Valid {
+		item.StartedAt = startedAt.String
+	}
+	if finishedAt.Valid {
+		item.FinishedAt = finishedAt.String
+	}
+	return &item, nil
+}
+
+// QueueUpdateStatus updates the status of a queue item by issue number.
+// Sets started_at when transitioning to "active", finished_at for "completed"/"failed".
+func (d *DB) QueueUpdateStatus(issue int, status string) error {
+	var res sql.Result
+	var err error
+
+	switch status {
+	case "active":
+		res, err = d.conn.Exec(
+			`UPDATE issue_queue SET status = ?, started_at = datetime('now') WHERE issue = ?`,
+			status, issue)
+	case "completed", "failed":
+		res, err = d.conn.Exec(
+			`UPDATE issue_queue SET status = ?, finished_at = datetime('now') WHERE issue = ?`,
+			status, issue)
+	default:
+		res, err = d.conn.Exec(
+			`UPDATE issue_queue SET status = ? WHERE issue = ?`,
+			status, issue)
+	}
+
+	if err != nil {
+		return fmt.Errorf("update queue status: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("issue %d not found in queue", issue)
+	}
+	return nil
+}
+
+// QueueRemove deletes a queue item by issue number.
+func (d *DB) QueueRemove(issue int) error {
+	res, err := d.conn.Exec("DELETE FROM issue_queue WHERE issue = ?", issue)
+	if err != nil {
+		return fmt.Errorf("remove from queue: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("issue %d not found in queue", issue)
+	}
+	return nil
+}
+
+// QueueClear deletes all items from the queue, returning the count deleted.
+func (d *DB) QueueClear() (int, error) {
+	res, err := d.conn.Exec("DELETE FROM issue_queue")
+	if err != nil {
+		return 0, fmt.Errorf("clear queue: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("check rows affected: %w", err)
+	}
+	return int(n), nil
 }
 
 // GetCheckHistory returns all check runs for an issue, ordered by id descending.

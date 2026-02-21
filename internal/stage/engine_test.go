@@ -2,6 +2,7 @@ package stage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/lucasnoah/taintfactory/internal/config"
 	appctx "github.com/lucasnoah/taintfactory/internal/context"
 	"github.com/lucasnoah/taintfactory/internal/db"
+	"github.com/lucasnoah/taintfactory/internal/github"
 	"github.com/lucasnoah/taintfactory/internal/pipeline"
 	"github.com/lucasnoah/taintfactory/internal/session"
 )
@@ -20,10 +22,9 @@ import (
 // --- Mock TmuxRunner ---
 
 type mockTmux struct {
-	sessions map[string]bool
-	sent     []tmuxSend
-	// Per-session event sequences for HasSession to return
-	// After "idle" events are logged, WaitIdle should detect them
+	sessions     map[string]bool
+	sent         []tmuxSend
+	captureCount int // incremented on each CapturePaneLines call for unique content
 }
 
 type tmuxSend struct {
@@ -48,6 +49,14 @@ func (m *mockTmux) SendKeys(sess string, keys string) error {
 	return nil
 }
 
+func (m *mockTmux) SendBuffer(sess string, content string) error {
+	if !m.sessions[sess] {
+		return fmt.Errorf("session %q not found", sess)
+	}
+	m.sent = append(m.sent, tmuxSend{Session: sess, Keys: content})
+	return nil
+}
+
 func (m *mockTmux) KillSession(name string) error {
 	if !m.sessions[name] {
 		return fmt.Errorf("session %q not found", name)
@@ -61,7 +70,8 @@ func (m *mockTmux) CapturePane(name string) (string, error) {
 }
 
 func (m *mockTmux) CapturePaneLines(name string, lines int) (string, error) {
-	return "captured lines", nil
+	m.captureCount++
+	return fmt.Sprintf("captured lines %d", m.captureCount), nil
 }
 
 func (m *mockTmux) ListSessions() ([]string, error) {
@@ -108,6 +118,7 @@ type mockGit struct{}
 func (m *mockGit) Diff(dir string) (string, error)        { return "", nil }
 func (m *mockGit) DiffSummary(dir string) (string, error)  { return "", nil }
 func (m *mockGit) FilesChanged(dir string) (string, error) { return "", nil }
+func (m *mockGit) Log(dir string) (string, error)          { return "", nil }
 
 // --- Test helpers ---
 
@@ -146,6 +157,7 @@ func setupEngine(t *testing.T, cfg *config.PipelineConfig, checkCmd *mockCheckCm
 
 	engine := NewEngine(sessions, checker, builder, store, database, cfg)
 	engine.SetPollInterval(50 * time.Millisecond) // fast polling for tests
+	engine.SetBootDelay(0)                         // no boot delay in tests
 	return engine, tmux, database, store
 }
 
@@ -188,6 +200,30 @@ func simulateIdleAfterCreate(t *testing.T, database *db.DB, sessionName string, 
 	if err := database.LogSessionEvent(sessionName, issue, stage, "idle", nil, ""); err != nil {
 		t.Fatalf("log idle event: %v", err)
 	}
+}
+
+// waitForEvent polls until the session's latest event matches the target, or times out.
+func waitForEvent(database *db.DB, sessionName string, target string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		state, _ := database.GetSessionState(sessionName)
+		if state != nil && state.Event == target {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+// simulateWorkIdle waits for factory_send then fires an idle event
+// to simulate Claude finishing work. With bootDelay=0 in tests, no boot idle is needed.
+func simulateWorkIdle(t *testing.T, database *db.DB, sessionName string, issue int, stage string) {
+	t.Helper()
+	if !waitForEvent(database, sessionName, "factory_send", 2*time.Second) {
+		t.Log("warning: factory_send not observed, firing idle anyway")
+	}
+	time.Sleep(10 * time.Millisecond)
+	simulateIdleAfterCreate(t, database, sessionName, issue, stage)
 }
 
 // --- Tests ---
@@ -377,11 +413,10 @@ func TestRunAgent_NoChecks_Success(t *testing.T) {
 	createTestPipeline(t, store, 1)
 	installTemplate(t, store, 1, "impl.md", "Implement issue {{issue_number}}: {{issue_title}}")
 
-	// We need to simulate the idle event after session creation.
-	// Since WaitIdle polls, we start a goroutine to log idle after a short delay.
+	// Simulate idle events: boot idle then work-complete idle (after factory_send).
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		simulateIdleAfterCreate(t, database, "1-impl-1", 1, "impl")
+		simulateWorkIdle(t, database, "1-impl-1", 1, "impl")
 	}()
 
 	result, err := engine.Run(RunOpts{Issue: 1, Stage: "impl", Timeout: 5 * time.Second})
@@ -418,7 +453,7 @@ func TestRunAgent_ChecksPass(t *testing.T) {
 
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		simulateIdleAfterCreate(t, database, "1-impl-1", 1, "impl")
+		simulateWorkIdle(t, database, "1-impl-1", 1, "impl")
 	}()
 
 	result, err := engine.Run(RunOpts{Issue: 1, Stage: "impl", Timeout: 5 * time.Second})
@@ -451,17 +486,15 @@ func TestRunAgent_ChecksFail_FixLoop_Success(t *testing.T) {
 	createTestPipeline(t, store, 1)
 	installTemplate(t, store, 1, "impl.md", "Implement {{issue_number}}")
 
-	// Initial session create idle
+	// Simulate idle events: boot idle, work idle, fix round idle
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		simulateIdleAfterCreate(t, database, "1-impl-1", 1, "impl")
-	}()
-
-	// After the fix prompt is sent, simulate idle again
-	// Need to wait longer for the fix round
-	go func() {
-		time.Sleep(200 * time.Millisecond)
-		// Log a factory_send first (SendFromCheckFailures logs this), then idle
+		simulateWorkIdle(t, database, "1-impl-1", 1, "impl")
+		// Fix round: wait for the next factory_send then fire idle
+		if !waitForEvent(database, "1-impl-1", "factory_send", 2*time.Second) {
+			t.Log("warning: factory_send not observed for fix round")
+		}
+		time.Sleep(10 * time.Millisecond)
 		_ = database.LogSessionEvent("1-impl-1", 1, "impl", "idle", nil, "")
 	}()
 
@@ -502,12 +535,15 @@ func TestRunAgent_FixLoop_Exhausted(t *testing.T) {
 	createTestPipeline(t, store, 1)
 	installTemplate(t, store, 1, "impl.md", "Implement {{issue_number}}")
 
-	// Simulate idle events for initial + fix rounds
+	// Simulate idle events: boot idle, work idle, then fix round idles
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		simulateIdleAfterCreate(t, database, "1-impl-1", 1, "impl")
+		simulateWorkIdle(t, database, "1-impl-1", 1, "impl")
 		for i := 0; i < 2; i++ {
-			time.Sleep(100 * time.Millisecond)
+			if !waitForEvent(database, "1-impl-1", "factory_send", 2*time.Second) {
+				t.Logf("warning: factory_send not observed for fix round %d", i+1)
+			}
+			time.Sleep(10 * time.Millisecond)
 			_ = database.LogSessionEvent("1-impl-1", 1, "impl", "idle", nil, "")
 		}
 	}()
@@ -547,18 +583,21 @@ func TestRunAgent_FreshSession(t *testing.T) {
 	installTemplate(t, store, 1, "impl.md", "Implement {{issue_number}}")
 	installTemplate(t, store, 1, "fix-checks.md", "Fix these: {{check_failures}}")
 
-	// Simulate idle events
+	// Simulate idle events using polling to avoid timing races
 	go func() {
-		// Initial session idle
 		time.Sleep(50 * time.Millisecond)
-		simulateIdleAfterCreate(t, database, "1-impl-1", 1, "impl")
-		// Fix round 1: existing session
-		time.Sleep(100 * time.Millisecond)
+		// Initial session: boot idle + work idle
+		simulateWorkIdle(t, database, "1-impl-1", 1, "impl")
+		// Fix round 1 (existing session): wait for factory_send, then idle
+		if !waitForEvent(database, "1-impl-1", "factory_send", 2*time.Second) {
+			t.Log("warning: factory_send not observed for fix round 1")
+		}
+		time.Sleep(10 * time.Millisecond)
 		_ = database.LogSessionEvent("1-impl-1", 1, "impl", "idle", nil, "")
-		// Fix round 2: fresh session "1-impl-1-fix-2"
-		time.Sleep(100 * time.Millisecond)
-		_ = database.LogSessionEvent("1-impl-1-fix-2", 1, "impl", "started", nil, "")
-		_ = database.LogSessionEvent("1-impl-1-fix-2", 1, "impl", "idle", nil, "")
+		// Fix round 2 (fresh session "1-impl-1-fix-2"): boot idle + work idle
+		// Wait for new session to be created
+		time.Sleep(200 * time.Millisecond)
+		simulateWorkIdle(t, database, "1-impl-1-fix-2", 1, "impl")
 	}()
 
 	result, err := engine.Run(RunOpts{Issue: 1, Stage: "impl", Timeout: 10 * time.Second})
@@ -622,7 +661,7 @@ func TestRunAgent_ChecksBefore_Pass(t *testing.T) {
 
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		simulateIdleAfterCreate(t, database, "1-impl-1", 1, "impl")
+		simulateWorkIdle(t, database, "1-impl-1", 1, "impl")
 	}()
 
 	result, err := engine.Run(RunOpts{Issue: 1, Stage: "impl", Timeout: 5 * time.Second})
@@ -713,5 +752,54 @@ func TestRunResult_Fields(t *testing.T) {
 	}
 	if result.TotalDuration == 0 {
 		t.Error("expected non-zero total duration")
+	}
+}
+
+func TestRunAgent_IssueBodyInPrompt(t *testing.T) {
+	checkCmd := &mockCheckCmd{}
+
+	cfg := testConfig(
+		[]config.Stage{{ID: "impl", Type: "agent", SkipChecks: true, PromptTemplate: "impl.md"}},
+		nil,
+	)
+
+	engine, tmuxMock, database, store := setupEngine(t, cfg, checkCmd)
+	createTestPipeline(t, store, 1)
+	installTemplate(t, store, 1, "impl.md", "Issue: {{issue_title}}\n\n{{issue_body}}")
+
+	// Write a cached issue.json into the pipeline directory
+	pipelineDir := fmt.Sprintf("%s/%d", store.BaseDir(), 1)
+	issue := &github.Issue{
+		Number: 1,
+		Title:  "Test Issue",
+		Body:   "This is the detailed issue description.\n\n## Acceptance Criteria\n- [ ] Thing works",
+	}
+	data, _ := json.Marshal(issue)
+	os.WriteFile(filepath.Join(pipelineDir, "issue.json"), data, 0o644)
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		simulateWorkIdle(t, database, "1-impl-1", 1, "impl")
+	}()
+
+	result, err := engine.Run(RunOpts{Issue: 1, Stage: "impl", Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Outcome != "success" {
+		t.Errorf("expected success, got %q", result.Outcome)
+	}
+
+	// Verify the prompt was sent with the issue body
+	_ = tmuxMock // tmux mock received the prompt via SendBuffer
+	savedPrompt, err := store.GetPrompt(1, "impl", 1)
+	if err != nil {
+		t.Fatalf("get prompt: %v", err)
+	}
+	if !strings.Contains(savedPrompt, "detailed issue description") {
+		t.Errorf("prompt should contain issue body, got:\n%s", savedPrompt)
+	}
+	if !strings.Contains(savedPrompt, "Acceptance Criteria") {
+		t.Errorf("prompt should contain acceptance criteria, got:\n%s", savedPrompt)
 	}
 }

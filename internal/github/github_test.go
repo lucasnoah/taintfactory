@@ -2,6 +2,7 @@ package github
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -194,6 +195,62 @@ func TestCreatePR(t *testing.T) {
 	}
 }
 
+func TestFindPRByBranch_Found(t *testing.T) {
+	mock := &mockCmd{
+		results: []mockResult{{output: `[{"url":"https://github.com/org/repo/pull/7"}]`}},
+	}
+
+	client := NewClient(mock)
+	result, err := client.FindPRByBranch("feature/issue-42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected PR result, got nil")
+	}
+	if result.URL != "https://github.com/org/repo/pull/7" {
+		t.Errorf("expected URL, got %q", result.URL)
+	}
+
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(mock.calls))
+	}
+	args := strings.Join(mock.calls[0], " ")
+	if !strings.Contains(args, "--head feature/issue-42") {
+		t.Errorf("expected --head flag, got: %s", args)
+	}
+}
+
+func TestFindPRByBranch_NotFound(t *testing.T) {
+	mock := &mockCmd{
+		results: []mockResult{{output: `[]`}},
+	}
+
+	client := NewClient(mock)
+	result, err := client.FindPRByBranch("feature/no-pr")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil for no PR, got %+v", result)
+	}
+}
+
+func TestFindPRByBranch_Error(t *testing.T) {
+	mock := &mockCmd{
+		results: []mockResult{{err: fmt.Errorf("gh failed")}},
+	}
+
+	client := NewClient(mock)
+	_, err := client.FindPRByBranch("feature/issue-42")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "find PR by branch") {
+		t.Errorf("expected wrapped error, got %q", err.Error())
+	}
+}
+
 func TestMergePR(t *testing.T) {
 	mock := &mockCmd{
 		results: []mockResult{{output: ""}},
@@ -367,6 +424,120 @@ func TestExtractAcceptanceCriteria_NoAC(t *testing.T) {
 	ac := extractAcceptanceCriteria(body)
 	if ac != "" {
 		t.Errorf("expected empty AC, got %q", ac)
+	}
+}
+
+func TestDeriveFeatureIntent_LLMResponse(t *testing.T) {
+	issue := &Issue{
+		Number: 42,
+		Title:  "Add CSV export",
+		Body:   "Users need to export data as CSV files.",
+	}
+
+	mockLLM := func(prompt string) (string, error) {
+		// Verify prompt contains issue metadata
+		if !strings.Contains(prompt, "Issue #42") {
+			t.Errorf("prompt should contain issue number, got: %s", prompt[:100])
+		}
+		if !strings.Contains(prompt, "Add CSV export") {
+			t.Errorf("prompt should contain title")
+		}
+		if !strings.Contains(prompt, "export data as CSV") {
+			t.Errorf("prompt should contain body")
+		}
+		return "Users can download report data as CSV files for use in spreadsheets.", nil
+	}
+
+	got, err := DeriveFeatureIntent(issue, mockLLM)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "Users can download report data as CSV files for use in spreadsheets." {
+		t.Errorf("unexpected result: %q", got)
+	}
+}
+
+func TestDeriveFeatureIntent_LLMNoIntent(t *testing.T) {
+	issue := &Issue{Number: 1, Title: "Chore", Body: "Internal cleanup."}
+
+	mockLLM := func(prompt string) (string, error) {
+		return "NO_INTENT", nil
+	}
+
+	got, err := DeriveFeatureIntent(issue, mockLLM)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("expected empty for NO_INTENT, got %q", got)
+	}
+}
+
+func TestDeriveFeatureIntent_LLMError(t *testing.T) {
+	issue := &Issue{Number: 1, Title: "Test", Body: "Body"}
+
+	mockLLM := func(prompt string) (string, error) {
+		return "", fmt.Errorf("connection refused")
+	}
+
+	_, err := DeriveFeatureIntent(issue, mockLLM)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("expected wrapped error, got %q", err.Error())
+	}
+}
+
+func TestDeriveFeatureIntent_PromptIncludesMilestone(t *testing.T) {
+	issue := &Issue{
+		Number: 10,
+		Title:  "Optimize queries",
+		Body:   "Make queries faster.",
+		Milestone: &Milestone{
+			Title:       "Performance Sprint",
+			Description: "Sub-second response for all endpoints.",
+		},
+	}
+
+	var capturedPrompt string
+	mockLLM := func(prompt string) (string, error) {
+		capturedPrompt = prompt
+		return "Faster query responses for dashboard users.", nil
+	}
+
+	_, err := DeriveFeatureIntent(issue, mockLLM)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(capturedPrompt, "Performance Sprint") {
+		t.Error("prompt should include milestone title")
+	}
+	if !strings.Contains(capturedPrompt, "Sub-second response") {
+		t.Error("prompt should include milestone description")
+	}
+}
+
+func TestDeriveFeatureIntent_PromptIncludesLabels(t *testing.T) {
+	issue := &Issue{
+		Number: 5,
+		Title:  "Fix login",
+		Body:   "Login broken.",
+		Labels: []Label{{Name: "bug"}, {Name: "priority:high"}},
+	}
+
+	var capturedPrompt string
+	mockLLM := func(prompt string) (string, error) {
+		capturedPrompt = prompt
+		return "Users can reliably log in to their accounts.", nil
+	}
+
+	_, err := DeriveFeatureIntent(issue, mockLLM)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(capturedPrompt, "bug") || !strings.Contains(capturedPrompt, "priority:high") {
+		t.Errorf("prompt should include labels, got: %s", capturedPrompt)
 	}
 }
 

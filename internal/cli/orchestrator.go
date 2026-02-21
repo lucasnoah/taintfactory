@@ -46,13 +46,17 @@ Designed to be called on a cron schedule (e.g. every 5 minutes).`,
 			return nil
 		}
 
-		fmt.Fprintln(w, "ISSUE\tACTION\tSTAGE\tMESSAGE")
+		fmt.Fprintln(w, "ISSUE\tACTION\tSTAGE\tSESSION\tMESSAGE")
 		for _, a := range result.Actions {
 			msg := a.Message
 			if len(msg) > 60 {
 				msg = msg[:57] + "..."
 			}
-			fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", a.Issue, a.Action, a.Stage, msg)
+			sess := a.Session
+			if sess == "" {
+				sess = ""
+			}
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", a.Issue, a.Action, a.Stage, sess, msg)
 		}
 		return w.Flush()
 	},

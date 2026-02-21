@@ -11,10 +11,12 @@ type Pipeline struct {
 	Repo              string            `yaml:"repo"`
 	MaxFixRounds      int               `yaml:"max_fix_rounds"`
 	FreshSessionAfter int               `yaml:"fresh_session_after"`
+	Setup             []string          `yaml:"setup"`
 	Defaults          StageDefaults     `yaml:"defaults"`
 	DefaultChecks     []string          `yaml:"default_checks"`
 	Checks            map[string]Check  `yaml:"checks"`
 	Stages            []Stage           `yaml:"stages"`
+	Vars              map[string]string `yaml:"vars"`
 }
 
 // StageDefaults holds default values applied to stages that don't specify their own.
@@ -36,19 +38,21 @@ type Check struct {
 
 // Stage defines a single pipeline stage — either an agent invocation or a checks-only gate.
 type Stage struct {
-	ID             string      `yaml:"id"`
-	Type           string      `yaml:"type"`
-	PromptTemplate string      `yaml:"prompt_template"`
-	Model          string      `yaml:"model"`
-	ContextMode    string      `yaml:"context_mode"`
-	Flags          string      `yaml:"flags"`
-	GoalGate       bool        `yaml:"goal_gate"`
-	SessionMode    string      `yaml:"session_mode"`
-	OnFail         interface{} `yaml:"on_fail"`
-	BrowserCheck   bool        `yaml:"browser_check"`
-	SkipChecks     bool        `yaml:"skip_checks"`
-	ChecksAfter    []string    `yaml:"checks_after"`
-	ChecksBefore   []string    `yaml:"checks_before"`
-	ExtraChecks    []string    `yaml:"extra_checks"`
-	Checks         []string    `yaml:"checks"`
+	ID             string            `yaml:"id"`
+	Type           string            `yaml:"type"`
+	PromptTemplate string            `yaml:"prompt_template"`
+	Model          string            `yaml:"model"`
+	ContextMode    string            `yaml:"context_mode"`
+	Flags          string            `yaml:"flags"`
+	GoalGate       bool              `yaml:"goal_gate"`
+	SessionMode    string            `yaml:"session_mode"`
+	OnFail         interface{}       `yaml:"on_fail"`
+	BrowserCheck   bool              `yaml:"browser_check"`
+	SkipChecks     bool              `yaml:"skip_checks"`
+	ChecksAfter    []string          `yaml:"checks_after"`
+	ChecksBefore   []string          `yaml:"checks_before"`
+	ExtraChecks    []string          `yaml:"extra_checks"`
+	Checks         []string          `yaml:"checks"`
+	MergeStrategy  string            `yaml:"merge_strategy"`
+	Vars           map[string]string `yaml:"vars"`
 }

@@ -477,6 +477,220 @@ func TestMultipleSessionsIsolation(t *testing.T) {
 	}
 }
 
+func TestMigrateV2(t *testing.T) {
+	d, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer d.Close()
+
+	if err := d.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// Verify issue_queue table exists
+	var name string
+	err = d.conn.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='issue_queue'").Scan(&name)
+	if err != nil {
+		t.Errorf("issue_queue table not found: %v", err)
+	}
+
+	// Verify schema version 2 recorded
+	var count int
+	if err := d.conn.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version = 2").Scan(&count); err != nil {
+		t.Fatalf("query schema_version: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected schema version 2 to be recorded, count=%d", count)
+	}
+
+	// Idempotent
+	if err := d.Migrate(); err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+}
+
+func TestQueueAdd(t *testing.T) {
+	d := testDB(t)
+
+	if err := d.QueueAdd([]QueueAddItem{{Issue: 10, FeatureIntent: "test intent"}, {Issue: 20, FeatureIntent: "test intent"}, {Issue: 30, FeatureIntent: "test intent"}}); err != nil {
+		t.Fatalf("queue add: %v", err)
+	}
+
+	items, err := d.QueueList()
+	if err != nil {
+		t.Fatalf("queue list: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items, got %d", len(items))
+	}
+	if items[0].Issue != 10 || items[1].Issue != 20 || items[2].Issue != 30 {
+		t.Errorf("unexpected order: %v, %v, %v", items[0].Issue, items[1].Issue, items[2].Issue)
+	}
+	if items[0].Position >= items[1].Position || items[1].Position >= items[2].Position {
+		t.Errorf("positions not increasing: %d, %d, %d", items[0].Position, items[1].Position, items[2].Position)
+	}
+	for _, item := range items {
+		if item.Status != "pending" {
+			t.Errorf("expected status 'pending', got %q", item.Status)
+		}
+	}
+}
+
+func TestQueueAdd_Duplicate(t *testing.T) {
+	d := testDB(t)
+
+	if err := d.QueueAdd([]QueueAddItem{{Issue: 10, FeatureIntent: "test intent"}}); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	err := d.QueueAdd([]QueueAddItem{{Issue: 10, FeatureIntent: "test intent"}})
+	if err == nil {
+		t.Fatal("expected error for duplicate issue")
+	}
+}
+
+func TestQueueNext(t *testing.T) {
+	d := testDB(t)
+
+	// Empty queue
+	item, err := d.QueueNext()
+	if err != nil {
+		t.Fatalf("queue next on empty: %v", err)
+	}
+	if item != nil {
+		t.Fatal("expected nil for empty queue")
+	}
+
+	// Populated
+	if err := d.QueueAdd([]QueueAddItem{{Issue: 20, FeatureIntent: "test intent"}, {Issue: 10, FeatureIntent: "test intent"}}); err != nil {
+		t.Fatalf("queue add: %v", err)
+	}
+	item, err = d.QueueNext()
+	if err != nil {
+		t.Fatalf("queue next: %v", err)
+	}
+	if item == nil {
+		t.Fatal("expected non-nil item")
+	}
+	// 20 was added first so has lowest position
+	if item.Issue != 20 {
+		t.Errorf("expected issue 20 (first added), got %d", item.Issue)
+	}
+}
+
+func TestQueueNext_SkipsNonPending(t *testing.T) {
+	d := testDB(t)
+
+	if err := d.QueueAdd([]QueueAddItem{{Issue: 10, FeatureIntent: "test intent"}, {Issue: 20, FeatureIntent: "test intent"}, {Issue: 30, FeatureIntent: "test intent"}}); err != nil {
+		t.Fatalf("queue add: %v", err)
+	}
+	// Mark first two as active/completed
+	if err := d.QueueUpdateStatus(10, "active"); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	if err := d.QueueUpdateStatus(20, "completed"); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	item, err := d.QueueNext()
+	if err != nil {
+		t.Fatalf("queue next: %v", err)
+	}
+	if item == nil {
+		t.Fatal("expected non-nil item")
+	}
+	if item.Issue != 30 {
+		t.Errorf("expected issue 30, got %d", item.Issue)
+	}
+}
+
+func TestQueueUpdateStatus(t *testing.T) {
+	d := testDB(t)
+
+	if err := d.QueueAdd([]QueueAddItem{{Issue: 10, FeatureIntent: "test intent"}}); err != nil {
+		t.Fatalf("queue add: %v", err)
+	}
+
+	// Mark active
+	if err := d.QueueUpdateStatus(10, "active"); err != nil {
+		t.Fatalf("update to active: %v", err)
+	}
+	items, _ := d.QueueList()
+	if items[0].Status != "active" {
+		t.Errorf("expected 'active', got %q", items[0].Status)
+	}
+	if items[0].StartedAt == "" {
+		t.Error("expected started_at to be set")
+	}
+
+	// Mark completed
+	if err := d.QueueUpdateStatus(10, "completed"); err != nil {
+		t.Fatalf("update to completed: %v", err)
+	}
+	items, _ = d.QueueList()
+	if items[0].Status != "completed" {
+		t.Errorf("expected 'completed', got %q", items[0].Status)
+	}
+	if items[0].FinishedAt == "" {
+		t.Error("expected finished_at to be set")
+	}
+}
+
+func TestQueueUpdateStatus_NotFound(t *testing.T) {
+	d := testDB(t)
+
+	err := d.QueueUpdateStatus(999, "active")
+	if err == nil {
+		t.Fatal("expected error for non-existent issue")
+	}
+}
+
+func TestQueueRemove(t *testing.T) {
+	d := testDB(t)
+
+	if err := d.QueueAdd([]QueueAddItem{{Issue: 10, FeatureIntent: "test intent"}, {Issue: 20, FeatureIntent: "test intent"}}); err != nil {
+		t.Fatalf("queue add: %v", err)
+	}
+	if err := d.QueueRemove(10); err != nil {
+		t.Fatalf("queue remove: %v", err)
+	}
+	items, _ := d.QueueList()
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Issue != 20 {
+		t.Errorf("expected issue 20, got %d", items[0].Issue)
+	}
+}
+
+func TestQueueRemove_NotFound(t *testing.T) {
+	d := testDB(t)
+
+	err := d.QueueRemove(999)
+	if err == nil {
+		t.Fatal("expected error for non-existent issue")
+	}
+}
+
+func TestQueueClear(t *testing.T) {
+	d := testDB(t)
+
+	if err := d.QueueAdd([]QueueAddItem{{Issue: 10, FeatureIntent: "test intent"}, {Issue: 20, FeatureIntent: "test intent"}, {Issue: 30, FeatureIntent: "test intent"}}); err != nil {
+		t.Fatalf("queue add: %v", err)
+	}
+	count, err := d.QueueClear()
+	if err != nil {
+		t.Fatalf("queue clear: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("expected 3 cleared, got %d", count)
+	}
+	items, _ := d.QueueList()
+	if len(items) != 0 {
+		t.Errorf("expected empty queue, got %d items", len(items))
+	}
+}
+
 func TestGetCheckHistory(t *testing.T) {
 	d := testDB(t)
 
