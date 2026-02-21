@@ -2,7 +2,7 @@
 
 A CLI-driven software factory that orchestrates Claude Code sessions through configurable pipelines — automating the full lifecycle from GitHub issue to merged PR.
 
-You define a pipeline with stages (implement, review, QA), checks (lint, test), and fix strategies. The orchestrator runs on a cron, evaluates all in-flight issues, and drives Claude Code sessions forward. You can attach to any session at any time, and the DB gives you a full audit trail.
+You define a pipeline with stages (implement, review, QA), checks (lint, test), and failure recovery strategies. A cron-driven orchestrator evaluates all in-flight issues, spawns Claude Code sessions in tmux, runs check gates, and routes failures back through the pipeline automatically. You can attach to any session at any time. Everything is persisted, so a crash or a bad run never loses progress — you pick up exactly where things left off.
 
 ## How It Works
 
@@ -11,16 +11,73 @@ Cron (every ~5min)
   └─▶ factory orchestrator check-in
         ├─ For each in-flight pipeline, decide: skip / steer / advance
         └─ factory pipeline advance [issue]
-              ├─ Build context prompt
-              ├─ Spawn Claude Code in tmux
+              ├─ Render and save prompt for current stage
+              ├─ Spawn Claude Code session in tmux
               ├─ Wait for session to go idle
               ├─ Run check gate (lint, test, etc.)
-              │    ├─ PASS ──▶ move to next stage
+              │    ├─ PASS ──▶ record outcome, move to next stage
               │    └─ FAIL ──▶ send fix prompt, retry (up to max_fix_rounds)
-              └─ Repeat for each stage until merge
+              │         └─ still failing ──▶ on_fail: jump to earlier stage
+              └─ Repeat until merge or blocked
 ```
 
 Claude Code sessions run in tmux. Hooks inside each session call `factory event log` to record state transitions (started → active → idle → exited) into SQLite. The orchestrator reads this state to know when a session has finished and whether to advance, steer, or wait.
+
+### Failure recovery
+
+taintfactory is designed around the assumption that things will go wrong. There are three layers of recovery:
+
+**1. Fix rounds** — when checks fail after a stage, the orchestrator sends Claude a new prompt containing the structured check failures and asks it to fix them. This repeats up to `max_fix_rounds` times before escalating.
+
+**2. Stage routing** — if fix rounds are exhausted, `on_fail` in the stage config routes the pipeline back to an earlier stage (e.g. a failed review stage drops back to implement). The attempt counter increments so history is never overwritten.
+
+**3. Blocked status** — if a pipeline can't proceed automatically (e.g. a stage fails with no `on_fail` configured, or a goal gate requires human sign-off), it's marked `blocked`. You address it manually and resume:
+
+```bash
+factory pipeline retry 42           # re-run the current stage from scratch
+factory pipeline retry 42 --reason "switched to a different auth approach"
+factory session send my-session "try a different approach to the auth middleware"
+```
+
+Every prior attempt's prompt, session log, check output, and outcome is preserved on disk, so you can always inspect what happened and why.
+
+### Persistence
+
+State is stored in two layers that serve different purposes:
+
+**Pipeline state (JSON files)** — `~/.factory/pipelines/{issue}/pipeline.json` is the source of truth for where a pipeline stands. It records the current stage, attempt number, fix round, status, and the full stage history. Each stage attempt gets its own directory with everything needed to understand what happened:
+
+```
+~/.factory/pipelines/42/
+  pipeline.json                        ← current stage, status, full history
+  stages/
+    implement/
+      attempt-1/
+        prompt.md                      ← exact prompt sent to Claude
+        session.log                    ← full tmux scrollback captured on session end
+        outcome.json                   ← success/fail, summary, files changed
+        summary.json                   ← fix rounds, durations, auto-fix counts
+        checks/
+          lint/                        ← raw lint output
+          post-gate-0/                 ← gate result after agent run
+          post-gate-1/                 ← gate result after fix round 1
+      attempt-2/                       ← after on_fail retry, history intact
+        ...
+```
+
+**Session output** — when a session ends (or is killed), taintfactory runs `tmux capture-pane -S -` to capture the entire scrollback buffer and writes it to `session.log`. This is the complete terminal output from the Claude session — every tool call, every file it read, every decision it made. While a session is still running, you can sample the live output without attaching:
+
+```bash
+factory session peek my-session          # last 50 lines
+factory session peek my-session --lines 200
+```
+
+After the session ends, the log is always at:
+```
+~/.factory/pipelines/{issue}/stages/{stage}/attempt-{n}/session.log
+```
+
+**SQLite event log** — `~/.factory/factory.db` records a time-series of everything that happens at the system level: session state transitions (started → active → idle → exited), individual check run results with exit codes and durations, and pipeline events (checks passed, PR created, merged). This is what the orchestrator queries to make decisions and what `factory analytics` queries for performance metrics. It's append-only — nothing is updated in place.
 
 ## Installation
 
@@ -335,15 +392,39 @@ factory pipeline create 42
 # Creates a git worktree, initializes pipeline state
 ```
 
-**3. Set up the orchestrator (cron):**
+**3. Run the orchestrator loop:**
+
+The recommended way to drive the factory is a bash loop in a dedicated tmux session. Each `check-in` call is blocking — it runs the current stage to completion before returning — so the sleep between iterations is just a gap between stages.
+
 ```bash
-# Run check-in every 5 minutes
-*/5 * * * * /path/to/factory orchestrator check-in
+# Start a dedicated tmux session for the orchestrator
+tmux new-session -d -s factory-runner
+
+# Export OAuth token, then start the loop (2 min between stages)
+tmux send-keys -t factory-runner "export CLAUDE_CODE_OAUTH_TOKEN=<your-token>" Enter
+tmux send-keys -t factory-runner "cd /path/to/your/repo && while true; do factory orchestrator check-in; sleep 120; done" Enter
 ```
 
-Or run it manually to drive pipelines forward immediately:
+Or run directly in your current shell:
 ```bash
-factory orchestrator check-in
+export CLAUDE_CODE_OAUTH_TOKEN=<your-token>
+while true; do factory orchestrator check-in; sleep 120; done
+```
+
+The loop will:
+- Advance in-flight pipelines stage by stage (implement → review → qa → verify → merge)
+- Pick up the next queued issue automatically when all active pipelines complete
+- Sleep 2 minutes between each stage transition
+
+**OAuth token:** The factory reads `CLAUDE_CODE_OAUTH_TOKEN` from the environment when creating Claude sessions. You can also store it in `~/.factory/.env`:
+```
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+```
+The factory will load it automatically from there if not already in your environment.
+
+**Cron alternative** (if you prefer system cron over a loop):
+```bash
+*/2 * * * * export CLAUDE_CODE_OAUTH_TOKEN=<token> && /path/to/factory orchestrator check-in
 ```
 
 **4. Monitor progress:**
