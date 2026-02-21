@@ -2,6 +2,9 @@ package orchestrator
 
 import (
 	"fmt"
+	"io"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/lucasnoah/taintfactory/internal/config"
@@ -16,14 +19,16 @@ import (
 
 // Orchestrator composes pipeline lifecycle operations.
 type Orchestrator struct {
-	store   *pipeline.Store
-	db      *db.DB
-	gh      *github.Client
-	wt      *worktree.Manager
+	store    *pipeline.Store
+	db       *db.DB
+	gh       *github.Client
+	wt       *worktree.Manager
 	sessions *session.Manager
-	engine  *stage.Engine
-	builder *appctx.Builder
-	cfg     *config.PipelineConfig
+	engine   *stage.Engine
+	builder  *appctx.Builder
+	cfg      *config.PipelineConfig
+	claudeFn github.LLMFunc
+	progress io.Writer // live progress output; nil = silent
 }
 
 // NewOrchestrator creates an Orchestrator.
@@ -49,9 +54,27 @@ func NewOrchestrator(
 	}
 }
 
+// SetClaudeFn configures the LLM function used for intent derivation.
+func (o *Orchestrator) SetClaudeFn(fn github.LLMFunc) {
+	o.claudeFn = fn
+}
+
+// SetProgress sets a writer for live progress output (e.g. os.Stderr).
+func (o *Orchestrator) SetProgress(w io.Writer) {
+	o.progress = w
+}
+
+// logf prints a progress line if a progress writer is configured.
+func (o *Orchestrator) logf(format string, args ...interface{}) {
+	if o.progress != nil {
+		fmt.Fprintf(o.progress, "  → "+format+"\n", args...)
+	}
+}
+
 // CreateOpts holds options for creating a pipeline.
 type CreateOpts struct {
-	Issue int
+	Issue         int
+	FeatureIntent string
 }
 
 // Create initializes a new pipeline: fetch issue, create worktree, init state.
@@ -73,6 +96,12 @@ func (o *Orchestrator) Create(opts CreateOpts) (*pipeline.PipelineState, error) 
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create worktree: %w", err)
+	}
+
+	// Run setup commands in the worktree (e.g. install dependencies)
+	if err := o.runSetup(wtResult.Path); err != nil {
+		_ = o.wt.Remove(opts.Issue, true)
+		return nil, fmt.Errorf("worktree setup: %w", err)
 	}
 
 	// Determine first stage
@@ -97,6 +126,13 @@ func (o *Orchestrator) Create(opts CreateOpts) (*pipeline.PipelineState, error) 
 		return nil, fmt.Errorf("create pipeline: %w", err)
 	}
 
+	// Store feature intent on pipeline state
+	if opts.FeatureIntent != "" {
+		_ = o.store.Update(opts.Issue, func(ps *pipeline.PipelineState) {
+			ps.FeatureIntent = opts.FeatureIntent
+		})
+	}
+
 	// Cache issue JSON to disk (directory now exists from store.Create)
 	pipelineDir := fmt.Sprintf("%s/%d", o.store.BaseDir(), opts.Issue)
 	_, _ = o.gh.CacheIssue(opts.Issue, pipelineDir)
@@ -110,6 +146,7 @@ type AdvanceResult struct {
 	Issue       int    `json:"issue"`
 	Action      string `json:"action"` // "advanced", "completed", "failed", "escalated", "retry", "routed"
 	Stage       string `json:"stage"`
+	Session     string `json:"session,omitempty"`
 	NextStage   string `json:"next_stage,omitempty"`
 	Outcome     string `json:"outcome,omitempty"`
 	FixRounds   int    `json:"fix_rounds,omitempty"`
@@ -132,6 +169,7 @@ func (o *Orchestrator) Advance(issue int) (*AdvanceResult, error) {
 
 	currentStage := ps.CurrentStage
 	currentAttempt := ps.CurrentAttempt
+	o.logf("pipeline #%d: advancing stage %q (attempt %d)", issue, currentStage, currentAttempt)
 
 	stageCfg := o.findStage(currentStage)
 	if stageCfg == nil {
@@ -154,11 +192,16 @@ func (o *Orchestrator) Advance(issue int) (*AdvanceResult, error) {
 	}
 
 	// Run the stage lifecycle
-	runResult, err := o.engine.Run(stage.RunOpts{
-		Issue:   issue,
-		Stage:   currentStage,
-		Timeout: timeout,
-	})
+	var runResult *stage.RunResult
+	if stageCfg.Type == "merge" {
+		runResult, err = o.runMerge(issue, ps, stageCfg)
+	} else {
+		runResult, err = o.engine.Run(stage.RunOpts{
+			Issue:   issue,
+			Stage:   currentStage,
+			Timeout: timeout,
+		})
+	}
 	if err != nil {
 		// Reset status on engine failure so pipeline isn't stuck as in_progress
 		_ = o.store.Update(issue, func(ps *pipeline.PipelineState) {
@@ -212,6 +255,7 @@ func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, runRes
 	nextStage := o.nextStageID(currentStage)
 
 	if nextStage == "" {
+		o.logf("pipeline #%d: no more stages, checking goal gates", issue)
 		// No more stages — check goal gates before completing
 		if err := o.checkGoalGates(issue); err != nil {
 			return &AdvanceResult{
@@ -227,17 +271,21 @@ func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, runRes
 		}); err != nil {
 			return nil, fmt.Errorf("update completed status: %w", err)
 		}
+		o.logf("pipeline #%d: completed!", issue)
 		_ = o.db.LogPipelineEvent(issue, "completed", currentStage, runResult.Attempt, "")
+		_ = o.db.QueueUpdateStatus(issue, "completed")
 
 		return &AdvanceResult{
 			Issue:   issue,
 			Action:  "completed",
 			Stage:   currentStage,
+			Session: runResult.Session,
 			Outcome: "success",
 		}, nil
 	}
 
 	// Move to next stage
+	o.logf("pipeline #%d: advancing %s → %s", issue, currentStage, nextStage)
 	if err := o.store.Update(issue, func(ps *pipeline.PipelineState) {
 		ps.Status = "pending"
 		ps.CurrentStage = nextStage
@@ -253,6 +301,7 @@ func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, runRes
 		Issue:     issue,
 		Action:    "advanced",
 		Stage:     currentStage,
+		Session:   runResult.Session,
 		NextStage: nextStage,
 		Outcome:   "success",
 		FixRounds: runResult.FixRounds,
@@ -299,6 +348,7 @@ func (o *Orchestrator) handleStageFailure(issue int, currentStage string, curren
 				return nil, fmt.Errorf("update failed status: %w", err)
 			}
 			_ = o.db.LogPipelineEvent(issue, "max_attempts_reached", currentStage, currentAttempt, "")
+			_ = o.db.QueueUpdateStatus(issue, "failed")
 
 			return &AdvanceResult{
 				Issue:   issue,
@@ -545,6 +595,7 @@ type CheckInAction struct {
 	Issue   int    `json:"issue"`
 	Action  string `json:"action"`  // "skip", "steer", "advance", "retry", "escalate", "fail"
 	Stage   string `json:"stage"`
+	Session string `json:"session,omitempty"`
 	Message string `json:"message"`
 }
 
@@ -563,12 +614,15 @@ func (o *Orchestrator) CheckIn() (*CheckInResult, error) {
 
 	result := &CheckInResult{Actions: []CheckInAction{}}
 
+	hasActive := false
 	for i := range pipelines {
 		ps := &pipelines[i]
 		// Only process active pipelines
 		if ps.Status == "completed" || ps.Status == "failed" {
 			continue
 		}
+
+		hasActive = true
 
 		// Skip pipelines that are currently being advanced by another process
 		if ps.Status == "in_progress" {
@@ -583,6 +637,13 @@ func (o *Orchestrator) CheckIn() (*CheckInResult, error) {
 
 		action := o.checkInPipeline(ps)
 		result.Actions = append(result.Actions, action)
+	}
+
+	// If no active pipelines, check the queue for the next issue to process
+	if !hasActive {
+		if action := o.processQueue(); action != nil {
+			result.Actions = append(result.Actions, *action)
+		}
 	}
 
 	return result, nil
@@ -766,8 +827,231 @@ func (o *Orchestrator) handleAdvance(ps *pipeline.PipelineState) CheckInAction {
 		Issue:   ps.Issue,
 		Action:  advResult.Action,
 		Stage:   ps.CurrentStage,
+		Session: advResult.Session,
 		Message: advResult.Message,
 	}
+}
+
+// processQueue pops the next pending item from the queue and starts a pipeline.
+func (o *Orchestrator) processQueue() *CheckInAction {
+	item, err := o.db.QueueNext()
+	if err != nil || item == nil {
+		return nil
+	}
+	o.logf("queue: processing issue #%d", item.Issue)
+
+	// Try to derive feature intent from GitHub metadata via LLM if not explicitly set
+	if item.FeatureIntent == "" && o.claudeFn != nil {
+		o.logf("queue: deriving feature intent for #%d via LLM...", item.Issue)
+		issue, err := o.gh.GetIssue(item.Issue)
+		if err != nil {
+			return &CheckInAction{
+				Issue:   item.Issue,
+				Action:  "skip",
+				Message: fmt.Sprintf("queue: failed to fetch issue #%d for intent derivation: %v", item.Issue, err),
+			}
+		}
+		derived, err := github.DeriveFeatureIntent(issue, o.claudeFn)
+		if err != nil {
+			return &CheckInAction{
+				Issue:   item.Issue,
+				Action:  "skip",
+				Message: fmt.Sprintf("queue: intent derivation failed for #%d: %v", item.Issue, err),
+			}
+		}
+		if derived != "" {
+			item.FeatureIntent = derived
+			_ = o.db.QueueSetIntent(item.Issue, derived)
+		}
+	}
+
+	// Reject issues without a feature intent even after derivation attempt
+	if item.FeatureIntent == "" {
+		return &CheckInAction{
+			Issue:   item.Issue,
+			Action:  "skip",
+			Message: "queue: issue missing feature_intent — use `factory queue set-intent` or ensure the issue has clear user-facing intent",
+		}
+	}
+
+	if err := o.db.QueueUpdateStatus(item.Issue, "active"); err != nil {
+		return nil
+	}
+
+	o.logf("queue: creating pipeline for issue #%d", item.Issue)
+	_, err = o.Create(CreateOpts{Issue: item.Issue, FeatureIntent: item.FeatureIntent})
+	if err != nil {
+		_ = o.db.QueueUpdateStatus(item.Issue, "failed")
+		return &CheckInAction{
+			Issue:   item.Issue,
+			Action:  "fail",
+			Message: fmt.Sprintf("queue: failed to create pipeline: %v", err),
+		}
+	}
+
+	return &CheckInAction{
+		Issue:   item.Issue,
+		Action:  "queue_started",
+		Message: fmt.Sprintf("queue: started pipeline for issue #%d", item.Issue),
+	}
+}
+
+// runSetup runs the pipeline.setup commands inside the worktree directory.
+func (o *Orchestrator) runSetup(worktreePath string) error {
+	for _, cmdStr := range o.cfg.Pipeline.Setup {
+		o.logf("setup: running %q in %s", cmdStr, worktreePath)
+		cmd := exec.Command("sh", "-c", cmdStr)
+		cmd.Dir = worktreePath
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("command %q failed: %s: %w", cmdStr, strings.TrimSpace(string(out)), err)
+		}
+	}
+	return nil
+}
+
+// runMerge handles the merge stage: push branch, create PR, merge PR.
+func (o *Orchestrator) runMerge(issue int, ps *pipeline.PipelineState, stageCfg *config.Stage) (*stage.RunResult, error) {
+	start := time.Now()
+	o.logf("pipeline #%d: running merge stage", issue)
+
+	result := &stage.RunResult{
+		Issue:           issue,
+		Stage:           stageCfg.ID,
+		Attempt:         ps.CurrentAttempt,
+		FinalCheckState: make(map[string]string),
+		AutoFixes:       make(map[string]int),
+		AgentFixes:      make(map[string]int),
+	}
+
+	// Push branch
+	o.logf("pushing branch %s from %s", ps.Branch, ps.Worktree)
+	if err := o.gh.PushBranch(ps.Worktree, ps.Branch); err != nil {
+		o.logf("push failed: %v", err)
+		result.Outcome = "fail"
+		result.TotalDuration = time.Since(start)
+		return result, nil
+	}
+
+	// Check for existing PR before creating a new one (idempotent retry)
+	existing, err := o.gh.FindPRByBranch(ps.Branch)
+	if err != nil {
+		o.logf("find existing PR failed: %v", err)
+		result.Outcome = "fail"
+		result.TotalDuration = time.Since(start)
+		return result, nil
+	}
+
+	if existing != nil {
+		o.logf("reusing existing PR: %s", existing.URL)
+	} else {
+		// Create PR
+		prTitle := fmt.Sprintf("#%d: %s", issue, ps.Title)
+		prBody := fmt.Sprintf("Closes #%d\n\nAutomated merge via pipeline.", issue)
+		o.logf("creating PR: %s", prTitle)
+		_, err = o.gh.CreatePR(github.PRCreateOpts{
+			Title:  prTitle,
+			Body:   prBody,
+			Branch: ps.Branch,
+		})
+		if err != nil {
+			o.logf("create PR failed: %v", err)
+			result.Outcome = "fail"
+			result.TotalDuration = time.Since(start)
+			return result, nil
+		}
+	}
+
+	// Merge PR
+	strategy := stageCfg.MergeStrategy
+	if strategy == "" {
+		strategy = "squash"
+	}
+	o.logf("merging PR on branch %s with strategy %s", ps.Branch, strategy)
+	if err := o.gh.MergePR(ps.Branch, strategy); err != nil {
+		o.logf("merge PR failed: %v", err)
+		result.Outcome = "fail"
+		result.TotalDuration = time.Since(start)
+		return result, nil
+	}
+
+	o.logf("pipeline #%d: merge successful", issue)
+	result.Outcome = "success"
+	result.TotalDuration = time.Since(start)
+	return result, nil
+}
+
+// CleanupResult describes what happened during a single pipeline cleanup.
+type CleanupResult struct {
+	Issue   int    `json:"issue"`
+	Removed bool   `json:"removed"`
+	Message string `json:"message"`
+}
+
+// Cleanup removes the worktree, branch, and pipeline data for a terminal pipeline.
+func (o *Orchestrator) Cleanup(issue int) (*CleanupResult, error) {
+	ps, err := o.store.Get(issue)
+	if err != nil {
+		return nil, fmt.Errorf("get pipeline: %w", err)
+	}
+
+	if ps.Status != "completed" && ps.Status != "failed" {
+		return nil, fmt.Errorf("pipeline %d has status %q: only completed or failed pipelines can be cleaned up", issue, ps.Status)
+	}
+
+	// Kill active session defensively
+	if ps.CurrentSession != "" {
+		_, _ = o.sessions.Kill(ps.CurrentSession)
+	}
+
+	// Remove worktree + branch
+	if o.wt != nil {
+		if err := o.wt.Remove(issue, true); err != nil {
+			// If worktree is already gone, log and continue
+			if !strings.Contains(err.Error(), "not a working tree") && !strings.Contains(err.Error(), "No such file") {
+				return nil, fmt.Errorf("remove worktree: %w", err)
+			}
+			o.logf("pipeline #%d: worktree already removed, continuing", issue)
+		}
+	}
+
+	// Remove pipeline data from disk
+	if err := o.store.Delete(issue); err != nil {
+		return nil, fmt.Errorf("delete pipeline data: %w", err)
+	}
+
+	return &CleanupResult{
+		Issue:   issue,
+		Removed: true,
+		Message: fmt.Sprintf("pipeline #%d cleaned up (worktree + data removed)", issue),
+	}, nil
+}
+
+// CleanupAll removes worktrees and pipeline data for all terminal pipelines.
+func (o *Orchestrator) CleanupAll() ([]CleanupResult, error) {
+	completed, err := o.store.List("completed")
+	if err != nil {
+		return nil, fmt.Errorf("list completed pipelines: %w", err)
+	}
+	failed, err := o.store.List("failed")
+	if err != nil {
+		return nil, fmt.Errorf("list failed pipelines: %w", err)
+	}
+
+	var results []CleanupResult
+	for _, ps := range append(completed, failed...) {
+		r, err := o.Cleanup(ps.Issue)
+		if err != nil {
+			results = append(results, CleanupResult{
+				Issue:   ps.Issue,
+				Removed: false,
+				Message: fmt.Sprintf("cleanup failed: %v", err),
+			})
+			continue
+		}
+		results = append(results, *r)
+	}
+	return results, nil
 }
 
 // --- Helpers ---

@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -288,6 +289,59 @@ var pipelineAbortCmd = &cobra.Command{
 	},
 }
 
+var pipelineCleanupCmd = &cobra.Command{
+	Use:   "cleanup [issue-number]",
+	Short: "Remove worktree and pipeline data for completed/failed pipelines",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		all, _ := cmd.Flags().GetBool("all")
+
+		if !all && len(args) == 0 {
+			return fmt.Errorf("provide an issue number or use --all")
+		}
+
+		orch, cleanup, err := newOrchestrator()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		w := cmd.OutOrStdout()
+
+		if all {
+			results, err := orch.CleanupAll()
+			if err != nil {
+				return err
+			}
+			if len(results) == 0 {
+				fmt.Fprintln(w, "No terminal pipelines to clean up.")
+				return nil
+			}
+			for _, r := range results {
+				if r.Removed {
+					fmt.Fprintf(w, "Pipeline #%d: cleaned up\n", r.Issue)
+				} else {
+					fmt.Fprintf(w, "Pipeline #%d: %s\n", r.Issue, r.Message)
+				}
+			}
+			return nil
+		}
+
+		issue, err := strconv.Atoi(args[0])
+		if err != nil {
+			return fmt.Errorf("invalid issue number: %s", args[0])
+		}
+
+		result, err := orch.Cleanup(issue)
+		if err != nil {
+			return err
+		}
+
+		fmt.Fprintf(w, "Pipeline #%d: %s\n", result.Issue, result.Message)
+		return nil
+	},
+}
+
 func init() {
 	pipelineCmd.AddCommand(pipelineCreateCmd)
 	pipelineCmd.AddCommand(pipelineAdvanceCmd)
@@ -296,6 +350,7 @@ func init() {
 	pipelineCmd.AddCommand(pipelineRetryCmd)
 	pipelineCmd.AddCommand(pipelineFailCmd)
 	pipelineCmd.AddCommand(pipelineAbortCmd)
+	pipelineCmd.AddCommand(pipelineCleanupCmd)
 
 	pipelineListCmd.Flags().String("status", "", "Filter by status (pending, in_progress, completed, failed, blocked)")
 	pipelineStatusCmd.Flags().String("format", "text", "Output format: text or json")
@@ -303,6 +358,7 @@ func init() {
 	pipelineRetryCmd.Flags().String("reason", "", "Reason for retry")
 	pipelineFailCmd.Flags().String("reason", "", "Reason for failure")
 	pipelineAbortCmd.Flags().Bool("remove-worktree", false, "Remove the worktree after aborting")
+	pipelineCleanupCmd.Flags().Bool("all", false, "Clean up all completed and failed pipelines")
 }
 
 // newOrchestrator builds a fully-wired Orchestrator from default paths/config.
@@ -348,8 +404,11 @@ func newOrchestrator() (*orchestrator.Orchestrator, func(), error) {
 	checker := checks.NewRunner(&checks.ExecRunner{})
 	builder := appctx.NewBuilder(store, &appctx.ExecGit{})
 	engine := stage.NewEngine(sessions, checker, builder, store, database, cfg)
+	engine.SetProgress(os.Stderr)
 
 	orch := orchestrator.NewOrchestrator(store, database, ghClient, wt, sessions, engine, builder, cfg)
+	orch.SetClaudeFn(github.DefaultClaudeFn)
+	orch.SetProgress(os.Stderr)
 
 	cleanup := func() { database.Close() }
 	return orch, cleanup, nil
