@@ -108,6 +108,13 @@ func (m *Manager) Create(opts CreateOpts) error {
 		return fmt.Errorf("unset CLAUDECODE: %w", err)
 	}
 
+	// Export OAuth token if available in .env next to the binary
+	if token := loadOAuthToken(); token != "" {
+		if err := m.tmux.SendKeys(opts.Name, "export CLAUDE_CODE_OAUTH_TOKEN="+shellQuote(token)); err != nil {
+			return fmt.Errorf("export oauth token: %w", err)
+		}
+	}
+
 	// Build and send claude command
 	cmd := buildClaudeCommand(opts)
 	if err := m.tmux.SendKeys(opts.Name, cmd); err != nil {
