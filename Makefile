@@ -2,7 +2,7 @@ BINARY_NAME=factory
 VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
 
-.PHONY: build test lint clean install
+.PHONY: build test lint clean install up
 
 build:
 	go build $(LDFLAGS) -o bin/$(BINARY_NAME) ./cmd/factory
@@ -21,6 +21,9 @@ lint:
 
 clean:
 	rm -rf bin/
+
+up:
+	./up
 
 dev: build
 	./bin/$(BINARY_NAME)

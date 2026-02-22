@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# factory up — build and launch the runner loop + web UI in a tmux session.
+#
+# Usage:  ./up [--port PORT]  (default port: 17432)
+#
+# Creates a tmux session named "factory" with two windows:
+#   runner  — orchestrator check-in loop (every 120s)
+#   ui      — factory serve web UI
+
+set -euo pipefail
+
+PORT=17432
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --port) PORT="$2"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+SESSION="factory"
+
+# Build binary
+echo "==> Building factory..."
+cd "$REPO_DIR"
+go build -o bin/factory ./cmd/factory
+echo "    built bin/factory"
+
+BINARY="$REPO_DIR/bin/factory"
+
+# Kill existing session if present
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+  echo "==> Killing existing '$SESSION' tmux session..."
+  tmux kill-session -t "$SESSION"
+fi
+
+# Create session with runner window
+echo "==> Starting tmux session '$SESSION'..."
+tmux new-session -d -s "$SESSION" -n "runner" \
+  -x 220 -y 50 \
+  "cd '$REPO_DIR' && while true; do '$BINARY' orchestrator check-in; sleep 120; done"
+
+# Add UI window
+tmux new-window -t "$SESSION" -n "ui" \
+  "'$BINARY' serve --port $PORT"
+
+# Switch focus back to runner
+tmux select-window -t "$SESSION:runner"
+
+echo ""
+echo "  Runner:  tmux attach -t $SESSION  (window 'runner')"
+echo "  UI:      http://localhost:$PORT   (window 'ui')"
+echo ""
+echo "==> Attaching... (detach with Ctrl-b d)"
+echo ""
+
+# Attach if we're in a terminal, otherwise just print the attach command
+if [[ -t 1 ]]; then
+  exec tmux attach -t "$SESSION"
+fi
