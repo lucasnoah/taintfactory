@@ -126,6 +126,10 @@ const schemaV3 = `
 ALTER TABLE issue_queue ADD COLUMN feature_intent TEXT NOT NULL DEFAULT '';
 `
 
+const schemaV4 = `
+ALTER TABLE issue_queue ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]';
+`
+
 // Migrate applies the database schema.
 func (d *DB) Migrate() error {
 	// Apply v1 if needed
@@ -188,6 +192,27 @@ func (d *DB) Migrate() error {
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit v3: %w", err)
+		}
+	}
+
+	// Apply v4 if needed
+	var v4Count int
+	err = d.conn.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version = 4").Scan(&v4Count)
+	if err != nil || v4Count == 0 {
+		tx, err := d.conn.Begin()
+		if err != nil {
+			return fmt.Errorf("begin transaction: %w", err)
+		}
+		defer tx.Rollback()
+
+		if _, err := tx.Exec(schemaV4); err != nil {
+			return fmt.Errorf("apply schema v4: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_version (version) VALUES (4)"); err != nil {
+			return fmt.Errorf("record schema version v4: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit v4: %w", err)
 		}
 	}
 

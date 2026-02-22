@@ -987,8 +987,8 @@ func TestCheckIn_MultiplePipelines(t *testing.T) {
 	}
 	env := setupTest(t, cfg)
 
-	// Two checks needed: one for each pipeline
-	env.checkCmd.results = []cmdResult{{exitCode: 0}, {exitCode: 0}}
+	// Only one check needed per check-in (sequential: first pipeline only)
+	env.checkCmd.results = []cmdResult{{exitCode: 0}}
 
 	wtDir1 := t.TempDir()
 	wtDir2 := t.TempDir()
@@ -1005,8 +1005,12 @@ func TestCheckIn_MultiplePipelines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(result.Actions) != 2 {
-		t.Fatalf("expected 2 actions, got %d", len(result.Actions))
+	// Sequential mode: only one pipeline processed per check-in (issue 42 first)
+	if len(result.Actions) != 1 {
+		t.Fatalf("expected 1 action (sequential), got %d", len(result.Actions))
+	}
+	if result.Actions[0].Issue != 42 {
+		t.Errorf("expected issue 42 to be processed first, got %d", result.Actions[0].Issue)
 	}
 }
 

@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -367,6 +368,7 @@ type QueueItem struct {
 	Status        string
 	Position      int
 	FeatureIntent string
+	DependsOn     []int  // issue numbers that must be completed first
 	AddedAt       string
 	StartedAt     string
 	FinishedAt    string
@@ -376,6 +378,7 @@ type QueueItem struct {
 type QueueAddItem struct {
 	Issue         int
 	FeatureIntent string
+	DependsOn     []int  // issue numbers that must be completed first
 }
 
 // QueueAdd inserts issues into the queue with sequential positions.
@@ -395,14 +398,22 @@ func (d *DB) QueueAdd(items []QueueAddItem) error {
 		nextPos = int(maxPos.Int64) + 1
 	}
 
-	stmt, err := tx.Prepare("INSERT INTO issue_queue (issue, position, feature_intent) VALUES (?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT INTO issue_queue (issue, position, feature_intent, depends_on) VALUES (?, ?, ?, ?)")
 	if err != nil {
 		return fmt.Errorf("prepare insert: %w", err)
 	}
 	defer stmt.Close()
 
 	for _, item := range items {
-		if _, err := stmt.Exec(item.Issue, nextPos, item.FeatureIntent); err != nil {
+		depsJSON := "[]"
+		if len(item.DependsOn) > 0 {
+			b, err := json.Marshal(item.DependsOn)
+			if err != nil {
+				return fmt.Errorf("marshal depends_on for issue %d: %w", item.Issue, err)
+			}
+			depsJSON = string(b)
+		}
+		if _, err := stmt.Exec(item.Issue, nextPos, item.FeatureIntent, depsJSON); err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return fmt.Errorf("issue %d is already in the queue", item.Issue)
 			}
@@ -433,7 +444,7 @@ func (d *DB) QueueSetIntent(issue int, intent string) error {
 // QueueList returns all queue items ordered by position.
 func (d *DB) QueueList() ([]QueueItem, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, issue, status, position, feature_intent, added_at, started_at, finished_at
+		`SELECT id, issue, status, position, feature_intent, depends_on, added_at, started_at, finished_at
 		 FROM issue_queue ORDER BY position`)
 	if err != nil {
 		return nil, fmt.Errorf("list queue: %w", err)
@@ -444,7 +455,8 @@ func (d *DB) QueueList() ([]QueueItem, error) {
 	for rows.Next() {
 		var item QueueItem
 		var startedAt, finishedAt sql.NullString
-		if err := rows.Scan(&item.ID, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &item.AddedAt, &startedAt, &finishedAt); err != nil {
+		var dependsOnJSON string
+		if err := rows.Scan(&item.ID, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &dependsOnJSON, &item.AddedAt, &startedAt, &finishedAt); err != nil {
 			return nil, fmt.Errorf("scan queue item: %w", err)
 		}
 		if startedAt.Valid {
@@ -453,20 +465,36 @@ func (d *DB) QueueList() ([]QueueItem, error) {
 		if finishedAt.Valid {
 			item.FinishedAt = finishedAt.String
 		}
+		if dependsOnJSON != "" && dependsOnJSON != "[]" {
+			if err := json.Unmarshal([]byte(dependsOnJSON), &item.DependsOn); err != nil {
+				return nil, fmt.Errorf("unmarshal depends_on for issue %d: %w", item.Issue, err)
+			}
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
 }
 
-// QueueNext returns the next pending item (lowest position), or nil if none.
+// QueueNext returns the next pending item (lowest position) whose dependencies are
+// all completed, or nil if none. A dependency issue missing from the queue entirely
+// is treated as satisfied.
 func (d *DB) QueueNext() (*QueueItem, error) {
-	row := d.conn.QueryRow(
-		`SELECT id, issue, status, position, feature_intent, added_at, started_at, finished_at
-		 FROM issue_queue WHERE status = 'pending' ORDER BY position ASC LIMIT 1`)
+	row := d.conn.QueryRow(`
+		SELECT q.id, q.issue, q.status, q.position, q.feature_intent, q.depends_on,
+		       q.added_at, q.started_at, q.finished_at
+		FROM issue_queue q
+		WHERE q.status = 'pending'
+		AND NOT EXISTS (
+		    SELECT 1 FROM issue_queue dep
+		    JOIN json_each(q.depends_on) je ON CAST(je.value AS INTEGER) = dep.issue
+		    WHERE dep.status != 'completed'
+		)
+		ORDER BY q.position ASC LIMIT 1`)
 
 	var item QueueItem
 	var startedAt, finishedAt sql.NullString
-	err := row.Scan(&item.ID, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &item.AddedAt, &startedAt, &finishedAt)
+	var dependsOnJSON string
+	err := row.Scan(&item.ID, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &dependsOnJSON, &item.AddedAt, &startedAt, &finishedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -478,6 +506,11 @@ func (d *DB) QueueNext() (*QueueItem, error) {
 	}
 	if finishedAt.Valid {
 		item.FinishedAt = finishedAt.String
+	}
+	if dependsOnJSON != "" && dependsOnJSON != "[]" {
+		if err := json.Unmarshal([]byte(dependsOnJSON), &item.DependsOn); err != nil {
+			return nil, fmt.Errorf("unmarshal depends_on: %w", err)
+		}
 	}
 	return &item, nil
 }

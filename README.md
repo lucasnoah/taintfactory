@@ -9,7 +9,10 @@ You define a pipeline with stages (implement, review, QA), checks (lint, test), 
 ```
 Cron (every ~5min)
   └─▶ factory orchestrator check-in
-        ├─ For each in-flight pipeline, decide: skip / steer / advance
+        ├─ Sequential: process only the frontmost active pipeline per tick
+        │    (if it's blocked or in_progress, the factory pauses — nothing else runs)
+        ├─ If no active pipelines, pop the next unblocked item from the queue
+        │    (dep-aware: items with unresolved depends_on are skipped)
         └─ factory pipeline advance [issue]
               ├─ Render and save prompt for current stage
               ├─ Spawn Claude Code session in tmux
@@ -384,7 +387,20 @@ factory queue add 42
 # TaintFactory fetches the issue from GitHub and derives intent via LLM
 # Or provide intent manually:
 factory queue add 42 --intent "Add dark mode toggle to settings page"
+
+# Declare that issue 134 must wait for issue 133 to complete before it starts:
+factory queue add 134 --depends-on 133
+factory queue add 134 --depends-on "#133"   # # prefix accepted
+factory queue add 135 --depends-on 133,134  # multiple dependencies
+
+# View the queue — blocked items show their dependencies:
+factory queue list
+# POS  ISSUE  STATUS   INTENT                           DEPS             ADDED
+# 1    #133   active   Wire River workers to analytics
+# 2    #134   pending  Remove Python infra               [waits: #133]   ...
 ```
+
+**Sequential processing:** the orchestrator runs one pipeline at a time. Issue #133 must fully complete (implement → review → qa → merge) before #134 is dequeued. If the active pipeline is blocked or stalled, the factory pauses rather than starting the next item. Dependencies are evaluated when an item is about to be dequeued — if a dep issue is not in the queue or is already completed, it is treated as satisfied.
 
 **2. Create the pipeline:**
 ```bash
@@ -412,8 +428,9 @@ while true; do factory orchestrator check-in; sleep 120; done
 ```
 
 The loop will:
-- Advance in-flight pipelines stage by stage (implement → review → qa → verify → merge)
-- Pick up the next queued issue automatically when all active pipelines complete
+- Advance the frontmost in-flight pipeline stage by stage (implement → review → qa → verify → merge)
+- Pick up the next queued issue automatically when the active pipeline completes (respecting `--depends-on` order)
+- Process only one pipeline at a time — if the active pipeline is blocked, everything pauses
 - Sleep 2 minutes between each stage transition
 
 **OAuth token:** The factory reads `CLAUDE_CODE_OAUTH_TOKEN` from the environment when creating Claude sessions. You can also store it in `~/.factory/.env`:
@@ -491,8 +508,11 @@ read [issue] [stage]     Read saved context
 
 ### `factory queue`
 ```
-add [issue...]           Add issues to the queue
-list                     List queued issues
+add [issue...] [--intent <text>] [--depends-on <issues>]
+                         Add issues to the queue
+                         --depends-on: comma-separated issues that must complete first
+                         e.g. --depends-on 133  or  --depends-on 133,134
+list [--format json]     List queued issues (table includes DEPS column)
 remove [issue]           Remove from queue
 clear [--confirm]        Remove all items
 set-intent [issue] [intent]  Set the feature intent

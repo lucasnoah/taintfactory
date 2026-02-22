@@ -691,6 +691,113 @@ func TestQueueClear(t *testing.T) {
 	}
 }
 
+func TestMigrateV4(t *testing.T) {
+	d, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer d.Close()
+
+	if err := d.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// Verify schema version 4 recorded
+	var count int
+	if err := d.conn.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version = 4").Scan(&count); err != nil {
+		t.Fatalf("query schema_version: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected schema version 4 to be recorded, count=%d", count)
+	}
+
+	// Verify depends_on column exists by inserting a row with it
+	_, err = d.conn.Exec(`INSERT INTO issue_queue (issue, position, feature_intent, depends_on) VALUES (999, 999, 'test', '[1,2]')`)
+	if err != nil {
+		t.Errorf("depends_on column missing or invalid: %v", err)
+	}
+
+	// Idempotent
+	if err := d.Migrate(); err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+}
+
+func TestQueueNext_BlockedByDep(t *testing.T) {
+	d := testDB(t)
+
+	// Add issue 9 (no deps) and issue 10 (depends on 9, which is still pending)
+	if err := d.QueueAdd([]QueueAddItem{
+		{Issue: 9, FeatureIntent: "first"},
+		{Issue: 10, FeatureIntent: "second", DependsOn: []int{9}},
+	}); err != nil {
+		t.Fatalf("queue add: %v", err)
+	}
+
+	item, err := d.QueueNext()
+	if err != nil {
+		t.Fatalf("queue next: %v", err)
+	}
+	if item == nil {
+		t.Fatal("expected non-nil item")
+	}
+	// Issue 9 has no blocking deps and is first; issue 10 is blocked by pending issue 9
+	if item.Issue != 9 {
+		t.Errorf("expected issue 9 (unblocked), got %d", item.Issue)
+	}
+}
+
+func TestQueueNext_DepCompleted(t *testing.T) {
+	d := testDB(t)
+
+	// Add issue 9 (pending), mark it completed, then add issue 10 depending on 9
+	if err := d.QueueAdd([]QueueAddItem{{Issue: 9, FeatureIntent: "first"}}); err != nil {
+		t.Fatalf("queue add 9: %v", err)
+	}
+	if err := d.QueueUpdateStatus(9, "completed"); err != nil {
+		t.Fatalf("complete 9: %v", err)
+	}
+	if err := d.QueueAdd([]QueueAddItem{{Issue: 10, FeatureIntent: "second", DependsOn: []int{9}}}); err != nil {
+		t.Fatalf("queue add 10: %v", err)
+	}
+
+	item, err := d.QueueNext()
+	if err != nil {
+		t.Fatalf("queue next: %v", err)
+	}
+	if item == nil {
+		t.Fatal("expected non-nil item")
+	}
+	// Issue 9 is completed so dep is satisfied; issue 10 should be returned
+	if item.Issue != 10 {
+		t.Errorf("expected issue 10 (dep completed), got %d", item.Issue)
+	}
+	if len(item.DependsOn) != 1 || item.DependsOn[0] != 9 {
+		t.Errorf("expected DependsOn=[9], got %v", item.DependsOn)
+	}
+}
+
+func TestQueueNext_DepNotInQueue(t *testing.T) {
+	d := testDB(t)
+
+	// Issue 10 depends on 999 which is not in the queue at all
+	if err := d.QueueAdd([]QueueAddItem{{Issue: 10, FeatureIntent: "test", DependsOn: []int{999}}}); err != nil {
+		t.Fatalf("queue add: %v", err)
+	}
+
+	item, err := d.QueueNext()
+	if err != nil {
+		t.Fatalf("queue next: %v", err)
+	}
+	if item == nil {
+		t.Fatal("expected non-nil item")
+	}
+	// Missing dep is treated as satisfied
+	if item.Issue != 10 {
+		t.Errorf("expected issue 10 (missing dep treated as satisfied), got %d", item.Issue)
+	}
+}
+
 func TestGetCheckHistory(t *testing.T) {
 	d := testDB(t)
 

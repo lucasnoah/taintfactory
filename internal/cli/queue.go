@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/lucasnoah/taintfactory/internal/db"
@@ -22,6 +23,39 @@ var queueAddCmd = &cobra.Command{
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		intent, _ := cmd.Flags().GetString("intent")
+		dependsOnStr, _ := cmd.Flags().GetString("depends-on")
+
+		// Parse --depends-on flag
+		var dependsOn []int
+		if dependsOnStr != "" {
+			seen := make(map[int]bool)
+			for _, part := range strings.Split(dependsOnStr, ",") {
+				part = strings.TrimSpace(part)
+				part = strings.TrimPrefix(part, "#")
+				n, err := strconv.Atoi(part)
+				if err != nil || n <= 0 {
+					return fmt.Errorf("invalid --depends-on value %q: must be a positive integer", part)
+				}
+				if seen[n] {
+					return fmt.Errorf("duplicate issue %d in --depends-on", n)
+				}
+				seen[n] = true
+				dependsOn = append(dependsOn, n)
+			}
+		}
+
+		// Validate no self-reference
+		addingSet := make(map[int]bool)
+		for _, arg := range args {
+			if n, err := strconv.Atoi(arg); err == nil {
+				addingSet[n] = true
+			}
+		}
+		for _, dep := range dependsOn {
+			if addingSet[dep] {
+				return fmt.Errorf("issue #%d cannot depend on itself", dep)
+			}
+		}
 
 		ghClient := github.NewClient(&github.ExecRunner{})
 
@@ -51,7 +85,7 @@ var queueAddCmd = &cobra.Command{
 				itemIntent = derived
 			}
 
-			items = append(items, db.QueueAddItem{Issue: n, FeatureIntent: itemIntent})
+			items = append(items, db.QueueAddItem{Issue: n, FeatureIntent: itemIntent, DependsOn: dependsOn})
 		}
 
 		dbPath, err := db.DefaultDBPath()
@@ -148,7 +182,7 @@ var queueListCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "POS\tISSUE\tSTATUS\tINTENT\tADDED")
+		fmt.Fprintln(w, "POS\tISSUE\tSTATUS\tINTENT\tDEPS\tADDED")
 		for _, item := range items {
 			intent := item.FeatureIntent
 			if len(intent) > 50 {
@@ -157,7 +191,15 @@ var queueListCmd = &cobra.Command{
 			if intent == "" {
 				intent = "(none)"
 			}
-			fmt.Fprintf(w, "%d\t#%d\t%s\t%s\t%s\n", item.Position, item.Issue, item.Status, intent, item.AddedAt)
+			deps := ""
+			if len(item.DependsOn) > 0 {
+				parts := make([]string, len(item.DependsOn))
+				for i, d := range item.DependsOn {
+					parts[i] = fmt.Sprintf("#%d", d)
+				}
+				deps = fmt.Sprintf("[waits: %s]", strings.Join(parts, ", "))
+			}
+			fmt.Fprintf(w, "%d\t#%d\t%s\t%s\t%s\t%s\n", item.Position, item.Issue, item.Status, intent, deps, item.AddedAt)
 		}
 		return w.Flush()
 	},
@@ -231,6 +273,7 @@ var queueClearCmd = &cobra.Command{
 
 func init() {
 	queueAddCmd.Flags().String("intent", "", "Feature intent: what value this brings to the end user")
+	queueAddCmd.Flags().String("depends-on", "", "Comma-separated issue numbers this must wait for (e.g. --depends-on 133,134 or --depends-on #133,#134)")
 	queueListCmd.Flags().String("format", "table", "Output format: table or json")
 	queueClearCmd.Flags().Bool("confirm", false, "Confirm clearing the entire queue")
 

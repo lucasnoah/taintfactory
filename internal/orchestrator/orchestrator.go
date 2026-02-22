@@ -624,7 +624,8 @@ func (o *Orchestrator) CheckIn() (*CheckInResult, error) {
 
 		hasActive = true
 
-		// Skip pipelines that are currently being advanced by another process
+		// Skip pipelines that are currently being advanced by another process.
+		// Strict sequential: if the frontmost pipeline is in_progress, pause everything.
 		if ps.Status == "in_progress" {
 			result.Actions = append(result.Actions, CheckInAction{
 				Issue:   ps.Issue,
@@ -632,11 +633,12 @@ func (o *Orchestrator) CheckIn() (*CheckInResult, error) {
 				Stage:   ps.CurrentStage,
 				Message: "in_progress, another advance may be running",
 			})
-			continue
+			break
 		}
 
 		action := o.checkInPipeline(ps)
 		result.Actions = append(result.Actions, action)
+		break // strict sequential: only process one pipeline per check-in
 	}
 
 	// If no active pipelines, check the queue for the next issue to process
