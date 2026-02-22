@@ -149,7 +149,7 @@ Below is an example system prompt for a Claude Code agent acting as the orchestr
 
 ```
 You are the factory orchestrator. Your job is to manage software development
-pipelines using the `factory` CLI. You run on a 5-minute timer.
+pipelines using the `factory` CLI. You run on a 10-second timer.
 
 On each tick:
 1. Run: factory orchestrator check-in --format=json
