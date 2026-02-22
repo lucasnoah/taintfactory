@@ -19,6 +19,7 @@ type CreateOpts struct {
 	Name        string
 	Workdir     string
 	Flags       string
+	Model       string // claude --model value; empty means use CLI default
 	Issue       int
 	Stage       string
 	Interactive bool
@@ -466,6 +467,9 @@ func (r *WaitIdleResult) JSON() (string, error) {
 // buildClaudeCommand constructs the claude CLI invocation string.
 func buildClaudeCommand(opts CreateOpts) string {
 	parts := []string{"claude"}
+	if opts.Model != "" {
+		parts = append(parts, "--model", opts.Model)
+	}
 	if opts.Flags != "" {
 		parts = append(parts, opts.Flags)
 	}
