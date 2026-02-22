@@ -89,6 +89,12 @@ func (b *Builder) Build(ps *pipeline.PipelineState, opts BuildOpts) (*BuildResul
 		"goal":           buildGoal(ps),
 	}
 
+	// Merge runtime vars injected by the orchestrator (e.g. dependent_issues after merge).
+	// These override base vars but are themselves overridden by pipeline/stage vars.
+	for k, v := range ps.RuntimeVars {
+		vars[k] = v
+	}
+
 	// Merge custom vars: pipeline-level first, then stage-level overrides.
 	for k, v := range opts.PipelineVars {
 		vars[k] = v
