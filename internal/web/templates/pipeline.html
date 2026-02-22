@@ -1,0 +1,97 @@
+{{define "title"}}#{{.State.Issue}} {{.State.Title}}{{end}}
+{{define "refresh"}}{{if .IsActive}}<meta http-equiv="refresh" content="15">{{end}}{{end}}
+{{define "content"}}
+<div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1.25rem;flex-wrap:wrap">
+  <h1 style="font-size:1.2rem;font-weight:700">
+    <a href="/" style="color:var(--muted);font-weight:400;font-size:.875rem">← Dashboard</a>
+    &nbsp;#{{.State.Issue}} {{.State.Title}}
+    {{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener" style="font-size:.8rem;font-weight:400;margin-left:.4rem" title="Open GitHub issue">↗ GitHub</a>{{end}}
+  </h1>
+  <span class="{{badgeClass .State.Status}}">{{.State.Status}}</span>
+  {{if .SessionDot}}<span class="{{dotClass .SessionDot}}"></span>{{end}}
+  {{if .TmuxCmd}}<code style="font-size:.78rem;background:#e9ecef;padding:.2em .45em;border-radius:3px;user-select:all">{{.TmuxCmd}}</code>{{end}}
+  <span class="muted" style="margin-left:auto;font-size:.8rem">updated {{.UpdatedAgo}}</span>
+</div>
+
+{{if .StageOrder}}
+<h2>Progress</h2>
+<div class="progress-bar">
+  {{range .StageOrder}}<div class="{{segClass .Status}}" title="{{.ID}}{{if .Duration}} ({{.Duration}}){{end}}"></div>{{end}}
+</div>
+<div class="seg-labels">
+  {{range .StageOrder}}
+  <div class="seg-label" style="color:{{if eq .Status "active"}}#0d6efd{{else if eq .Status "done"}}#198754{{else}}#adb5bd{{end}}">
+    <span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{.ID}}</span>
+    {{if .Duration}}<span style="display:block;font-size:.6rem;opacity:.75">{{.Duration}}</span>{{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}
+
+{{if .HasLiveStream}}
+<h2>Live Session
+  <span id="stream-status" style="font-size:.7rem;font-weight:400;color:#adb5bd;margin-left:.5rem">connecting…</span>
+</h2>
+<div style="position:relative">
+  <pre id="live-output" style="height:480px;overflow-y:auto;margin-bottom:1.5rem;font-size:.75rem">&#x200b;</pre>
+</div>
+<script>(function(){
+  var pre = document.getElementById('live-output');
+  var status = document.getElementById('stream-status');
+  var src = new EventSource('/pipeline/{{.State.Issue}}/session/stream');
+  src.onmessage = function(e) {
+    var atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+    pre.textContent = e.data;
+    if (atBottom) pre.scrollTop = pre.scrollHeight;
+    status.textContent = 'live';
+    status.style.color = '#198754';
+  };
+  src.addEventListener('done', function(e) {
+    src.close();
+    status.textContent = 'session ended';
+    status.style.color = '#adb5bd';
+  });
+  src.onerror = function() {
+    src.close();
+    status.textContent = 'disconnected';
+    status.style.color = '#dc3545';
+  };
+})();</script>
+{{end}}
+
+{{if .History}}
+<h2>Stage History</h2>
+<table>
+  <thead><tr><th>Stage</th><th>Attempt</th><th>Outcome</th><th>Duration</th><th>Fix Rounds</th><th>Session</th></tr></thead>
+  <tbody>
+  {{range .History}}
+  <tr>
+    <td><a href="/pipeline/{{$.State.Issue}}/stage/{{.Stage}}/attempt/{{.Attempt}}">{{.Stage}}</a></td>
+    <td>{{.Attempt}}</td>
+    <td><span class="{{badgeClass .Outcome}}">{{.Outcome}}</span></td>
+    <td class="muted">{{.Duration}}</td>
+    <td class="muted">{{.FixRounds}}</td>
+    <td><code style="font-size:.75rem;user-select:all">{{.TmuxCmd}}</code></td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+
+{{if .Events}}
+<h2>Events</h2>
+<table>
+  <thead><tr><th>Timestamp</th><th>Event</th><th>Stage</th><th>Detail</th></tr></thead>
+  <tbody>
+  {{range .Events}}
+  <tr>
+    <td class="muted" style="white-space:nowrap;font-size:.78rem">{{.Timestamp}}</td>
+    <td>{{.Event}}</td>
+    <td class="muted">{{.Stage}}</td>
+    <td class="muted" style="font-size:.8rem">{{.Detail}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}

@@ -327,8 +327,8 @@ const contractCheckTemplate = `# Contract Check: {{issue_title}} (#{{issue_numbe
 
 Issue #{{issue_number}} has just merged. Your job is to validate the Data
 Contracts in every downstream issue that was written against it, diff them
-against what was actually built, and either patch them or block them before
-any implement agent runs from stale assumptions.
+against what was actually built, and update them so that
+no implement agent runs from stale assumptions.
 
 ## What just merged
 
@@ -395,7 +395,7 @@ codebase — a field was renamed, a type changed, a column has a different
 name. The fix is mechanical and safe to apply automatically.
 
 Drift is SEMANTIC if the contract's meaning has shifted in a way that
-requires a judgment call:
+requires the implement agent to make different choices:
 - A field exists with the right name and type but the merged code uses it
   differently than the contract describes
 - The contract references a concept that was implemented in a fundamentally
@@ -404,8 +404,7 @@ requires a judgment call:
   and that could change the downstream implementation approach
 - A formula or constant changed in a way that affects business logic
 
-When in doubt, treat drift as semantic and flag for human review. Do not
-auto-patch anything you are not certain about.
+When in doubt, treat drift as semantic and document it for the implement agent.
 
 **Step 4 — Act**
 
@@ -422,12 +421,24 @@ For STRUCTURAL drift — patch the issue body:
 4. Add a comment documenting exactly what changed and why:
      gh issue comment {N} --body "..."
 
-For SEMANTIC drift — block for human review:
-1. Add a comment explaining precisely: what the contract says, what the
-   merged code actually does, and why this requires a human decision:
+For SEMANTIC drift — update the issue with implementation notes:
+1. Fetch the current body:
+     gh issue view {N} --json body -q .body
+2. Append an "## Implementation Notes" section (or add to an existing one)
+   that explains precisely: what the contract says, what the merged code
+   actually does, and what the implement agent must account for. Be concrete
+   — name the struct, method, or field at issue and describe the required
+   workaround or adaptation.
+3. Apply:
+     gh issue edit {N} --body "$(cat <<'EOF'
+     ...updated body with implementation notes appended...
+     EOF
+     )"
+4. Add a comment summarizing the drift and the note added:
      gh issue comment {N} --body "..."
-2. Add the label:
-     gh issue edit {N} --add-label "needs-plan-review"
+
+Do NOT add any blocking label. The issue proceeds through the pipeline;
+the implement agent will read the Implementation Notes and adapt accordingly.
 
 ## Output
 
@@ -442,9 +453,9 @@ Dependents checked: N
 |---|---|---|
 | #N | ... | No drift |
 | #N | ... | Structural — patched (X → Y) |
-| #N | ... | Semantic — blocked (reason: ...) |
+| #N | ... | Semantic — noted (implementation notes added: ...) |
 
-Issues requiring human review: [list, or "none"]
+Issues updated with notes: [list, or "none"]
 ---
 
 Do not exit until every dependent issue has been checked and acted on.

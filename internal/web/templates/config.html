@@ -1,0 +1,65 @@
+{{define "title"}}Config{{end}}
+{{define "content"}}
+<h1 style="font-size:1.2rem;font-weight:700;margin-bottom:1.25rem">Pipeline Configs</h1>
+
+{{if .Repos}}
+{{range .Repos}}
+<div style="margin-bottom:2.5rem">
+  <h2 style="font-size:1rem;font-weight:700;text-transform:none;letter-spacing:0;color:var(--text);margin-bottom:.25rem">
+    {{.ConfigName}}
+  </h2>
+  <p class="muted" style="font-size:.8rem;margin-bottom:1rem;font-family:monospace">{{.Dir}}</p>
+
+  <h2>Stages</h2>
+  <table>
+    <thead><tr><th>ID</th><th>Type</th><th>Model</th><th>Goal Gate</th><th>Checks After</th></tr></thead>
+    <tbody>
+    {{range .Stages}}
+    <tr>
+      <td>
+        <strong>{{.ID}}</strong>
+        {{if .PromptContent}}
+        <br><details style="margin-top:.3rem">
+          <summary style="font-size:.75rem;cursor:pointer;color:#0d6efd;user-select:none">
+            {{.PromptTemplate}}
+          </summary>
+          <pre class="prompt" style="margin-top:.5rem;font-size:.72rem;line-height:1.5">{{.PromptContent}}</pre>
+        </details>
+        {{end}}
+      </td>
+      <td class="muted">{{.Type}}</td>
+      <td class="muted">{{.Model}}</td>
+      <td class="muted">{{if .GoalGate}}✓{{end}}</td>
+      <td class="muted" style="font-size:.8rem">{{.ChecksAfterStr}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+
+  {{if .Checks}}
+  <h2>Check Definitions</h2>
+  <table>
+    <thead><tr><th>Name</th><th>Command</th><th>Parser</th><th>Auto-fix</th><th>Timeout</th></tr></thead>
+    <tbody>
+    {{range .Checks}}
+    <tr>
+      <td><strong>{{.Name}}</strong></td>
+      <td><code>{{.Command}}</code></td>
+      <td class="muted">{{.Parser}}</td>
+      <td class="muted">{{if .AutoFix}}✓{{end}}</td>
+      <td class="muted">{{.Timeout}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+{{end}}
+
+{{else}}
+<p class="muted">
+  No pipeline configs found. Configs are discovered automatically from each pipeline's
+  worktree path — they'll appear here once pipelines have been created.
+</p>
+{{end}}
+{{end}}
