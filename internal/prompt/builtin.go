@@ -11,6 +11,8 @@ var builtinTemplates = map[string]string{
 
 const implementTemplate = `# Implement: {{issue_title}}
 
+> **Do not invoke any skills or slash commands** (e.g. /superpowers, /commit, or any /command). Use only built-in tools.
+
 ## Issue #{{issue_number}}
 {{issue_body}}
 
@@ -52,6 +54,8 @@ The following checks failed and need to be addressed:
 `
 
 const reviewTemplate = `# Code Review: {{issue_title}}
+
+> **Do not invoke any skills or slash commands** (e.g. /superpowers, /commit, or any /command). Use only built-in tools.
 
 ## Issue #{{issue_number}}
 {{issue_body}}
@@ -98,6 +102,8 @@ Stage: {{stage_id}} (attempt {{attempt}})
 `
 
 const qaTemplate = `# QA Testing: {{issue_title}}
+
+> **Do not invoke any skills or slash commands** (e.g. /superpowers, /commit, or any /command). Use only built-in tools.
 
 ## Issue #{{issue_number}}
 {{issue_body}}
@@ -149,6 +155,8 @@ Stage: {{stage_id}} (attempt {{attempt}})
 
 const fixChecksTemplate = `# Fix Check Failures: {{issue_title}}
 
+> **Do not invoke any skills or slash commands** (e.g. /superpowers, /commit, or any /command). Use only built-in tools.
+
 ## Issue #{{issue_number}}
 Stage: {{stage_id}} (attempt {{attempt}})
 Working in: {{worktree_path}}
@@ -165,6 +173,8 @@ Branch: {{branch}}
 `
 
 const mergeTemplate = `# Merge: {{issue_title}}
+
+> **Do not invoke any skills or slash commands** (e.g. /superpowers, /commit, or any /command). Use only built-in tools.
 
 ## Issue #{{issue_number}}
 {{issue_body}}
