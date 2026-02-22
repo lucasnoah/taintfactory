@@ -1,5 +1,5 @@
 {{define "title"}}#{{.State.Issue}} {{.State.Title}}{{end}}
-{{define "refresh"}}{{if .IsActive}}<meta http-equiv="refresh" content="15">{{end}}{{end}}
+{{define "refresh"}}{{if .ShouldAutoRefresh}}<meta http-equiv="refresh" content="15">{{end}}{{end}}
 {{define "content"}}
 <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1.25rem;flex-wrap:wrap">
   <h1 style="font-size:1.2rem;font-weight:700">
@@ -75,11 +75,20 @@
 <script>(function(){
   var pre = document.getElementById('live-output');
   var status = document.getElementById('stream-status');
+  var lastContent = '';
   var src = new EventSource('/pipeline/{{.State.Issue}}/session/stream');
   src.onmessage = function(e) {
-    var atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+    if (e.data === lastContent) return; // no change — skip repaint entirely
+    var distFromBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight;
+    var atBottom = distFromBottom < 20;
+    lastContent = e.data;
     pre.textContent = e.data;
-    if (atBottom) pre.scrollTop = pre.scrollHeight;
+    if (atBottom) {
+      pre.scrollTop = pre.scrollHeight;
+    } else {
+      // Restore the user's scroll position relative to the bottom
+      pre.scrollTop = pre.scrollHeight - pre.clientHeight - distFromBottom;
+    }
     status.textContent = 'live';
     status.style.color = '#198754';
   };

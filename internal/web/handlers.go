@@ -58,9 +58,10 @@ type PipelineDetailData struct {
 	HasLiveStream bool   // true when session is active and tmux is available
 	UpdatedAgo    string
 	IssueURL      string // fully-qualified GitHub issue URL, empty if repo not configured
-	QueueStatus   string // queue status for this issue ("pending","active","completed","" if not queued)
-	Upstream      []DepIssueView // issues this one depends on (must complete first)
-	Downstream    []DepIssueView // issues that depend on this one (blocked until this completes)
+	QueueStatus      string // queue status for this issue ("pending","active","completed","" if not queued)
+	Upstream         []DepIssueView // issues this one depends on (must complete first)
+	Downstream       []DepIssueView // issues that depend on this one (blocked until this completes)
+	ShouldAutoRefresh bool // true when active but no live SSE stream (meta-refresh fallback)
 }
 
 // DepIssueView represents a dependency relationship to another issue.
@@ -442,13 +443,14 @@ func (s *Server) handlePipelineDetail(w http.ResponseWriter, r *http.Request, is
 		Events:        events,
 		IsActive:      ps.Status == "in_progress",
 		SessionDot:    s.sessionDot(ps.CurrentSession),
-		TmuxCmd:       tmuxCmd,
-		HasLiveStream: hasLiveStream,
-		UpdatedAgo:    relTime(ps.UpdatedAt),
-		IssueURL:      issueURL,
-		QueueStatus:   queueStatus,
-		Upstream:      upstream,
-		Downstream:    downstream,
+		TmuxCmd:          tmuxCmd,
+		HasLiveStream:    hasLiveStream,
+		UpdatedAgo:       relTime(ps.UpdatedAt),
+		IssueURL:         issueURL,
+		QueueStatus:      queueStatus,
+		Upstream:         upstream,
+		Downstream:       downstream,
+		ShouldAutoRefresh: ps.Status == "in_progress" && !hasLiveStream,
 	}
 
 	if err := s.pipelineTmpl.ExecuteTemplate(w, "base", data); err != nil {
