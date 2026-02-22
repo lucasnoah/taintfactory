@@ -13,6 +13,40 @@
   <span class="muted" style="margin-left:auto;font-size:.8rem">updated {{.UpdatedAgo}}</span>
 </div>
 
+{{if or .Upstream .Downstream}}
+<h2>Dependencies</h2>
+<div style="display:flex;gap:1.5rem;flex-wrap:wrap;margin-bottom:1.5rem">
+  {{if .Upstream}}
+  <div style="flex:1;min-width:200px">
+    <div style="font-size:.7rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.5rem">Depends on</div>
+    <div style="display:flex;flex-direction:column;gap:.4rem">
+    {{range .Upstream}}
+    <div style="display:flex;align-items:center;gap:.5rem;background:#fff;border:1px solid var(--border);border-radius:6px;padding:.4rem .65rem">
+      {{if .HasPipeline}}<a href="/pipeline/{{.Issue}}" style="font-weight:600;white-space:nowrap">#{{.Issue}}</a>{{else}}<strong style="white-space:nowrap">#{{.Issue}}</strong>{{end}}
+      <span class="muted" style="font-size:.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">{{.Title}}</span>
+      {{if .HasPipeline}}<span class="{{badgeClass .PipelineStatus}}" style="flex-shrink:0">{{.PipelineStatus}}</span>{{else}}<span class="{{badgeClass .QueueStatus}}" style="flex-shrink:0">{{.QueueStatus}}</span>{{end}}
+    </div>
+    {{end}}
+    </div>
+  </div>
+  {{end}}
+  {{if .Downstream}}
+  <div style="flex:1;min-width:200px">
+    <div style="font-size:.7rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.5rem">Blocks</div>
+    <div style="display:flex;flex-direction:column;gap:.4rem">
+    {{range .Downstream}}
+    <div style="display:flex;align-items:center;gap:.5rem;background:#fff;border:1px solid var(--border);border-radius:6px;padding:.4rem .65rem">
+      {{if .HasPipeline}}<a href="/pipeline/{{.Issue}}" style="font-weight:600;white-space:nowrap">#{{.Issue}}</a>{{else}}<strong style="white-space:nowrap">#{{.Issue}}</strong>{{end}}
+      <span class="muted" style="font-size:.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">{{.Title}}</span>
+      {{if .HasPipeline}}<span class="{{badgeClass .PipelineStatus}}" style="flex-shrink:0">{{.PipelineStatus}}</span>{{else}}<span class="{{badgeClass .QueueStatus}}" style="flex-shrink:0">{{.QueueStatus}}</span>{{end}}
+    </div>
+    {{end}}
+    </div>
+  </div>
+  {{end}}
+</div>
+{{end}}
+
 {{if .StageOrder}}
 <h2>Progress</h2>
 <div class="progress-bar">

@@ -58,6 +58,18 @@ type PipelineDetailData struct {
 	HasLiveStream bool   // true when session is active and tmux is available
 	UpdatedAgo    string
 	IssueURL      string // fully-qualified GitHub issue URL, empty if repo not configured
+	QueueStatus   string // queue status for this issue ("pending","active","completed","" if not queued)
+	Upstream      []DepIssueView // issues this one depends on (must complete first)
+	Downstream    []DepIssueView // issues that depend on this one (blocked until this completes)
+}
+
+// DepIssueView represents a dependency relationship to another issue.
+type DepIssueView struct {
+	Issue          int
+	Title          string
+	QueueStatus    string
+	PipelineStatus string
+	HasPipeline    bool
 }
 
 type StageStatusItem struct {
@@ -390,6 +402,36 @@ func (s *Server) handlePipelineDetail(w http.ResponseWriter, r *http.Request, is
 		issueURL = fmt.Sprintf("https://github.com/%s/issues/%d", repo, issue)
 	}
 
+	// Build dependency graph from queue.
+	var queueStatus string
+	var upstream, downstream []DepIssueView
+	if allQueue, err := s.db.QueueList(); err == nil {
+		// Build lookup maps.
+		qByIssue := make(map[int]db.QueueItem, len(allQueue))
+		for _, q := range allQueue {
+			qByIssue[q.Issue] = q
+		}
+		// Find this issue's queue entry.
+		if q, ok := qByIssue[issue]; ok {
+			queueStatus = q.Status
+			// Upstream: issues this one depends on.
+			for _, depIssue := range q.DependsOn {
+				dv := depIssueView(depIssue, qByIssue, s.store)
+				upstream = append(upstream, dv)
+			}
+		}
+		// Downstream: issues that have this issue in their depends_on.
+		for _, q := range allQueue {
+			for _, dep := range q.DependsOn {
+				if dep == issue {
+					dv := depIssueView(q.Issue, qByIssue, s.store)
+					downstream = append(downstream, dv)
+					break
+				}
+			}
+		}
+	}
+
 	data := PipelineDetailData{
 		State:         ps,
 		StageOrder:    stageOrder,
@@ -401,6 +443,9 @@ func (s *Server) handlePipelineDetail(w http.ResponseWriter, r *http.Request, is
 		HasLiveStream: hasLiveStream,
 		UpdatedAgo:    relTime(ps.UpdatedAt),
 		IssueURL:      issueURL,
+		QueueStatus:   queueStatus,
+		Upstream:      upstream,
+		Downstream:    downstream,
 	}
 
 	if err := s.pipelineTmpl.ExecuteTemplate(w, "base", data); err != nil {
@@ -579,4 +624,18 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	if err := s.configTmpl.ExecuteTemplate(w, "base", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// depIssueView builds a DepIssueView for the given issue number using pre-loaded queue and store data.
+func depIssueView(issue int, qByIssue map[int]db.QueueItem, store *pipeline.Store) DepIssueView {
+	dv := DepIssueView{Issue: issue}
+	if q, ok := qByIssue[issue]; ok {
+		dv.QueueStatus = q.Status
+	}
+	if ps, err := store.Get(issue); err == nil {
+		dv.Title = ps.Title
+		dv.PipelineStatus = ps.Status
+		dv.HasPipeline = true
+	}
+	return dv
 }
