@@ -416,22 +416,22 @@ The recommended way to drive the factory is a bash loop in a dedicated tmux sess
 # Start a dedicated tmux session for the orchestrator
 tmux new-session -d -s factory-runner
 
-# Export OAuth token, then start the loop (2 min between stages)
+# Export OAuth token, then start the loop (10s between stages)
 tmux send-keys -t factory-runner "export CLAUDE_CODE_OAUTH_TOKEN=<your-token>" Enter
-tmux send-keys -t factory-runner "cd /path/to/your/repo && while true; do factory orchestrator check-in; sleep 120; done" Enter
+tmux send-keys -t factory-runner "cd /path/to/your/repo && while true; do factory orchestrator check-in; sleep 10; done" Enter
 ```
 
 Or run directly in your current shell:
 ```bash
 export CLAUDE_CODE_OAUTH_TOKEN=<your-token>
-while true; do factory orchestrator check-in; sleep 120; done
+while true; do factory orchestrator check-in; sleep 10; done
 ```
 
 The loop will:
 - Advance the frontmost in-flight pipeline stage by stage (implement → review → qa → verify → merge)
 - Pick up the next queued issue automatically when the active pipeline completes (respecting `--depends-on` order)
 - Process only one pipeline at a time — if the active pipeline is blocked, everything pauses
-- Sleep 2 minutes between each stage transition
+- Sleep 10 seconds between each stage transition (each `check-in` is blocking — it runs the full stage before returning)
 
 **OAuth token:** The factory reads `CLAUDE_CODE_OAUTH_TOKEN` from the environment when creating Claude sessions. You can also store it in `~/.factory/.env`:
 ```
@@ -441,7 +441,7 @@ The factory will load it automatically from there if not already in your environ
 
 **Cron alternative** (if you prefer system cron over a loop):
 ```bash
-*/2 * * * * export CLAUDE_CODE_OAUTH_TOKEN=<token> && /path/to/factory orchestrator check-in
+*/1 * * * * export CLAUDE_CODE_OAUTH_TOKEN=<token> && /path/to/factory orchestrator check-in
 ```
 
 **4. Monitor progress:**
