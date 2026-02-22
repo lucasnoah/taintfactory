@@ -127,7 +127,8 @@ func validateOnFail(s Stage, index int, stageIDs map[string]bool, errs *[]Valida
 	case nil:
 		// No on_fail specified, that's fine
 	case string:
-		if v != "" && !stageIDs[v] {
+		// "escalate" is a reserved keyword handled by the orchestrator.
+		if v != "" && v != "escalate" && !stageIDs[v] {
 			*errs = append(*errs, ValidationError{
 				Field:   prefix,
 				Message: fmt.Sprintf("references undefined stage %q", v),
@@ -139,7 +140,7 @@ func validateOnFail(s Stage, index int, stageIDs map[string]bool, errs *[]Valida
 			if !ok {
 				continue
 			}
-			if !stageIDs[target] {
+			if target != "escalate" && !stageIDs[target] {
 				*errs = append(*errs, ValidationError{
 					Field:   fmt.Sprintf("%s.%s", prefix, key),
 					Message: fmt.Sprintf("references undefined stage %q", target),
