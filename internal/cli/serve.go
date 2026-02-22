@@ -44,5 +44,5 @@ started from.`,
 }
 
 func init() {
-	serveCmd.Flags().Int("port", 8080, "Port to listen on")
+	serveCmd.Flags().Int("port", 17432, "Port to listen on")
 }
