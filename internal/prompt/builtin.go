@@ -215,3 +215,78 @@ Stage: {{stage_id}} (attempt {{attempt}})
 3. Include the issue reference (Closes #{{issue_number}})
 4. Review the diff one final time before merging
 `
+
+// agentMergeTemplate is a sketch for Option B: an agent-driven merge stage that
+// can resolve conflicts autonomously. To activate, change stage type from "merge"
+// to "agent" and swap "merge.md" for "agent-merge.md" in the registry above.
+//
+// Design intent:
+//   - The agent is given explicit conflict-resolution rules so decisions are
+//     deterministic, not creative. It should not need to reason about semantics.
+//   - Rule of thumb: origin/main is authoritative for files it already owns;
+//     the feature branch owns only its net-new files.
+//   - After resolving, the agent force-pushes and merges. The stage's post-checks
+//     (lint + tests) act as the safety net.
+//
+//nolint:unused
+const agentMergeTemplate = `# Merge: {{issue_title}}
+
+> **Do not invoke any skills or slash commands.** Use only built-in tools.
+
+## Task
+Rebase branch ` + "`{{branch}}`" + ` onto ` + "`origin/main`" + `, resolve any conflicts using
+the rules below, push, and merge the pull request.
+
+## Repository
+Working directory: {{worktree_path}}
+Branch: {{branch}}
+Issue: #{{issue_number}}
+
+## Conflict-Resolution Rules
+
+Follow these rules exactly — do not use judgment about code quality.
+
+**Rule 1 — "Both added" (AA) conflicts:**
+A file was added by both this branch and main. This happens when an earlier
+slice landed on main after this branch was cut.
+
+- If the file already exists on ` + "`origin/main`" + ` **and** your branch's version
+  introduces only function signatures / types that duplicate what main already
+  has: take ` + "`--theirs`" + ` (origin/main). The main version is authoritative.
+- If your branch adds a **net-new** file that does not exist anywhere on main
+  (check with ` + "`git show origin/main:<path>`" + `): keep your version.
+- When unsure: take origin/main's version and verify the build still passes.
+
+**Rule 2 — "Both modified" conflicts:**
+Open the file, read the conflict markers carefully.
+- For generated files (` + "`*.sql.go`" + `, ` + "`models.go`" + `): take ` + "`--theirs`" + ` (origin/main).
+  Regenerated code must match the schema already on main.
+- For migration files (` + "`migrations/*.sql`" + `): take ` + "`--theirs`" + ` (origin/main).
+  The schema in the DB already reflects what main has; do not regress it.
+- For application code: merge manually — keep origin/main's structure but
+  preserve the new functions/methods introduced by this branch.
+
+**Rule 3 — Verify after resolving:**
+Run ` + "`go build ./...`" + ` and ` + "`go test ./...`" + ` after resolving all conflicts.
+If any package fails to build, re-examine the conflicting files.
+
+## Steps
+
+1. ` + "`git fetch origin`" + `
+2. ` + "`git rebase origin/main`" + `
+3. For each conflicting file, apply the rules above:
+   - ` + "`git checkout --ours <file>`" + ` → take origin/main (in rebase, --ours = target)
+   - ` + "`git checkout --theirs <file>`" + ` → take this branch's version
+   - Manual edit for mixed conflicts
+   - ` + "`git add <file>`" + `
+4. ` + "`git rebase --continue`" + ` (repeat steps 3–4 for each commit)
+5. ` + "`go build ./... && go test ./...`" + ` — fix any build failures before proceeding
+6. ` + "`git push --force-with-lease -u origin {{branch}}`" + `
+7. Create PR if none exists: ` + "`gh pr create --title \"#{{issue_number}}: {{issue_title}}\" --body \"Closes #{{issue_number}}\"`" + `
+8. Merge: ` + "`gh pr merge {{branch}} --squash --delete-branch`" + `
+
+{{#if prior_stage_summary}}
+## Stage History
+{{prior_stage_summary}}
+{{/if}}
+`

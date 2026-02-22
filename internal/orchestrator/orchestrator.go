@@ -932,9 +932,27 @@ func (o *Orchestrator) runMerge(issue int, ps *pipeline.PipelineState, stageCfg 
 		AgentFixes:      make(map[string]int),
 	}
 
-	// Push branch
+	// Rebase onto main before pushing to surface divergence early.
+	// This handles the common case where other PRs merged after this branch
+	// was cut, causing a "both added" or content conflict at gh pr merge time.
+	o.logf("rebasing %s onto origin/main", ps.Branch)
+	conflicted, rebaseErr := o.gh.RebaseOntoMain(ps.Worktree)
+	if rebaseErr != nil {
+		o.logf("rebase failed: %v", rebaseErr)
+		result.Outcome = "fail"
+		result.TotalDuration = time.Since(start)
+		return result, nil
+	}
+	if conflicted {
+		o.logf("merge conflicts detected during rebase onto origin/main; manual resolution required")
+		result.Outcome = "fail"
+		result.TotalDuration = time.Since(start)
+		return result, nil
+	}
+
+	// Push branch (force-with-lease to handle any history rewrite from the rebase)
 	o.logf("pushing branch %s from %s", ps.Branch, ps.Worktree)
-	if err := o.gh.PushBranch(ps.Worktree, ps.Branch); err != nil {
+	if err := o.gh.ForcePushBranch(ps.Worktree, ps.Branch); err != nil {
 		o.logf("push failed: %v", err)
 		result.Outcome = "fail"
 		result.TotalDuration = time.Since(start)

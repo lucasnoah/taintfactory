@@ -242,6 +242,46 @@ func (c *Client) PushBranch(dir string, branch string) error {
 	return nil
 }
 
+// ForcePushBranch pushes a branch using --force-with-lease, safe to use after a
+// local rebase that rewrites history already on the remote.
+func (c *Client) ForcePushBranch(dir string, branch string) error {
+	if c.git == nil {
+		return fmt.Errorf("git runner not configured")
+	}
+	if strings.HasPrefix(branch, "-") {
+		return fmt.Errorf("invalid branch name %q: must not start with -", branch)
+	}
+	_, err := c.git.RunGit(dir, "push", "--force-with-lease", "-u", "origin", branch)
+	if err != nil {
+		return fmt.Errorf("force push branch: %w", err)
+	}
+	return nil
+}
+
+// RebaseOntoMain fetches origin/main and rebases the working tree onto it.
+// Returns (conflicted=true, nil) when git detects merge conflicts and the
+// rebase has been aborted, leaving the worktree clean.
+// Returns (false, err) for fetch errors or unexpected rebase failures.
+// Returns (false, nil) when the rebase completes cleanly (including no-op).
+func (c *Client) RebaseOntoMain(dir string) (conflicted bool, err error) {
+	if c.git == nil {
+		return false, fmt.Errorf("git runner not configured")
+	}
+	if _, err := c.git.RunGit(dir, "fetch", "origin", "main"); err != nil {
+		return false, fmt.Errorf("fetch origin main: %w", err)
+	}
+	out, rebaseErr := c.git.RunGit(dir, "rebase", "origin/main")
+	if rebaseErr == nil {
+		return false, nil
+	}
+	// Distinguish conflict failures from other errors (permission denied, bad ref, etc.)
+	if strings.Contains(out, "CONFLICT") || strings.Contains(out, "conflict") {
+		_, _ = c.git.RunGit(dir, "rebase", "--abort")
+		return true, nil
+	}
+	return false, fmt.Errorf("rebase onto origin/main: %w", rebaseErr)
+}
+
 // LLMFunc sends a prompt to an LLM and returns the response text.
 type LLMFunc func(prompt string) (string, error)
 
