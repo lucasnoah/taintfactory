@@ -145,19 +145,47 @@ Stage: {{stage_id}} (attempt {{attempt}})
 {{/if}}
 
 ## QA Instructions
-1. Use git to explore the changes: ` + "`git log`" + `, ` + "`git show <commit>`" + `, ` + "`git diff main...HEAD`" + `, and read the changed files directly
-2. Review the acceptance criteria and feature intent carefully
-3. **Exercise each acceptance criterion end-to-end by actually running the code.** Do not verify criteria by reading the implementation and reasoning about it — run the feature and observe the output. This means:
-   - For API endpoints: make real HTTP requests and check the response body
-   - For CLI commands: run them and inspect stdout/stderr
-   - For data pipelines: run the sync/backfill, then query the database to confirm records exist with correct values
-   - For background jobs: trigger the job and verify its side effects (DB rows, files, logs)
-   - For UI changes: not applicable here, skip
-4. Write and run tests for any gaps in coverage you find. Prefer tests that call real code paths over additional mocks.
-5. Test edge cases and error conditions by running them, not just reading the code
-6. Verify no regressions by running the full test suite
-7. **Fix every issue you find.** Do not just report problems — actually edit the code to resolve them. Commit your fixes.
-8. Run all relevant checks/tests after your fixes to confirm they pass
+
+### Step 0 — Read the Makefile first
+Before doing anything else, read the Makefile in the repo root. It is the
+authoritative reference for how to start the dev environment, database,
+and any other services. Look for targets related to: dev server, database
+startup, migrations, test, build. Use what you find there — do not guess
+or invent commands.
+
+### Step 1 — Explore the changes
+Use git to understand what was built: ` + "`git log`" + `, ` + "`git show <commit>`" + `, ` + "`git diff main...HEAD`" + `, and read the changed files directly.
+
+### Step 2 — Determine what runtime testing is required
+Based on the changes and acceptance criteria, decide which of these apply:
+- **New or modified API endpoints** → must start the database and API server, then make real HTTP requests with curl and verify response bodies
+- **CLI commands** → must run them and inspect stdout/stderr
+- **Data pipelines / background jobs** → must trigger them and verify side effects in the database
+- **Pure library/utility changes with no runtime surface** → unit tests may suffice, but explain why
+
+**Running unit tests alone is never sufficient for API endpoints.** The server must actually start and real HTTP requests must be made.
+
+### Step 3 — Start the dev environment (if needed)
+Use the Makefile targets you found in Step 0 to:
+1. Start the database (typically a docker compose target)
+2. Run migrations if there's a target for it
+3. Copy or confirm the env file is present (check for ` + "`.env.example`" + ` and copy to ` + "`.env`" + ` if ` + "`.env`" + ` is missing)
+4. Start the API server in the background (e.g. ` + "`make dev-api &`" + ` or ` + "`go run ./cmd/... &`" + `), wait a few seconds, then confirm it is listening
+
+### Step 4 — Exercise each acceptance criterion end-to-end
+Run the feature and observe real output. Do not reason about the code — observe the actual behavior. For API endpoints, use curl with any auth the Makefile or .env.example reveals (look for AUTH_SECRET, API_TOKEN, etc.).
+
+### Step 5 — Test edge cases and error conditions
+Run them — don't just read the code.
+
+### Step 6 — Fill coverage gaps
+Write and run tests for any gaps you find. Prefer tests that exercise real code paths over additional mocks.
+
+### Step 7 — Verify no regressions
+Run the full test suite using the Makefile test target.
+
+### Step 8 — Fix everything you find
+Do not just report problems — edit the code, fix them, commit. Run checks again to confirm.
 {{#if prior_stage_summary}}
 
 ## Implementation Summary
