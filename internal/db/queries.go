@@ -565,6 +565,51 @@ func (d *DB) QueueRemove(issue int) error {
 	return nil
 }
 
+// QueueDependents returns all pending or active queue items whose depends_on
+// array contains the given issue number. Used to find downstream issues that
+// need contract validation after an upstream issue merges.
+func (d *DB) QueueDependents(issue int) ([]QueueItem, error) {
+	rows, err := d.conn.Query(`
+		SELECT id, issue, status, position, feature_intent, depends_on,
+		       added_at, started_at, finished_at
+		FROM issue_queue
+		WHERE status IN ('pending', 'active')
+		AND EXISTS (
+		    SELECT 1 FROM json_each(depends_on) je
+		    WHERE CAST(je.value AS INTEGER) = ?
+		)
+		ORDER BY position`,
+		issue,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list dependents: %w", err)
+	}
+	defer rows.Close()
+
+	var items []QueueItem
+	for rows.Next() {
+		var item QueueItem
+		var startedAt, finishedAt sql.NullString
+		var dependsOnJSON string
+		if err := rows.Scan(&item.ID, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &dependsOnJSON, &item.AddedAt, &startedAt, &finishedAt); err != nil {
+			return nil, fmt.Errorf("scan queue item: %w", err)
+		}
+		if startedAt.Valid {
+			item.StartedAt = startedAt.String
+		}
+		if finishedAt.Valid {
+			item.FinishedAt = finishedAt.String
+		}
+		if dependsOnJSON != "" && dependsOnJSON != "[]" {
+			if err := json.Unmarshal([]byte(dependsOnJSON), &item.DependsOn); err != nil {
+				return nil, fmt.Errorf("unmarshal depends_on for issue %d: %w", item.Issue, err)
+			}
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 // QueueClear deletes all items from the queue, returning the count deleted.
 func (d *DB) QueueClear() (int, error) {
 	res, err := d.conn.Exec("DELETE FROM issue_queue")

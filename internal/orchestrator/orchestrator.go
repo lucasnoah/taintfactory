@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -243,7 +244,12 @@ func (o *Orchestrator) Advance(issue int) (*AdvanceResult, error) {
 	}
 
 	if runResult.Outcome == "success" {
-		return o.advanceToNextStage(issue, currentStage, runResult)
+		// After any merge-path stage succeeds (merge itself or the agent-merge
+		// fallback), prepare runtime vars for the contract-check stage.
+		if stageCfg.Type == "merge" || currentStage == o.findMergeOnFailTarget() {
+			o.preparePostMerge(issue, ps)
+		}
+		return o.advanceToNextStage(issue, currentStage, stageCfg, runResult)
 	}
 
 	// Stage failed — route via on_fail
@@ -251,8 +257,20 @@ func (o *Orchestrator) Advance(issue int) (*AdvanceResult, error) {
 }
 
 // advanceToNextStage moves the pipeline to the next stage or completes it.
-func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, runResult *stage.RunResult) (*AdvanceResult, error) {
+// stageCfg is the config of the just-completed stage; it is used to skip
+// the on_fail fallback stage when a merge stage succeeds (the fallback is
+// only relevant on failure and should not run on the happy path).
+func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, stageCfg *config.Stage, runResult *stage.RunResult) (*AdvanceResult, error) {
 	nextStage := o.nextStageID(currentStage)
+
+	// When a merge stage succeeds, skip past its on_fail fallback stage (e.g.
+	// agent-merge) so the pipeline proceeds directly to the post-merge stage
+	// (e.g. contract-check) or completes if no further stages remain.
+	if stageCfg != nil && stageCfg.Type == "merge" && nextStage != "" {
+		if onFailTarget := resolveOnFail(stageCfg.OnFail); nextStage == onFailTarget {
+			nextStage = o.nextStageID(nextStage)
+		}
+	}
 
 	if nextStage == "" {
 		o.logf("pipeline #%d: no more stages, checking goal gates", issue)
@@ -1089,6 +1107,49 @@ func (o *Orchestrator) CleanupAll() ([]CleanupResult, error) {
 }
 
 // --- Helpers ---
+
+// preparePostMerge is called after a merge (or merge-fallback agent) stage
+// succeeds. It:
+//  1. Derives the repo root from the feature worktree path (2 levels up) and
+//     updates ps.Worktree so the next stage (contract-check) runs there.
+//  2. Queries the queue for issues that depend on the just-merged issue and
+//     stores them as ps.RuntimeVars["dependent_issues"] for the template.
+func (o *Orchestrator) preparePostMerge(issue int, ps *pipeline.PipelineState) {
+	repoRoot := filepath.Dir(filepath.Dir(ps.Worktree))
+
+	dependents, err := o.db.QueueDependents(issue)
+	var depText string
+	if err == nil && len(dependents) > 0 {
+		var sb strings.Builder
+		for _, dep := range dependents {
+			if dep.FeatureIntent != "" {
+				fmt.Fprintf(&sb, "- #%d: %s\n", dep.Issue, dep.FeatureIntent)
+			} else {
+				fmt.Fprintf(&sb, "- #%d (no feature intent set)\n", dep.Issue)
+			}
+		}
+		depText = strings.TrimSpace(sb.String())
+	}
+
+	_ = o.store.Update(issue, func(p *pipeline.PipelineState) {
+		if p.RuntimeVars == nil {
+			p.RuntimeVars = make(map[string]string)
+		}
+		p.RuntimeVars["dependent_issues"] = depText
+		p.Worktree = repoRoot
+	})
+}
+
+// findMergeOnFailTarget returns the on_fail routing target of the first
+// merge-type stage in the config, or "" if none exists.
+func (o *Orchestrator) findMergeOnFailTarget() string {
+	for _, s := range o.cfg.Pipeline.Stages {
+		if s.Type == "merge" {
+			return resolveOnFail(s.OnFail)
+		}
+	}
+	return ""
+}
 
 // findStage finds a stage config by ID.
 func (o *Orchestrator) findStage(stageID string) *config.Stage {

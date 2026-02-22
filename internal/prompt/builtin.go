@@ -2,12 +2,13 @@ package prompt
 
 // builtinTemplates maps template filename to content.
 var builtinTemplates = map[string]string{
-	"implement.md":    implementTemplate,
-	"review.md":       reviewTemplate,
-	"qa.md":           qaTemplate,
-	"fix-checks.md":   fixChecksTemplate,
-	"merge.md":        mergeTemplate,
-	"agent-merge.md":  agentMergeTemplate,
+	"implement.md":       implementTemplate,
+	"review.md":          reviewTemplate,
+	"qa.md":              qaTemplate,
+	"fix-checks.md":      fixChecksTemplate,
+	"merge.md":           mergeTemplate,
+	"agent-merge.md":     agentMergeTemplate,
+	"contract-check.md":  contractCheckTemplate,
 }
 
 const implementTemplate = `# Implement: {{issue_title}}
@@ -318,4 +319,133 @@ gh pr merge {{branch}} --squash --delete-branch
 ## Stage History
 {{prior_stage_summary}}
 {{/if}}
+`
+
+const contractCheckTemplate = `# Contract Check: {{issue_title}} (#{{issue_number}})
+
+> **Do not invoke any skills or slash commands** (e.g. /superpowers, /commit, or any /command). Use only built-in tools.
+
+Issue #{{issue_number}} has just merged. Your job is to validate the Data
+Contracts in every downstream issue that was written against it, diff them
+against what was actually built, and either patch them or block them before
+any implement agent runs from stale assumptions.
+
+## What just merged
+
+**Issue:** #{{issue_number}} — {{issue_title}}
+**Repo:** {{worktree_path}}
+
+Read the merged code now before doing anything else. Run:
+
+` + "```" + `bash
+cd {{worktree_path}}
+git log --oneline -5
+` + "```" + `
+
+Focus on the types, function signatures, column names, and query names that
+downstream issues are likely to reference. Do not rely on what the issue body
+says was planned — read the actual files.
+
+## Dependent issues to check
+
+{{#if dependent_issues}}
+The following queued issues depend on #{{issue_number}}:
+
+{{dependent_issues}}
+{{/if}}
+
+Before proceeding, verify by running:
+  factory queue list
+Confirm which issues show #{{issue_number}} in their DEPS column. If none do,
+output "No dependents found — nothing to validate." and stop.
+
+## Process
+
+For each dependent issue:
+
+**Step 1 — Extract contracts**
+
+Fetch the issue body:
+  gh issue view {N} --json body -q .body
+
+Find the Data Contracts section. Extract every concrete claim:
+- Column names and types
+- Go type field names and their types
+- sqlc query function names and signatures
+- HTTP response field names and types
+- Any numeric constants or formulas cited (e.g. "covers × 0.85")
+
+If an issue has no Data Contracts section, skip it and note that in your output.
+
+**Step 2 — Check against the codebase**
+
+For each claim, verify it against the actual merged code. Read the files —
+do not guess. Check:
+- Go types: do the field names and types match exactly?
+- SQL schema: do the column names and types match the migration files?
+- sqlc queries: do the function names and signatures match the generated
+  code in the sqlcgen directory?
+- HTTP shapes: do the JSON field names match the response struct tags?
+- Formulas and constants: do they match the actual implementation logic?
+
+**Step 3 — Classify any drift**
+
+Drift is STRUCTURAL if the correct value is unambiguously readable from the
+codebase — a field was renamed, a type changed, a column has a different
+name. The fix is mechanical and safe to apply automatically.
+
+Drift is SEMANTIC if the contract's meaning has shifted in a way that
+requires a judgment call:
+- A field exists with the right name and type but the merged code uses it
+  differently than the contract describes
+- The contract references a concept that was implemented in a fundamentally
+  different way than described
+- New fields appear in the merged code that the contract didn't anticipate
+  and that could change the downstream implementation approach
+- A formula or constant changed in a way that affects business logic
+
+When in doubt, treat drift as semantic and flag for human review. Do not
+auto-patch anything you are not certain about.
+
+**Step 4 — Act**
+
+For STRUCTURAL drift — patch the issue body:
+1. Fetch the current body:
+     gh issue view {N} --json body -q .body
+2. Make the minimum edit — change only the drifted values, preserve all
+   surrounding text and structure exactly.
+3. Apply:
+     gh issue edit {N} --body "$(cat <<'EOF'
+     ...patched body...
+     EOF
+     )"
+4. Add a comment documenting exactly what changed and why:
+     gh issue comment {N} --body "..."
+
+For SEMANTIC drift — block for human review:
+1. Add a comment explaining precisely: what the contract says, what the
+   merged code actually does, and why this requires a human decision:
+     gh issue comment {N} --body "..."
+2. Add the label:
+     gh issue edit {N} --add-label "needs-plan-review"
+
+## Output
+
+When all dependent issues have been processed, write a summary:
+
+---
+Contract check complete — #{{issue_number}}
+
+Dependents checked: N
+
+| Issue | Title | Outcome |
+|---|---|---|
+| #N | ... | No drift |
+| #N | ... | Structural — patched (X → Y) |
+| #N | ... | Semantic — blocked (reason: ...) |
+
+Issues requiring human review: [list, or "none"]
+---
+
+Do not exit until every dependent issue has been checked and acted on.
 `

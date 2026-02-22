@@ -16,6 +16,10 @@ type PipelineState struct {
 	Status          string              `json:"status"` // "pending", "in_progress", "completed", "failed", "blocked"
 	CreatedAt       string              `json:"created_at"`
 	UpdatedAt       string              `json:"updated_at"`
+	// RuntimeVars holds variables injected by the orchestrator at runtime (e.g. after
+	// a merge, dependent_issues is populated for the contract-check stage). These are
+	// merged into template vars with lower priority than pipeline/stage vars.
+	RuntimeVars     map[string]string   `json:"runtime_vars,omitempty"`
 }
 
 // StageHistoryEntry records the outcome of a completed stage attempt.
