@@ -94,7 +94,7 @@ make install   # installs to $GOPATH/bin/factory
 
 ## Pipeline Configuration
 
-Pipelines are defined in `~/.factory/pipeline.yaml`. Each pipeline describes the repo, the checks available, and the ordered stages to run. Here's a real example from a 3-tier web app (Python ETL + Go API + Next.js):
+Pipelines are defined in `~/.factory/pipeline.yaml`. Each pipeline describes the repo, the checks available, and the ordered stages to run. Here's a real example from a Go API + Next.js project:
 
 ```yaml
 pipeline:
@@ -107,7 +107,6 @@ pipeline:
   setup:
     - "go mod download"
     - "cd web && npm install"
-    - "uv sync"
 
   defaults:
     timeout: "45m"
@@ -115,7 +114,7 @@ pipeline:
 
   vars:
     env_setup: |
-      This is a 3-tier project: Python ETL, Go API, Next.js web.
+      This is a 2-tier project: Go API + Next.js web.
 
       ### PostgreSQL
       - Start: `make db` (docker-compose, postgres:16-alpine on port 5433)
@@ -128,10 +127,6 @@ pipeline:
       - All tests: `make test`
 
   checks:
-    lint-py:
-      command: "uv run ruff check ."
-      parser: generic
-      timeout: "2m"
     lint-go:
       command: "go vet ./..."
       parser: generic
@@ -140,10 +135,6 @@ pipeline:
       command: "cd web && npm run lint"
       parser: generic
       timeout: "2m"
-    test-py:
-      command: "uv run pytest"
-      parser: generic
-      timeout: "5m"
     test-go:
       command: "go test ./..."
       parser: generic
@@ -153,10 +144,8 @@ pipeline:
     - id: implement
       type: agent
       checks_after:
-        - lint-py
         - lint-go
         - lint-web
-        - test-py
         - test-go
       on_fail: implement        # retry this stage on check failure
 
@@ -164,10 +153,8 @@ pipeline:
       type: agent
       context_mode: code_only   # reviewer only sees code + findings
       checks_after:
-        - lint-py
         - lint-go
         - lint-web
-        - test-py
         - test-go
       on_fail: implement        # send back to implement on failure
 
@@ -175,25 +162,32 @@ pipeline:
       type: agent
       context_mode: full
       checks_after:
-        - lint-py
         - lint-go
         - lint-web
-        - test-py
         - test-go
       on_fail: implement
 
     - id: verify
       type: checks_only         # no agent — just run the gates
       checks:
-        - lint-py
         - lint-go
         - lint-web
-        - test-py
         - test-go
 
     - id: merge
       type: merge
       merge_strategy: squash
+      on_fail: agent-merge      # fall back to agent if auto-merge fails
+
+    - id: agent-merge
+      type: agent
+      prompt_template: agent-merge.md
+      context_mode: minimal
+      checks_after:
+        - lint-go
+        - test-go
+      max_fix_rounds: 1
+      on_fail: escalate         # give up and mark blocked after one agent attempt
 ```
 
 ### Schema Reference
@@ -215,7 +209,7 @@ pipeline:
 | `stages[].checks_before` | Checks to run before the agent |
 | `stages[].checks_after` | Checks to run after the agent |
 | `stages[].checks` | Checks for `checks_only` stages |
-| `stages[].on_fail` | Stage to jump to on check failure |
+| `stages[].on_fail` | Stage ID to jump to on check failure, or `"escalate"` to mark the pipeline blocked |
 | `stages[].context_mode` | What context to inject: `full`, `code_only`, `findings_only`, `minimal` |
 | `stages[].merge_strategy` | `squash`, `merge`, or `rebase` for merge stages |
 
@@ -257,6 +251,7 @@ These are automatically injected by the context builder. Which ones are populate
 | `issue_body` | all | Full issue body text |
 | `feature_intent` | all | LLM-derived intent summary |
 | `worktree_path` | all | Absolute path to the git worktree |
+| `repo_root` | all | Absolute path to the repo root (parent of `worktrees/`) |
 | `branch` | all | Working branch name |
 | `stage_id` | all | Current stage ID |
 | `attempt` | all | Current attempt number (increments on retry) |
@@ -289,7 +284,24 @@ taintfactory ships with built-in templates for the standard stages. You can over
 | `review.md` | Code review with fix-in-place |
 | `qa.md` | QA testing with fix-in-place |
 | `fix-checks.md` | Sent on each check-failure fix round |
-| `merge.md` | Final merge stage |
+| `merge.md` | Final merge stage (human-assisted) |
+| `agent-merge.md` | Agent-driven conflict resolution fallback |
+
+### Merge stage and conflict recovery
+
+The `merge` stage type attempts a fully automated merge:
+
+1. **Rebase onto main** — `git fetch origin main && git rebase origin/main` to surface any conflicts before pushing.
+2. **Force-push with lease** — after a clean rebase, push the updated branch to the remote.
+3. **Create PR** (if one doesn't exist) and **squash-merge** via `gh pr merge --squash --delete-branch`.
+
+If the rebase encounters conflicts, the merge stage fails and `on_fail` routes to the next stage. The recommended pattern is `on_fail: agent-merge`, which activates the built-in `agent-merge.md` template. That template gives Claude step-by-step conflict-resolution rules:
+
+- **"Both added" (AA) conflicts** (the most common case — earlier slices landed on main after this branch was cut): take `origin/main`'s version (`git checkout --ours`).
+- **Generated files** (`*.sql.go`, `models.go`) and **migration files**: always take `origin/main`.
+- **Application code**: read the conflict markers and merge manually, preserving new logic while keeping main's structure.
+
+After resolving, the agent rebuilds, tests, and merges. If the agent merge also fails, `on_fail: escalate` marks the pipeline blocked for manual intervention.
 
 ### Example: `implement.md`
 
