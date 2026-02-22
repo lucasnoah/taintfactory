@@ -70,6 +70,7 @@ type DepIssueView struct {
 	QueueStatus    string
 	PipelineStatus string
 	HasPipeline    bool
+	GithubURL      string // fully-qualified GitHub issue URL, empty if repo not configured
 }
 
 type StageStatusItem struct {
@@ -403,28 +404,30 @@ func (s *Server) handlePipelineDetail(w http.ResponseWriter, r *http.Request, is
 	}
 
 	// Build dependency graph from queue.
+	var repoBase string // e.g. "https://github.com/owner/repo/issues/"
+	if cfg := s.configFor(ps.Worktree); cfg != nil && cfg.Pipeline.Repo != "" {
+		repo := strings.TrimPrefix(cfg.Pipeline.Repo, "github.com/")
+		repoBase = fmt.Sprintf("https://github.com/%s/issues/", repo)
+	}
+
 	var queueStatus string
 	var upstream, downstream []DepIssueView
 	if allQueue, err := s.db.QueueList(); err == nil {
-		// Build lookup maps.
 		qByIssue := make(map[int]db.QueueItem, len(allQueue))
 		for _, q := range allQueue {
 			qByIssue[q.Issue] = q
 		}
-		// Find this issue's queue entry.
 		if q, ok := qByIssue[issue]; ok {
 			queueStatus = q.Status
-			// Upstream: issues this one depends on.
 			for _, depIssue := range q.DependsOn {
-				dv := depIssueView(depIssue, qByIssue, s.store)
+				dv := depIssueView(depIssue, qByIssue, s.store, repoBase)
 				upstream = append(upstream, dv)
 			}
 		}
-		// Downstream: issues that have this issue in their depends_on.
 		for _, q := range allQueue {
 			for _, dep := range q.DependsOn {
 				if dep == issue {
-					dv := depIssueView(q.Issue, qByIssue, s.store)
+					dv := depIssueView(q.Issue, qByIssue, s.store, repoBase)
 					downstream = append(downstream, dv)
 					break
 				}
@@ -626,9 +629,12 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// depIssueView builds a DepIssueView for the given issue number using pre-loaded queue and store data.
-func depIssueView(issue int, qByIssue map[int]db.QueueItem, store *pipeline.Store) DepIssueView {
+// depIssueView builds a DepIssueView for the given issue number.
+func depIssueView(issue int, qByIssue map[int]db.QueueItem, store *pipeline.Store, repoBase string) DepIssueView {
 	dv := DepIssueView{Issue: issue}
+	if repoBase != "" {
+		dv.GithubURL = fmt.Sprintf("%s%d", repoBase, issue)
+	}
 	if q, ok := qByIssue[issue]; ok {
 		dv.QueueStatus = q.Status
 	}
