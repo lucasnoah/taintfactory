@@ -141,11 +141,17 @@ Stage: {{stage_id}} (attempt {{attempt}})
 ## QA Instructions
 1. Use git to explore the changes: ` + "`git log`" + `, ` + "`git show <commit>`" + `, ` + "`git diff main...HEAD`" + `, and read the changed files directly
 2. Review the acceptance criteria and feature intent carefully
-3. Write and run tests that exercise each criterion
-4. Test edge cases and error conditions
-5. Verify no regressions in existing functionality
-6. **Fix every issue you find.** Do not just report problems — actually edit the code to resolve them. Commit your fixes.
-7. Run all relevant checks/tests after your fixes to confirm they pass
+3. **Exercise each acceptance criterion end-to-end by actually running the code.** Do not verify criteria by reading the implementation and reasoning about it — run the feature and observe the output. This means:
+   - For API endpoints: make real HTTP requests and check the response body
+   - For CLI commands: run them and inspect stdout/stderr
+   - For data pipelines: run the sync/backfill, then query the database to confirm records exist with correct values
+   - For background jobs: trigger the job and verify its side effects (DB rows, files, logs)
+   - For UI changes: not applicable here, skip
+4. Write and run tests for any gaps in coverage you find. Prefer tests that call real code paths over additional mocks.
+5. Test edge cases and error conditions by running them, not just reading the code
+6. Verify no regressions by running the full test suite
+7. **Fix every issue you find.** Do not just report problems — actually edit the code to resolve them. Commit your fixes.
+8. Run all relevant checks/tests after your fixes to confirm they pass
 {{#if prior_stage_summary}}
 
 ## Implementation Summary
