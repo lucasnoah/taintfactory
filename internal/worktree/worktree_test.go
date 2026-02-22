@@ -63,7 +63,7 @@ func TestCreate_HappyPath(t *testing.T) {
 	if call.Dir != "/repo" {
 		t.Errorf("expected dir /repo, got %q", call.Dir)
 	}
-	assertArgs(t, call.Args, "worktree", "add", "/repo/worktrees/issue-42", "-b", "feature/issue-42")
+	assertArgs(t, call.Args, "worktree", "add", "/repo/worktrees/issue-42", "-b", "feature/issue-42", "origin/main")
 }
 
 func TestCreate_FetchFailsGracefully(t *testing.T) {

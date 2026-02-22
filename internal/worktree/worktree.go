@@ -71,8 +71,9 @@ func (m *Manager) Create(opts CreateOpts) (*CreateResult, error) {
 	// Best-effort fetch to ensure we branch from up-to-date main
 	m.git.Run(m.repoDir, "fetch", "origin", "main")
 
-	// Create the worktree with a new branch
-	_, err := m.git.Run(m.repoDir, "worktree", "add", worktreePath, "-b", branch)
+	// Create the worktree branching explicitly from origin/main, not the local
+	// HEAD (which may lag behind if the local branch hasn't been fast-forwarded).
+	_, err := m.git.Run(m.repoDir, "worktree", "add", worktreePath, "-b", branch, "origin/main")
 	if err != nil {
 		// If branch already exists, try without -b
 		if strings.Contains(err.Error(), "already exists") {
