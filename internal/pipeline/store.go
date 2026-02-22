@@ -201,6 +201,16 @@ func (s *Store) SaveStageSummary(issue int, stage string, attempt int, summary *
 	return WriteJSON(filepath.Join(dir, "summary.json"), summary)
 }
 
+// GetStageSummary reads the summary JSON for a stage attempt.
+func (s *Store) GetStageSummary(issue int, stage string, attempt int) (*StageSummary, error) {
+	var summary StageSummary
+	path := filepath.Join(s.stageAttemptDir(issue, stage, attempt), "summary.json")
+	if err := ReadJSON(path, &summary); err != nil {
+		return nil, err
+	}
+	return &summary, nil
+}
+
 // SavePrompt writes the prompt markdown for a stage attempt.
 func (s *Store) SavePrompt(issue int, stage string, attempt int, prompt string) error {
 	dir := s.stageAttemptDir(issue, stage, attempt)
@@ -222,6 +232,16 @@ func (s *Store) SaveSessionLog(issue int, stage string, attempt int, log string)
 // GetPrompt reads the prompt markdown for a stage attempt.
 func (s *Store) GetPrompt(issue int, stage string, attempt int) (string, error) {
 	path := filepath.Join(s.stageAttemptDir(issue, stage, attempt), "prompt.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// GetSessionLog reads the session log for a stage attempt.
+func (s *Store) GetSessionLog(issue int, stage string, attempt int) (string, error) {
+	path := filepath.Join(s.stageAttemptDir(issue, stage, attempt), "session.log")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err

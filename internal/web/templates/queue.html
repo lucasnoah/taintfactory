@@ -1,0 +1,36 @@
+{{define "title"}}Queue{{end}}
+{{define "refresh"}}<meta http-equiv="refresh" content="30">{{end}}
+{{define "content"}}
+<h1 style="font-size:1.2rem;font-weight:700;margin-bottom:1.25rem">Queue</h1>
+
+{{if .Items}}
+<table>
+  <thead><tr><th>Pos</th><th>Issue</th><th>Queue Status</th><th>Depends On</th><th>Pipeline</th></tr></thead>
+  <tbody>
+  {{range .Items}}
+  <tr>
+    <td class="muted">{{.Position}}</td>
+    <td>
+      {{if .HasPipeline}}
+        <a href="/pipeline/{{.Issue}}">#{{.Issue}}</a>
+      {{else}}
+        <strong>#{{.Issue}}</strong>
+      {{end}}
+    </td>
+    <td><span class="{{badgeClass .Status}}">{{.Status}}</span></td>
+    <td class="muted">{{if .DependsOnStr}}{{.DependsOnStr}}{{else}}—{{end}}</td>
+    <td>
+      {{if .HasPipeline}}
+        <span class="{{badgeClass .PipelineStatus}}">{{.PipelineStatus}}</span>
+      {{else}}
+        <span class="muted">no pipeline</span>
+      {{end}}
+    </td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="muted">Queue is empty.</p>
+{{end}}
+{{end}}

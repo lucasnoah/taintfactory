@@ -1,0 +1,78 @@
+{{define "base"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{{block "refresh" .}}{{end}}
+<title>TaintFactory — {{block "title" .}}UI{{end}}</title>
+<style>
+:root {
+  --bg: #f8f9fa; --border: #dee2e6; --text: #212529;
+  --nav-bg: #212529; --nav-text: #adb5bd; --nav-active: #fff;
+  --muted: #6c757d;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; }
+nav { background: var(--nav-bg); padding: 0 1.5rem; display: flex; align-items: center; gap: 1.5rem; height: 48px; border-bottom: 1px solid #000; }
+nav .brand { color: #fff; font-weight: 700; font-size: 1rem; margin-right: 0.5rem; letter-spacing: -0.02em; }
+nav a { color: var(--nav-text); text-decoration: none; font-size: 0.875rem; padding: 0.25rem 0; }
+nav a:hover { color: var(--nav-active); }
+main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
+h2 { font-size: 0.75rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin: 1.5rem 0 0.75rem; }
+h2:first-child { margin-top: 0; }
+table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; background: #fff; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+thead { background: var(--bg); }
+th { text-align: left; padding: 0.5rem 0.75rem; font-size: 0.75rem; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
+td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: #f1f3f5; }
+a { color: #0d6efd; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.muted { color: var(--muted); }
+.badge { display: inline-block; padding: .2em .55em; border-radius: 4px; font-size: .72rem; font-weight: 600; white-space: nowrap; }
+.badge-pending    { background: #e9ecef; color: #495057; }
+.badge-in-progress { background: #cfe2ff; color: #084298; }
+.badge-active     { background: #cfe2ff; color: #084298; }
+.badge-completed  { background: #d1e7dd; color: #0a3622; }
+.badge-success    { background: #d1e7dd; color: #0a3622; }
+.badge-failed     { background: #f8d7da; color: #842029; }
+.badge-fail       { background: #f8d7da; color: #842029; }
+.badge-blocked    { background: #fff3cd; color: #664d03; }
+.badge-escalate   { background: #fff3cd; color: #664d03; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.dot-green  { background: #198754; box-shadow: 0 0 4px #19875488; }
+.dot-yellow { background: #ffc107; }
+.dot-grey   { background: #adb5bd; }
+@keyframes live-pulse { 0%,100% { opacity:1; box-shadow: 0 0 0 0 #19875466; } 50% { opacity:.85; box-shadow: 0 0 0 5px #19875400; } }
+.badge-live { background: #d1e7dd; color: #0a3622; animation: live-pulse 1.6s ease-in-out infinite; }
+.progress-bar { display: flex; gap: 3px; height: 12px; margin: 0.5rem 0 0.25rem; }
+.seg { flex: 1; border-radius: 6px; }
+.seg-done     { background: #198754; }
+.seg-active   { background: #0d6efd; }
+.seg-upcoming { background: #dee2e6; }
+.seg-labels { display: flex; gap: 3px; margin-bottom: 1.5rem; }
+.seg-label { flex: 1; font-size: .65rem; text-align: center; overflow: hidden; padding: 0.1rem; line-height: 1.3; }
+pre { background: #1a1d23; color: #e8eaf0; padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: .78rem; line-height: 1.55; white-space: pre-wrap; word-break: break-all; margin-bottom: 1.5rem; }
+pre.prompt { background: #fff; color: var(--text); border: 1px solid var(--border); }
+.grid-2 { display: grid; grid-template-columns: 1fr 280px; gap: 1.5rem; }
+.card { background: #fff; border: 1px solid var(--border); border-radius: 6px; padding: 0.875rem 1rem; margin-bottom: 1rem; font-size: 0.875rem; }
+.queue-list { list-style: none; background: #fff; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.queue-list li { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.queue-list li:last-child { border-bottom: none; }
+.result-pass { color: #198754; font-weight: 600; }
+.result-fail { color: #842029; font-weight: 600; }
+code { background: #e9ecef; padding: .15em .35em; border-radius: 3px; font-size: .85em; word-break: break-all; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="brand">TaintFactory</span>
+  <a href="/">Dashboard</a>
+  <a href="/queue">Queue</a>
+  <a href="/config">Config</a>
+</nav>
+<main>
+{{block "content" .}}{{end}}
+</main>
+</body>
+</html>{{end}}

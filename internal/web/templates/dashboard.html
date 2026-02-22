@@ -1,0 +1,69 @@
+{{define "title"}}Dashboard{{end}}
+{{define "refresh"}}<meta http-equiv="refresh" content="10">{{end}}
+{{define "content"}}
+<div class="grid-2">
+  <div>
+    <h2>Pipelines</h2>
+    {{if .Pipelines}}
+    <table>
+      <thead><tr><th>Issue</th><th>Title</th><th>Status</th><th>Stage</th><th>Updated</th></tr></thead>
+      <tbody>
+      {{range .Pipelines}}
+      <tr>
+        <td><a href="/pipeline/{{.Issue}}">#{{.Issue}}</a></td>
+        <td>
+          {{if .SessionDot}}<span class="{{dotClass .SessionDot}}" style="margin-right:.35rem"></span>{{end}}
+          {{.Title}}
+        </td>
+        <td>
+          {{if .IsLive}}<span class="badge badge-live">● live</span>{{else}}<span class="{{badgeClass .Status}}">{{.Status}}</span>{{end}}
+        </td>
+        <td class="muted">{{.CurrentStage}}</td>
+        <td class="muted">{{.UpdatedAgo}}</td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p class="muted">No pipelines found.</p>
+    {{end}}
+  </div>
+
+  <div>
+    <h2>Queue</h2>
+    {{if .QueueItems}}
+    <ul class="queue-list">
+      {{range .QueueItems}}
+      <li>
+        <span class="muted" style="font-size:.75rem;min-width:1.5rem">{{.Position}}</span>
+        {{if .HasPipeline}}<a href="/pipeline/{{.Issue}}">#{{.Issue}}</a>{{else}}<strong>#{{.Issue}}</strong>{{end}}
+        <span class="{{badgeClass .Status}}">{{.Status}}</span>
+        {{if .DependsOnStr}}<span class="muted" style="font-size:.75rem">→ {{.DependsOnStr}}</span>{{end}}
+      </li>
+      {{end}}
+    </ul>
+    {{else}}
+    <p class="muted">Queue is empty.</p>
+    {{end}}
+  </div>
+</div>
+
+<h2>Recent Activity</h2>
+{{if .RecentActivity}}
+<table>
+  <thead><tr><th>Time</th><th>Issue</th><th>Event</th><th>Stage</th></tr></thead>
+  <tbody>
+  {{range .RecentActivity}}
+  <tr>
+    <td class="muted">{{.TimeAgo}}</td>
+    <td><a href="/pipeline/{{.Issue}}">#{{.Issue}}</a></td>
+    <td>{{.Event}}</td>
+    <td class="muted">{{.Stage}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="muted">No activity yet.</p>
+{{end}}
+{{end}}

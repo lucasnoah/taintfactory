@@ -1,0 +1,59 @@
+{{define "title"}}#{{.Issue}} {{.Stage}} attempt {{.Attempt}}{{end}}
+{{define "content"}}
+<div style="margin-bottom:1.25rem">
+  <a href="/pipeline/{{.Issue}}" style="color:var(--muted);font-size:.875rem">← #{{.Issue}}</a>
+  <h1 style="font-size:1.1rem;font-weight:700;margin-top:.35rem">
+    {{.Stage}} / attempt {{.Attempt}}
+  </h1>
+</div>
+
+{{if .Summary}}
+<div class="card" style="display:flex;gap:1.5rem;flex-wrap:wrap;align-items:center">
+  <span><strong>Outcome:</strong> <span class="{{badgeClass .Summary.Outcome}}">{{.Summary.Outcome}}</span></span>
+  <span><strong>Fix rounds:</strong> {{.Summary.FixRounds}}</span>
+  <span><strong>Total:</strong> {{.Summary.TotalDuration}}</span>
+  <span><strong>Agent:</strong> {{.Summary.AgentDuration}}</span>
+  {{if .Summary.ChecksFirstPass}}<span class="badge badge-success">checks first pass ✓</span>{{end}}
+</div>
+{{end}}
+
+{{if .Prompt}}
+<h2>Prompt</h2>
+<pre class="prompt">{{.Prompt}}</pre>
+{{end}}
+
+{{if .Checks}}
+<h2>Check Results</h2>
+<table>
+  <thead><tr><th>Round</th><th>Check</th><th>Result</th><th>Auto-fixed</th><th>Duration</th><th>Summary</th></tr></thead>
+  <tbody>
+  {{range .Checks}}
+  <tr>
+    <td class="muted">{{.FixRound}}</td>
+    <td>{{.CheckName}}</td>
+    <td class="{{passClass .Passed}}">{{if .Passed}}✓ pass{{else}}✗ fail{{end}}</td>
+    <td class="muted">{{if .AutoFixed}}✓{{end}}</td>
+    <td class="muted">{{if .DurationMs}}{{.DurationMs}}ms{{end}}</td>
+    <td class="muted" style="font-size:.8rem;max-width:300px">{{.Summary}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+
+{{if .Log}}
+<h2>
+  Session Log
+  {{if .LogTruncated}}
+  <span class="muted" style="font-size:.8rem;font-weight:400">
+    (last 200 lines — <a href="/pipeline/{{.Issue}}/stage/{{.Stage}}/attempt/{{.Attempt}}/log">full log</a>)
+  </span>
+  {{end}}
+</h2>
+<pre>{{.Log}}</pre>
+{{end}}
+
+{{if and (not .Prompt) (not .Log) (not .Checks) (not .Summary)}}
+<p class="muted">No data found for this attempt.</p>
+{{end}}
+{{end}}
