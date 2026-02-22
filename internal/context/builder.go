@@ -2,6 +2,7 @@ package context
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -81,6 +82,7 @@ func (b *Builder) Build(ps *pipeline.PipelineState, opts BuildOpts) (*BuildResul
 		"issue_body":     opts.IssueBody,
 		"feature_intent": ps.FeatureIntent,
 		"worktree_path":  ps.Worktree,
+		"repo_root":      filepath.Dir(filepath.Dir(ps.Worktree)),
 		"branch":         ps.Branch,
 		"stage_id":       opts.Stage,
 		"attempt":        strconv.Itoa(ps.CurrentAttempt),

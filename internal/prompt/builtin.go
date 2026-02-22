@@ -2,11 +2,12 @@ package prompt
 
 // builtinTemplates maps template filename to content.
 var builtinTemplates = map[string]string{
-	"implement.md":  implementTemplate,
-	"review.md":     reviewTemplate,
-	"qa.md":         qaTemplate,
-	"fix-checks.md": fixChecksTemplate,
-	"merge.md":      mergeTemplate,
+	"implement.md":    implementTemplate,
+	"review.md":       reviewTemplate,
+	"qa.md":           qaTemplate,
+	"fix-checks.md":   fixChecksTemplate,
+	"merge.md":        mergeTemplate,
+	"agent-merge.md":  agentMergeTemplate,
 }
 
 const implementTemplate = `# Implement: {{issue_title}}
@@ -216,74 +217,102 @@ Stage: {{stage_id}} (attempt {{attempt}})
 4. Review the diff one final time before merging
 `
 
-// agentMergeTemplate is a sketch for Option B: an agent-driven merge stage that
-// can resolve conflicts autonomously. To activate, change stage type from "merge"
-// to "agent" and swap "merge.md" for "agent-merge.md" in the registry above.
-//
-// Design intent:
-//   - The agent is given explicit conflict-resolution rules so decisions are
-//     deterministic, not creative. It should not need to reason about semantics.
-//   - Rule of thumb: origin/main is authoritative for files it already owns;
-//     the feature branch owns only its net-new files.
-//   - After resolving, the agent force-pushes and merges. The stage's post-checks
-//     (lint + tests) act as the safety net.
-//
-//nolint:unused
-const agentMergeTemplate = `# Merge: {{issue_title}}
+const agentMergeTemplate = `# Resolve and Merge: {{issue_title}}
 
 > **Do not invoke any skills or slash commands.** Use only built-in tools.
 
-## Task
-Rebase branch ` + "`{{branch}}`" + ` onto ` + "`origin/main`" + `, resolve any conflicts using
-the rules below, push, and merge the pull request.
+## Context
+The automated merge stage failed on branch ` + "`{{branch}}`" + ` (issue #{{issue_number}}, attempt {{attempt}}).
+Your job is to get this PR merged. The most likely cause is that other PRs landed on main
+after this branch was cut, creating "both added" conflicts on shared files.
 
-## Repository
-Working directory: {{worktree_path}}
+Worktree: {{worktree_path}}
+Repo root: {{repo_root}}
 Branch: {{branch}}
-Issue: #{{issue_number}}
 
-## Conflict-Resolution Rules
+## Step 1 — Diagnose
 
-Follow these rules exactly — do not use judgment about code quality.
+` + "```" + `bash
+cd {{worktree_path}}
+git status                   # is a rebase already in progress?
+git log --oneline -5         # what's on this branch?
+git log --oneline origin/main -5  # what landed on main?
+` + "```" + `
 
-**Rule 1 — "Both added" (AA) conflicts:**
-A file was added by both this branch and main. This happens when an earlier
-slice landed on main after this branch was cut.
+If a rebase is in progress (` + "`git status`" + ` shows "rebase in progress"), abort it first:
+` + "`git rebase --abort`" + `
 
-- If the file already exists on ` + "`origin/main`" + ` **and** your branch's version
-  introduces only function signatures / types that duplicate what main already
-  has: take ` + "`--theirs`" + ` (origin/main). The main version is authoritative.
-- If your branch adds a **net-new** file that does not exist anywhere on main
-  (check with ` + "`git show origin/main:<path>`" + `): keep your version.
-- When unsure: take origin/main's version and verify the build still passes.
+## Step 2 — Rebase onto main
+
+` + "```" + `bash
+git fetch origin
+git rebase origin/main
+` + "```" + `
+
+If the rebase exits cleanly (no conflicts), skip to Step 4.
+
+## Step 3 — Resolve conflicts (if any)
+
+For each conflicting file shown by ` + "`git status`" + `, apply the rules below, then
+` + "`git add <file>`" + ` and ` + "`git rebase --continue`" + `. Repeat until the rebase finishes.
+
+**Rule 1 — "Both added" (` + "`AA`" + `) conflicts** (most common):
+Both this branch and main added the same file. This happens when an earlier slice
+landed on main after this branch was cut.
+
+- Check if main already has an authoritative version: ` + "`git show origin/main:<path>`" + `
+  - If yes, and your version duplicates structs/types/migrations already in main:
+    take origin/main's version → ` + "`git checkout --ours <file>`" + `
+    *(in a rebase, ` + "`--ours`" + ` = origin/main = the target branch)*
+  - If the file is genuinely net-new on this branch (main has nothing at that path):
+    keep your version → ` + "`git checkout --theirs <file>`" + `
 
 **Rule 2 — "Both modified" conflicts:**
-Open the file, read the conflict markers carefully.
-- For generated files (` + "`*.sql.go`" + `, ` + "`models.go`" + `): take ` + "`--theirs`" + ` (origin/main).
-  Regenerated code must match the schema already on main.
-- For migration files (` + "`migrations/*.sql`" + `): take ` + "`--theirs`" + ` (origin/main).
-  The schema in the DB already reflects what main has; do not regress it.
-- For application code: merge manually — keep origin/main's structure but
-  preserve the new functions/methods introduced by this branch.
+- Generated files (` + "`*.sql.go`" + `, ` + "`models.go`" + `): take ` + "`--ours`" + ` (origin/main).
+- Migration files (` + "`migrations/*.sql`" + `): take ` + "`--ours`" + ` (origin/main).
+- Application code: open the file, read the conflict markers, and merge manually —
+  keep origin/main's structure while preserving the new code this branch adds.
 
-**Rule 3 — Verify after resolving:**
-Run ` + "`go build ./...`" + ` and ` + "`go test ./...`" + ` after resolving all conflicts.
-If any package fails to build, re-examine the conflicting files.
+**After each file:** ` + "`git add <file>`" + `
 
-## Steps
+**When all files in a commit are resolved:** ` + "`git rebase --continue`" + `
 
-1. ` + "`git fetch origin`" + `
-2. ` + "`git rebase origin/main`" + `
-3. For each conflicting file, apply the rules above:
-   - ` + "`git checkout --ours <file>`" + ` → take origin/main (in rebase, --ours = target)
-   - ` + "`git checkout --theirs <file>`" + ` → take this branch's version
-   - Manual edit for mixed conflicts
-   - ` + "`git add <file>`" + `
-4. ` + "`git rebase --continue`" + ` (repeat steps 3–4 for each commit)
-5. ` + "`go build ./... && go test ./...`" + ` — fix any build failures before proceeding
-6. ` + "`git push --force-with-lease -u origin {{branch}}`" + `
-7. Create PR if none exists: ` + "`gh pr create --title \"#{{issue_number}}: {{issue_title}}\" --body \"Closes #{{issue_number}}\"`" + `
-8. Merge: ` + "`gh pr merge {{branch}} --squash --delete-branch`" + `
+## Step 4 — Build and test
+
+` + "```" + `bash
+go build ./...
+go test ./...
+` + "```" + `
+
+If the build fails, re-examine the conflicting files. Fix build errors before proceeding.
+
+## Step 5 — Push
+
+` + "```" + `bash
+git push --force-with-lease -u origin {{branch}}
+` + "```" + `
+
+## Step 6 — Create PR (if none exists)
+
+` + "```" + `bash
+gh pr list --head {{branch}} --json url --limit 1
+# If the output is "[]", create the PR:
+gh pr create --title "#{{issue_number}}: {{issue_title}}" \
+  --body "Closes #{{issue_number}}
+
+Automated merge via pipeline."
+` + "```" + `
+
+## Step 7 — Merge
+
+The merge requires the worktree to be removed first (git refuses to delete a branch
+that is checked out in a worktree). Do this sequence:
+
+` + "```" + `bash
+cd {{repo_root}}
+git worktree remove {{worktree_path}} --force 2>/dev/null || true
+gh pr merge {{branch}} --squash --delete-branch
+` + "```" + `
 
 {{#if prior_stage_summary}}
 ## Stage History
