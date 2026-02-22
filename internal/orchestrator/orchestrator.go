@@ -624,18 +624,6 @@ func (o *Orchestrator) CheckIn() (*CheckInResult, error) {
 
 		hasActive = true
 
-		// Skip pipelines that are currently being advanced by another process.
-		// Strict sequential: if the frontmost pipeline is in_progress, pause everything.
-		if ps.Status == "in_progress" {
-			result.Actions = append(result.Actions, CheckInAction{
-				Issue:   ps.Issue,
-				Action:  "skip",
-				Stage:   ps.CurrentStage,
-				Message: "in_progress, another advance may be running",
-			})
-			break
-		}
-
 		action := o.checkInPipeline(ps)
 		result.Actions = append(result.Actions, action)
 		break // strict sequential: only process one pipeline per check-in
@@ -800,11 +788,29 @@ func (o *Orchestrator) handleActiveSession(ps *pipeline.PipelineState) CheckInAc
 
 // handleIdleSession handles a session that finished and is waiting.
 func (o *Orchestrator) handleIdleSession(ps *pipeline.PipelineState) CheckInAction {
+	// The session finished but the advance process was killed before it could
+	// record the result. Kill the idle session so engine.Run() can create a
+	// fresh one, then re-run the stage.
+	if ps.CurrentSession != "" {
+		_, _ = o.sessions.Kill(ps.CurrentSession)
+		_ = o.store.Update(ps.Issue, func(p *pipeline.PipelineState) {
+			p.CurrentSession = ""
+			p.Status = "pending"
+		})
+	}
 	return o.handleAdvance(ps)
 }
 
 // handleExitedSession handles a session that has exited.
 func (o *Orchestrator) handleExitedSession(ps *pipeline.PipelineState) CheckInAction {
+	// Same as idle: clean up so engine.Run() can start fresh.
+	if ps.CurrentSession != "" {
+		_, _ = o.sessions.Kill(ps.CurrentSession)
+		_ = o.store.Update(ps.Issue, func(p *pipeline.PipelineState) {
+			p.CurrentSession = ""
+			p.Status = "pending"
+		})
+	}
 	return o.handleAdvance(ps)
 }
 

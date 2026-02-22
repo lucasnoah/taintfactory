@@ -1049,7 +1049,9 @@ func TestCheckIn_HumanInterventionSkipped(t *testing.T) {
 	}
 }
 
-func TestCheckIn_InProgressSkipped(t *testing.T) {
+func TestCheckIn_InProgress_NoSession_Advances(t *testing.T) {
+	// An in_progress pipeline with no session (orphaned by a killed runner) should
+	// be picked up and re-advanced rather than skipped indefinitely.
 	env := setupTest(t, defaultConfig())
 
 	wtDir := t.TempDir()
@@ -1057,6 +1059,7 @@ func TestCheckIn_InProgressSkipped(t *testing.T) {
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.Status = "in_progress"
 		ps.CurrentAttempt = 1
+		ps.CurrentSession = "" // no session — runner was killed before session was created
 	})
 
 	result, err := env.orch.CheckIn()
@@ -1066,11 +1069,9 @@ func TestCheckIn_InProgressSkipped(t *testing.T) {
 	if len(result.Actions) != 1 {
 		t.Fatalf("expected 1 action, got %d", len(result.Actions))
 	}
-	if result.Actions[0].Action != "skip" {
-		t.Errorf("expected 'skip' for in_progress, got %q", result.Actions[0].Action)
-	}
-	if !strings.Contains(result.Actions[0].Message, "in_progress") {
-		t.Errorf("expected in_progress message, got %q", result.Actions[0].Message)
+	// Should attempt to advance (not skip), landing as "advance" or "escalate" depending on engine
+	if result.Actions[0].Action == "skip" {
+		t.Errorf("orphaned in_progress pipeline should not be skipped, got skip with message %q", result.Actions[0].Message)
 	}
 }
 
