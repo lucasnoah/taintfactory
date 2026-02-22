@@ -341,12 +341,19 @@ func (s *Server) handlePipelineDetail(w http.ResponseWriter, r *http.Request, is
 			} else if stage.ID == ps.CurrentStage {
 				status = "active"
 			}
-			model := stage.Model
-			if model == "" {
-				model = cfg.Pipeline.Defaults.Model
+			var model string
+			stageType := stage.Type
+			if stageType == "" {
+				stageType = "agent"
 			}
-			if model == "" {
-				model = "claude-opus-4-6"
+			if stageType == "agent" {
+				model = stage.Model
+				if model == "" {
+					model = cfg.Pipeline.Defaults.Model
+				}
+				if model == "" {
+					model = "claude-opus-4-6"
+				}
 			}
 			stageOrder = append(stageOrder, StageStatusItem{
 				ID:       stage.ID,
@@ -357,10 +364,17 @@ func (s *Server) handlePipelineDetail(w http.ResponseWriter, r *http.Request, is
 		}
 	}
 
-	// Build a model lookup from config for history rows.
+	// Build a model lookup from config for history rows (agent stages only).
 	stageModel := make(map[string]string)
 	if cfg := s.configFor(ps.Worktree); cfg != nil {
 		for _, stage := range cfg.Pipeline.Stages {
+			t := stage.Type
+			if t == "" {
+				t = "agent"
+			}
+			if t != "agent" {
+				continue
+			}
 			model := stage.Model
 			if model == "" {
 				model = cfg.Pipeline.Defaults.Model

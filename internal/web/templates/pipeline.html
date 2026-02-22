@@ -52,14 +52,14 @@
 {{if .StageOrder}}
 <h2>Progress</h2>
 <div class="progress-bar">
-  {{range .StageOrder}}<div class="{{segClass .Status}}" title="{{.ID}}{{if .Duration}} ({{.Duration}}){{end}} · {{.Model}}"></div>{{end}}
+  {{range .StageOrder}}<div class="{{segClass .Status}}" title="{{.ID}}{{if .Duration}} ({{.Duration}}){{end}}{{if .Model}} · {{.Model}}{{end}}"></div>{{end}}
 </div>
 <div class="seg-labels">
   {{range .StageOrder}}
   <div class="seg-label" style="color:{{if eq .Status "active"}}#0d6efd{{else if eq .Status "done"}}#198754{{else}}#adb5bd{{end}}">
     <span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{.ID}}</span>
     {{if .Duration}}<span style="display:block;font-size:.6rem;opacity:.75">{{.Duration}}</span>{{end}}
-    <span style="display:block;font-size:.6rem;opacity:.6">{{.Model}}</span>
+    {{if .Model}}<span style="display:block;font-size:.6rem;opacity:.6">{{.Model}}</span>{{end}}
   </div>
   {{end}}
 </div>
