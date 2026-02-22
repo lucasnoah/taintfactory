@@ -272,6 +272,18 @@ func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, stageC
 		}
 	}
 
+	// Skip the contract-check stage when there are no downstream dependents —
+	// preparePostMerge already queried the queue and stored the result in
+	// RuntimeVars; if it's empty there's nothing for the agent to do.
+	if nextStage != "" {
+		if nextCfg := o.findStage(nextStage); nextCfg != nil && nextCfg.PromptTemplate == "contract-check.md" {
+			if ps, err := o.store.Get(issue); err == nil && ps.RuntimeVars["dependent_issues"] == "" {
+				o.logf("pipeline #%d: skipping contract-check — no downstream dependents", issue)
+				nextStage = o.nextStageID(nextStage)
+			}
+		}
+	}
+
 	if nextStage == "" {
 		o.logf("pipeline #%d: no more stages, checking goal gates", issue)
 		// No more stages — check goal gates before completing
