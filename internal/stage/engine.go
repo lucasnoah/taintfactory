@@ -417,7 +417,7 @@ func (e *Engine) createAndRunSession(name string, ps *pipeline.PipelineState, op
 		model = e.cfg.Pipeline.Defaults.Model
 	}
 	if model == "" {
-		model = "claude-opus-4-5"
+		model = "claude-opus-4-6"
 	}
 
 	e.logf("creating tmux session %s in %s (model: %s)", name, ps.Worktree, model)

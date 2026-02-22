@@ -779,13 +779,13 @@ func TestBuildClaudeCommand(t *testing.T) {
 		},
 		{
 			name: "with model",
-			opts: CreateOpts{Model: "claude-opus-4-5"},
-			want: "claude --model claude-opus-4-5 --print",
+			opts: CreateOpts{Model: "claude-opus-4-6"},
+			want: "claude --model claude-opus-4-6 --print",
 		},
 		{
 			name: "with model and flags",
-			opts: CreateOpts{Model: "claude-sonnet-4-5", Flags: "--verbose"},
-			want: "claude --model claude-sonnet-4-5 --verbose --print",
+			opts: CreateOpts{Model: "claude-sonnet-4-6", Flags: "--verbose"},
+			want: "claude --model claude-sonnet-4-6 --verbose --print",
 		},
 		{
 			name: "with flags no model",
@@ -794,8 +794,8 @@ func TestBuildClaudeCommand(t *testing.T) {
 		},
 		{
 			name: "interactive with model",
-			opts: CreateOpts{Model: "claude-opus-4-5", Interactive: true},
-			want: "claude --model claude-opus-4-5",
+			opts: CreateOpts{Model: "claude-opus-4-6", Interactive: true},
+			want: "claude --model claude-opus-4-6",
 		},
 		{
 			name: "interactive",

@@ -16,13 +16,14 @@
 {{if .StageOrder}}
 <h2>Progress</h2>
 <div class="progress-bar">
-  {{range .StageOrder}}<div class="{{segClass .Status}}" title="{{.ID}}{{if .Duration}} ({{.Duration}}){{end}}"></div>{{end}}
+  {{range .StageOrder}}<div class="{{segClass .Status}}" title="{{.ID}}{{if .Duration}} ({{.Duration}}){{end}} · {{.Model}}"></div>{{end}}
 </div>
 <div class="seg-labels">
   {{range .StageOrder}}
   <div class="seg-label" style="color:{{if eq .Status "active"}}#0d6efd{{else if eq .Status "done"}}#198754{{else}}#adb5bd{{end}}">
     <span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{.ID}}</span>
     {{if .Duration}}<span style="display:block;font-size:.6rem;opacity:.75">{{.Duration}}</span>{{end}}
+    <span style="display:block;font-size:.6rem;opacity:.6">{{.Model}}</span>
   </div>
   {{end}}
 </div>
@@ -62,7 +63,7 @@
 {{if .History}}
 <h2>Stage History</h2>
 <table>
-  <thead><tr><th>Stage</th><th>Attempt</th><th>Outcome</th><th>Duration</th><th>Fix Rounds</th><th>Session</th></tr></thead>
+  <thead><tr><th>Stage</th><th>Attempt</th><th>Outcome</th><th>Duration</th><th>Fix Rounds</th><th>Session</th><th>Model</th></tr></thead>
   <tbody>
   {{range .History}}
   <tr>
@@ -72,6 +73,7 @@
     <td class="muted">{{.Duration}}</td>
     <td class="muted">{{.FixRounds}}</td>
     <td><code style="font-size:.75rem;user-select:all">{{.TmuxCmd}}</code></td>
+    <td class="muted" style="font-size:.78rem">{{.Model}}</td>
   </tr>
   {{end}}
   </tbody>

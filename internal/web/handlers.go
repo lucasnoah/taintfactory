@@ -64,12 +64,14 @@ type StageStatusItem struct {
 	ID       string
 	Status   string // "done", "active", "upcoming"
 	Duration string // human-readable duration for completed stages, empty otherwise
+	Model    string // resolved model for this stage
 }
 
 // StageHistoryView wraps a StageHistoryEntry with a pre-computed tmux attach command.
 type StageHistoryView struct {
 	pipeline.StageHistoryEntry
 	TmuxCmd string
+	Model   string
 }
 
 type AttemptDetailData struct {
@@ -325,11 +327,34 @@ func (s *Server) handlePipelineDetail(w http.ResponseWriter, r *http.Request, is
 			} else if stage.ID == ps.CurrentStage {
 				status = "active"
 			}
+			model := stage.Model
+			if model == "" {
+				model = cfg.Pipeline.Defaults.Model
+			}
+			if model == "" {
+				model = "claude-opus-4-6"
+			}
 			stageOrder = append(stageOrder, StageStatusItem{
 				ID:       stage.ID,
 				Status:   status,
 				Duration: stageDuration[stage.ID],
+				Model:    model,
 			})
+		}
+	}
+
+	// Build a model lookup from config for history rows.
+	stageModel := make(map[string]string)
+	if cfg := s.configFor(ps.Worktree); cfg != nil {
+		for _, stage := range cfg.Pipeline.Stages {
+			model := stage.Model
+			if model == "" {
+				model = cfg.Pipeline.Defaults.Model
+			}
+			if model == "" {
+				model = "claude-opus-4-6"
+			}
+			stageModel[stage.ID] = model
 		}
 	}
 
@@ -339,6 +364,7 @@ func (s *Server) handlePipelineDetail(w http.ResponseWriter, r *http.Request, is
 		history[i] = StageHistoryView{
 			StageHistoryEntry: h,
 			TmuxCmd:           "tmux attach -t " + sessionName,
+			Model:             stageModel[h.Stage],
 		}
 	}
 
@@ -519,10 +545,18 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 					promptContent = content
 				}
 			}
+			// Resolve model with same fallback chain as the engine.
+			model := stage.Model
+			if model == "" {
+				model = rc.Cfg.Pipeline.Defaults.Model
+			}
+			if model == "" {
+				model = "claude-opus-4-6"
+			}
 			view.Stages = append(view.Stages, StageConfigRow{
 				ID:             stage.ID,
 				Type:           stageType,
-				Model:          stage.Model,
+				Model:          model,
 				GoalGate:       stage.GoalGate,
 				ChecksAfterStr: strings.Join(stage.ChecksAfter, ", "),
 				PromptTemplate: tmplName,
