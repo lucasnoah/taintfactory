@@ -962,6 +962,14 @@ func (o *Orchestrator) runMerge(issue int, ps *pipeline.PipelineState, stageCfg 
 		}
 	}
 
+	// Remove worktree before merging so that --delete-branch can delete the
+	// local branch (git refuses to delete a branch checked out in a worktree).
+	if o.wt != nil {
+		if err := o.wt.Remove(issue, false); err != nil {
+			o.logf("warning: remove worktree before merge: %v", err)
+		}
+	}
+
 	// Merge PR
 	strategy := stageCfg.MergeStrategy
 	if strategy == "" {
