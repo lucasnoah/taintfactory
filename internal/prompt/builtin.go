@@ -91,14 +91,18 @@ Stage: {{stage_id}} (attempt {{attempt}})
 {{/if}}
 
 ## Review Instructions
-1. Use git to explore the changes: ` + "`git log`" + `, ` + "`git show <commit>`" + `, ` + "`git diff main...HEAD`" + `, and read the changed files directly
-2. Review all changed files for correctness, security, and edge cases
-3. Check that the implementation matches the feature intent and acceptance criteria
-4. Look for bugs, race conditions, missing error handling, and edge cases
-5. Verify test coverage is adequate
-6. **Fix every issue you find.** Do not just report problems — actually edit the code to resolve them. Commit your fixes.
-7. If you find issues in the tests (wrong mocks, missing coverage), fix those too
-8. Run all relevant checks/tests after your fixes to confirm they pass
+
+Your job is adversarial review. Assume the implementation is wrong until proven otherwise. Do not give the author the benefit of the doubt — if something looks suspicious, dig in.
+
+1. Use git to explore the changes: ` + "`git log`" + `, ` + "`git show <commit>`" + `, ` + "`git diff main...HEAD`" + `. Read every changed file in full — do not skim.
+2. **Do not trust the tests.** Tests written by the implementer are the most likely place for blind spots. Ask: what cases are not tested? What inputs would break this? Write tests for those cases and run them.
+3. **Do not trust the happy path.** Actively look for what happens when things go wrong: nil inputs, empty slices, zero values, network failures, DB errors, concurrent access, clock edge cases (midnight, DST, leap day). If error paths are unhandled or silently swallowed, that is a bug.
+4. **Do not trust that the acceptance criteria are met.** Read each criterion and find the exact code path that satisfies it. If you cannot point to it, it may not exist.
+5. Look for: off-by-one errors, incorrect SQL (wrong joins, missing WHERE clauses, unintended full scans), timezone/date math bugs, integer overflow, incorrect type conversions, missing transaction boundaries, data races, and resource leaks.
+6. Check that no existing behavior was silently broken. Read the files that were modified — not just the diff — to understand what was there before and whether the change is safe.
+7. **Fix every issue you find.** Do not just report problems — actually edit the code to resolve them. Commit your fixes.
+8. If the tests are inadequate (wrong mocks, missing coverage, happy-path only), rewrite or extend them. The test suite should make you confident, not just green.
+9. Run the full test suite after your fixes. If anything fails that was passing before, fix it.
 `
 
 const qaTemplate = `# QA Testing: {{issue_title}}
