@@ -4,7 +4,7 @@
 # Usage:  ./up [--port PORT]  (default port: 17432)
 #
 # Creates a tmux session named "factory" with two windows:
-#   runner  — orchestrator check-in loop (every 120s)
+#   runner  — orchestrator check-in loop (every 10s)
 #   ui      — factory serve web UI
 
 set -euo pipefail
@@ -38,7 +38,7 @@ fi
 echo "==> Starting tmux session '$SESSION'..."
 tmux new-session -d -s "$SESSION" -n "runner" \
   -x 220 -y 50 \
-  "cd '$REPO_DIR' && while true; do '$BINARY' orchestrator check-in; sleep 120; done"
+  "cd '$REPO_DIR' && while true; do '$BINARY' orchestrator check-in; sleep 10; done"
 
 # Add UI window
 tmux new-window -t "$SESSION" -n "ui" \
