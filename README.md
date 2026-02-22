@@ -188,6 +188,13 @@ pipeline:
         - test-go
       max_fix_rounds: 1
       on_fail: escalate         # give up and mark blocked after one agent attempt
+
+    - id: contract-check
+      type: agent
+      prompt_template: contract-check.md
+      context_mode: minimal
+      skip_checks: true
+      on_fail: escalate         # block for human review if check fails
 ```
 
 ### Schema Reference
@@ -262,6 +269,7 @@ These are automatically injected by the context builder. Which ones are populate
 | `git_commits` | full, code_only | Recent commit log |
 | `prior_stage_summary` | full, findings_only | Outcomes from completed stages |
 | `check_failures` | all (when present) | Formatted check failure output from prior attempt |
+| `dependent_issues` | contract-check only | Newline-separated list of queued issues that depend on the just-merged issue |
 
 Any keys defined under `vars` in your pipeline config (or stage config) are also injected and can be referenced in templates.
 
@@ -286,6 +294,7 @@ taintfactory ships with built-in templates for the standard stages. You can over
 | `fix-checks.md` | Sent on each check-failure fix round |
 | `merge.md` | Final merge stage (human-assisted) |
 | `agent-merge.md` | Agent-driven conflict resolution fallback |
+| `contract-check.md` | Post-merge contract validation for dependent issues |
 
 ### Merge stage and conflict recovery
 
@@ -302,6 +311,35 @@ If the rebase encounters conflicts, the merge stage fails and `on_fail` routes t
 - **Application code**: read the conflict markers and merge manually, preserving new logic while keeping main's structure.
 
 After resolving, the agent rebuilds, tests, and merges. If the agent merge also fails, `on_fail: escalate` marks the pipeline blocked for manual intervention.
+
+### Post-merge contract check
+
+When a pipeline merges — either via the automated merge stage or via agent-merge — the orchestrator automatically fires a `contract-check` stage before the pipeline completes.
+
+This stage addresses a version-boundary problem that arises when a feature is decomposed into dependent slices. Downstream issues contain Data Contracts (Go type definitions, SQL column names, sqlc query signatures, HTTP response shapes) written before the upstream code exists. By the time the upstream slice merges, those contracts may no longer match what was actually built.
+
+The contract-check agent:
+
+1. **Reads the merged code** from the main repo (not a feature worktree — that's already been removed).
+2. **Finds all dependent issues** in the queue (issues whose `depends_on` includes the just-merged issue number). These are injected as `{{dependent_issues}}` in the template.
+3. **Extracts Data Contracts** from each dependent issue body and diffs them against the actual merged code.
+4. **Classifies drift** and acts:
+   - **Structural drift** (wrong field name, wrong type — mechanically fixable): patches the issue body in-place and adds a comment explaining what changed.
+   - **Semantic drift** (contract is structurally consistent but its meaning shifted): adds a comment and a `needs-plan-review` label. The issue is blocked for human review before any implement agent runs.
+
+If no dependent issues are found, the stage completes immediately.
+
+To use it, add `contract-check` as the last stage in your pipeline (after `agent-merge`). The orchestrator routes merge-stage successes directly to it, skipping `agent-merge` on the happy path:
+
+```
+merge succeeds → [skip agent-merge] → contract-check → pipeline complete
+merge fails    → agent-merge        → contract-check → pipeline complete
+```
+
+The `needs-plan-review` label must exist in your GitHub repo. Create it once:
+```bash
+gh label create "needs-plan-review" --color "e4e669" --description "Plan requires review before implementation"
+```
 
 ### Example: `implement.md`
 
