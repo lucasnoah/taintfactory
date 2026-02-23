@@ -22,3 +22,6 @@ dist/
 pipelines/*/stages/*/session.log
 pipelines/*/stages/*/screenshots/
 pipelines/*/stages/*/gifs/
+
+# Git worktrees
+.worktrees/
