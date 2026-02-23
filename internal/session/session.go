@@ -375,6 +375,13 @@ type WaitIdleResult struct {
 	ExitCode *int   `json:"exit_code,omitempty"`
 }
 
+// isRateLimited reports whether the pane content indicates an Anthropic
+// usage/rate limit is active ("You've hit your limit" UI).
+func isRateLimited(pane string) bool {
+	return strings.Contains(pane, "You've hit your limit") ||
+		strings.Contains(pane, "/rate-limit-options")
+}
+
 // WaitIdle polls the DB until the session reaches "idle" or "exited" state.
 // As a fallback, it also monitors the tmux pane content for stability —
 // if the pane doesn't change for multiple consecutive polls, Claude is
@@ -403,6 +410,16 @@ func (m *Manager) WaitIdle(name string, timeout time.Duration, pollInterval time
 		}
 
 		if state.Event == "idle" || state.Event == "exited" {
+			if state.Event == "idle" {
+				// Before declaring idle, check whether the pane is showing an
+				// Anthropic rate-limit screen instead of a completed response.
+				if pane, pErr := m.tmux.CapturePaneLines(name, 50); pErr == nil && isRateLimited(pane) {
+					return &WaitIdleResult{
+						State:   "rate_limited",
+						Elapsed: elapsed(state.Timestamp),
+					}, nil
+				}
+			}
 			return &WaitIdleResult{
 				State:    state.Event,
 				Elapsed:  elapsed(state.Timestamp),
@@ -417,6 +434,14 @@ func (m *Manager) WaitIdle(name string, timeout time.Duration, pollInterval time
 			if pane == lastPane {
 				stableCount++
 				if stableCount >= stableThreshold {
+					if isRateLimited(pane) {
+						// Pane is stable because it's showing the rate-limit screen.
+						_ = m.db.LogSessionEvent(name, state.Issue, state.Stage, "rate_limited", nil, "pane_rate_limited")
+						return &WaitIdleResult{
+							State:   "rate_limited",
+							Elapsed: elapsed(state.Timestamp),
+						}, nil
+					}
 					// Pane hasn't changed — fire idle event as fallback
 					_ = m.db.LogSessionEvent(name, state.Issue, state.Stage, "idle", nil, "pane_stable")
 					return &WaitIdleResult{

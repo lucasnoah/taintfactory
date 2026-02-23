@@ -18,6 +18,10 @@ import (
 	"github.com/lucasnoah/taintfactory/internal/session"
 )
 
+// errRateLimited is returned by createAndRunSession when the agent hit an
+// Anthropic usage limit before completing its task.
+var errRateLimited = fmt.Errorf("anthropic rate limit detected")
+
 // Engine executes the stage lifecycle: agent → checks → fix loop.
 type Engine struct {
 	sessions     *session.Manager
@@ -161,6 +165,12 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 	result.Session = sessionName
 	e.logf("creating agent session: %s", sessionName)
 	if err := e.createAndRunSession(sessionName, ps, opts, stageCfg, rendered); err != nil {
+		if err == errRateLimited {
+			e.logf("rate limit detected — pausing stage for retry")
+			result.Outcome = "rate_limited"
+			result.TotalDuration = time.Since(start)
+			return result, nil
+		}
 		return nil, fmt.Errorf("run session: %w", err)
 	}
 	result.AgentDuration = time.Since(agentStart)
@@ -243,6 +253,12 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 				return nil, fmt.Errorf("build fix prompt: %w", err)
 			}
 			if err := e.createAndRunSession(sessionName, ps, opts, stageCfg, fixRendered); err != nil {
+				if err == errRateLimited {
+					e.logf("rate limit detected during fix round %d — pausing stage", round)
+					result.Outcome = "rate_limited"
+					result.TotalDuration = time.Since(start)
+					return result, nil
+				}
 				return nil, fmt.Errorf("fix session: %w", err)
 			}
 		} else {
@@ -257,6 +273,13 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 			if err != nil {
 				e.cleanupSession(sessionName)
 				return nil, fmt.Errorf("wait idle (fix): %w", err)
+			}
+			if waitResult.State == "rate_limited" {
+				e.logf("rate limit detected during fix round %d — pausing stage", round)
+				e.cleanupSession(sessionName)
+				result.Outcome = "rate_limited"
+				result.TotalDuration = time.Since(start)
+				return result, nil
 			}
 			if waitResult.State == "exited" {
 				e.cleanupSession(sessionName)
@@ -452,6 +475,12 @@ func (e *Engine) createAndRunSession(name string, ps *pipeline.PipelineState, op
 	if err != nil {
 		e.cleanupSession(name)
 		return fmt.Errorf("wait idle: %w", err)
+	}
+
+	if waitResult.State == "rate_limited" {
+		e.logf("rate limit detected in session %s — pausing", name)
+		e.cleanupSession(name)
+		return errRateLimited
 	}
 
 	if waitResult.State == "exited" {

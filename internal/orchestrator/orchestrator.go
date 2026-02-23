@@ -211,6 +211,24 @@ func (o *Orchestrator) Advance(issue int) (*AdvanceResult, error) {
 		return nil, fmt.Errorf("run stage: %w", err)
 	}
 
+	// Rate limit: pause pipeline and wait for next check-in to retry.
+	// Don't record history — this isn't a real stage completion.
+	if runResult.Outcome == "rate_limited" {
+		o.logf("pipeline #%d: rate limited at stage %q — will retry on next check-in", issue, currentStage)
+		if err := o.store.Update(issue, func(ps *pipeline.PipelineState) {
+			ps.Status = "rate_limited"
+		}); err != nil {
+			return nil, fmt.Errorf("update rate_limited status: %w", err)
+		}
+		_ = o.db.LogPipelineEvent(issue, "rate_limited", currentStage, currentAttempt, "")
+		return &AdvanceResult{
+			Issue:   issue,
+			Action:  "rate_limited",
+			Stage:   currentStage,
+			Message: "anthropic rate limit detected — will retry automatically on next check-in",
+		}, nil
+	}
+
 	// Record stage history
 	if err := o.store.Update(issue, func(ps *pipeline.PipelineState) {
 		ps.StageHistory = append(ps.StageHistory, pipeline.StageHistoryEntry{
@@ -679,6 +697,13 @@ func (o *Orchestrator) checkInPipeline(ps *pipeline.PipelineState) CheckInAction
 			Stage:   ps.CurrentStage,
 			Message: "blocked, waiting for human intervention",
 		}
+	}
+
+	// Rate-limited pipelines: retry automatically — the stage will re-detect
+	// the limit if it's still active, or proceed normally once it has cleared.
+	if ps.Status == "rate_limited" {
+		o.logf("pipeline #%d: retrying rate-limited stage %q", ps.Issue, ps.CurrentStage)
+		return o.handleAdvance(ps)
 	}
 
 	// Check for human intervention on active session
