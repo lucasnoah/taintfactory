@@ -40,7 +40,7 @@ started from.`,
 			return fmt.Errorf("store: %w", err)
 		}
 
-		triageDir, _ := triage.DefaultTriageDir()
+		triageDir, _ := triage.DefaultTriageDir() // "" if home dir unavailable; triage UI degrades gracefully
 		return web.NewServer(store, database, port, triageDir).Start()
 	},
 }

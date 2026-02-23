@@ -238,14 +238,15 @@ func (s *Server) triageConfigFor(repoRoot string) *triage.TriageConfig {
 	}
 	s.triageCfgMu.RUnlock()
 
-	cfg, err := triage.LoadDefault(repoRoot)
-
 	s.triageCfgMu.Lock()
 	defer s.triageCfgMu.Unlock()
-	if err != nil {
-		s.triageCfgCache[repoRoot] = nil
-	} else {
-		s.triageCfgCache[repoRoot] = cfg
+	if _, loaded := s.triageCfgCache[repoRoot]; !loaded {
+		cfg, err := triage.LoadDefault(repoRoot)
+		if err != nil {
+			s.triageCfgCache[repoRoot] = nil
+		} else {
+			s.triageCfgCache[repoRoot] = cfg
+		}
 	}
 	return s.triageCfgCache[repoRoot]
 }
@@ -277,6 +278,6 @@ func (s *Server) allTriageStates() []triage.TriageState {
 }
 
 // triageStoreFor returns a Store for the given repo slug.
-func (s *Server) triageStoreFor(slug string) (*triage.Store, error) {
-	return triage.NewStore(filepath.Join(s.triageDir, slug)), nil
+func (s *Server) triageStoreFor(slug string) *triage.Store {
+	return triage.NewStore(filepath.Join(s.triageDir, slug))
 }
