@@ -413,7 +413,7 @@ func newOrchestrator() (*orchestrator.Orchestrator, func(), error) {
 
 	// Attach triage runner if triage.yaml exists in the repo root
 	if triageCfg, err := triage.LoadDefault(repoDir); err == nil {
-		slug := strings.ReplaceAll(triageCfg.Triage.Repo, "/", "-")
+		slug := repoSlug(triageCfg.Triage.Repo)
 		if triageStore, err := triage.DefaultStore(slug); err == nil {
 			triageRunner := triage.NewRunner(triageCfg, triageStore, database, sessions, ghClient, repoDir)
 			triageRunner.SetProgress(os.Stderr)

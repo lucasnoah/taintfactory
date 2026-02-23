@@ -241,7 +241,11 @@ func (r *Runner) startStage(issue int, stageID, title, body string) error {
 	outPath := r.store.OutcomePath(issue, stageID)
 
 	// 2. Render the prompt from template.
-	prompt, err := r.renderPrompt(issue, stageID, title, body, outPath)
+	stageCfg := r.cfg.StageByID(stageID)
+	if stageCfg == nil {
+		return fmt.Errorf("stage %q not found in config", stageID)
+	}
+	prompt, err := r.renderPrompt(issue, stageCfg, title, body, outPath)
 	if err != nil {
 		return fmt.Errorf("render prompt for stage %s: %w", stageID, err)
 	}
@@ -284,37 +288,42 @@ func (r *Runner) startStage(issue int, stageID, title, body string) error {
 }
 
 // renderPrompt renders the prompt template for the given issue and stage.
-// It first checks for a repo-local override at {repoRoot}/triage/{stageID}.md,
-// then falls back to the embedded default templates.
-func (r *Runner) renderPrompt(issue int, stageID, title, body, outcomePath string) (string, error) {
-	var tmplSrc string
-
-	// Check for repo-local override.
-	overridePath := filepath.Join(r.repoRoot, "triage", stageID+".md")
-	if data, err := os.ReadFile(overridePath); err == nil {
-		tmplSrc = string(data)
-	} else if src, ok := defaultTemplates[stageID]; ok {
-		tmplSrc = src
+// It checks stageCfg.PromptTemplate first, then a repo-local override at
+// {repoRoot}/triage/{stageID}.md, then falls back to the embedded default templates.
+func (r *Runner) renderPrompt(issue int, stageCfg *TriageStage, title, body, outcomePath string) (string, error) {
+	var overridePath string
+	if stageCfg != nil && stageCfg.PromptTemplate != "" {
+		overridePath = filepath.Join(r.repoRoot, stageCfg.PromptTemplate)
 	} else {
-		return "", fmt.Errorf("no prompt template found for stage %q (checked %s and embedded defaults)", stageID, overridePath)
+		overridePath = filepath.Join(r.repoRoot, "triage", stageCfg.ID+".md")
 	}
 
-	tmpl, err := template.New(stageID).Option("missingkey=error").Parse(tmplSrc)
+	var tmplSrc string
+	if data, err := os.ReadFile(overridePath); err == nil {
+		tmplSrc = string(data)
+	} else if def, ok := defaultTemplates[stageCfg.ID]; ok {
+		tmplSrc = def
+	} else {
+		return "", fmt.Errorf("no template found for stage %q", stageCfg.ID)
+	}
+
+	tmpl, err := template.New(stageCfg.ID).Option("missingkey=error").Parse(tmplSrc)
 	if err != nil {
-		return "", fmt.Errorf("parse template for stage %q: %w", stageID, err)
+		return "", fmt.Errorf("parse template for stage %q: %w", stageCfg.ID, err)
 	}
 
 	vars := map[string]any{
 		"issue_number": issue,
 		"issue_title":  title,
 		"issue_body":   body,
-		"outcome_file": outcomePath,
 		"repo_root":    r.repoRoot,
+		"outcome_file": outcomePath,
+		"stage_id":     stageCfg.ID,
 	}
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, vars); err != nil {
-		return "", fmt.Errorf("execute template for stage %q: %w", stageID, err)
+		return "", fmt.Errorf("execute template for stage %q: %w", stageCfg.ID, err)
 	}
 
 	return buf.String(), nil

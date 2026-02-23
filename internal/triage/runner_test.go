@@ -385,7 +385,8 @@ func TestRunner_renderPrompt_usesEmbeddedTemplate(t *testing.T) {
 	}
 	outPath := store.OutcomePath(1, "stale_context")
 
-	prompt, err := runner.renderPrompt(1, "stale_context", "My Title", "My body", outPath)
+	stageCfg := runner.cfg.StageByID("stale_context")
+	prompt, err := runner.renderPrompt(1, stageCfg, "My Title", "My body", outPath)
 	if err != nil {
 		t.Fatalf("renderPrompt() error: %v", err)
 	}
@@ -429,7 +430,8 @@ func TestRunner_renderPrompt_usesRepoOverride(t *testing.T) {
 	runner.bootWait = 0
 
 	outPath := store.OutcomePath(99, "stale_context")
-	prompt, err := runner.renderPrompt(99, "stale_context", "title", "body", outPath)
+	stageCfg := cfg.StageByID("stale_context")
+	prompt, err := runner.renderPrompt(99, stageCfg, "title", "body", outPath)
 	if err != nil {
 		t.Fatalf("renderPrompt() error: %v", err)
 	}

@@ -132,3 +132,23 @@ func TestLoadDefault_NotFound(t *testing.T) {
 		t.Error("LoadDefault() expected error for empty dir, got nil")
 	}
 }
+
+func TestLoad_PromptTemplateField(t *testing.T) {
+	path := writeTempYAML(t, `
+triage:
+  name: "Test"
+  repo: "owner/test"
+stages:
+  - id: stale_context
+    prompt_template: triage/custom.md
+    outcomes:
+      stale: done
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Stages[0].PromptTemplate != "triage/custom.md" {
+		t.Errorf("PromptTemplate = %q, want %q", cfg.Stages[0].PromptTemplate, "triage/custom.md")
+	}
+}
