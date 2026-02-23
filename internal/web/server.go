@@ -14,6 +14,7 @@ import (
 	"github.com/lucasnoah/taintfactory/internal/config"
 	"github.com/lucasnoah/taintfactory/internal/db"
 	"github.com/lucasnoah/taintfactory/internal/pipeline"
+	"github.com/lucasnoah/taintfactory/internal/triage"
 )
 
 //go:embed templates
@@ -55,21 +56,30 @@ type Server struct {
 	attemptTmpl   *template.Template
 	queueTmpl     *template.Template
 	configTmpl    *template.Template
+
+	// Triage support
+	triageDir      string
+	triageTmpl     *template.Template
+	triageCfgMu    sync.RWMutex
+	triageCfgCache map[string]*triage.TriageConfig // keyed by repoRoot
 }
 
 // NewServer creates a Server with parsed templates.
-func NewServer(store *pipeline.Store, database *db.DB, port int) *Server {
+func NewServer(store *pipeline.Store, database *db.DB, port int, triageDir string) *Server {
 	return &Server{
-		store:         store,
-		db:            database,
-		port:          port,
-		cfgCache:      make(map[string]*config.PipelineConfig),
-		wtCache:       make(map[string]string),
-		dashboardTmpl: mustParseTmpl("base.html", "dashboard.html"),
-		pipelineTmpl:  mustParseTmpl("base.html", "pipeline.html"),
-		attemptTmpl:   mustParseTmpl("base.html", "attempt.html"),
-		queueTmpl:     mustParseTmpl("base.html", "queue.html"),
-		configTmpl:    mustParseTmpl("base.html", "config.html"),
+		store:          store,
+		db:             database,
+		port:           port,
+		triageDir:      triageDir,
+		cfgCache:       make(map[string]*config.PipelineConfig),
+		wtCache:        make(map[string]string),
+		triageCfgCache: make(map[string]*triage.TriageConfig),
+		dashboardTmpl:  mustParseTmpl("base.html", "dashboard.html"),
+		pipelineTmpl:   mustParseTmpl("base.html", "pipeline.html"),
+		attemptTmpl:    mustParseTmpl("base.html", "attempt.html"),
+		queueTmpl:      mustParseTmpl("base.html", "queue.html"),
+		configTmpl:     mustParseTmpl("base.html", "config.html"),
+		triageTmpl:     mustParseTmpl("base.html", "triage.html"),
 	}
 }
 
@@ -171,6 +181,8 @@ func (s *Server) Start() error {
 			s.handleDashboard(w, r)
 		case strings.HasPrefix(r.URL.Path, "/pipeline/"):
 			s.routePipeline(w, r)
+		case strings.HasPrefix(r.URL.Path, "/triage/"):
+			s.routeTriage(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -198,4 +210,73 @@ func (s *Server) routePipeline(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *Server) routeTriage(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/triage/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	switch {
+	case len(parts) == 2:
+		s.handleTriageDetail(w, r, parts[0], parts[1])
+	case len(parts) == 4 && parts[2] == "session" && parts[3] == "stream":
+		s.handleTriageStream(w, r, parts[0], parts[1])
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// triageConfigFor returns the TriageConfig for the given repo root directory.
+// Results are cached. Returns nil if triage.yaml is not found.
+func (s *Server) triageConfigFor(repoRoot string) *triage.TriageConfig {
+	if repoRoot == "" {
+		return nil
+	}
+	s.triageCfgMu.RLock()
+	if cfg, ok := s.triageCfgCache[repoRoot]; ok {
+		s.triageCfgMu.RUnlock()
+		return cfg
+	}
+	s.triageCfgMu.RUnlock()
+
+	cfg, err := triage.LoadDefault(repoRoot)
+
+	s.triageCfgMu.Lock()
+	defer s.triageCfgMu.Unlock()
+	if err != nil {
+		s.triageCfgCache[repoRoot] = nil
+	} else {
+		s.triageCfgCache[repoRoot] = cfg
+	}
+	return s.triageCfgCache[repoRoot]
+}
+
+// allTriageStates scans ~/.factory/triage/ for all repo slug subdirectories
+// and returns every triage state found.
+func (s *Server) allTriageStates() []triage.TriageState {
+	if s.triageDir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(s.triageDir)
+	if err != nil {
+		return nil
+	}
+	var states []triage.TriageState
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		slug := e.Name()
+		store := triage.NewStore(filepath.Join(s.triageDir, slug))
+		all, err := store.List("")
+		if err != nil {
+			continue
+		}
+		states = append(states, all...)
+	}
+	return states
+}
+
+// triageStoreFor returns a Store for the given repo slug.
+func (s *Server) triageStoreFor(slug string) (*triage.Store, error) {
+	return triage.NewStore(filepath.Join(s.triageDir, slug)), nil
 }

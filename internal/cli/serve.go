@@ -5,6 +5,7 @@ import (
 
 	"github.com/lucasnoah/taintfactory/internal/db"
 	"github.com/lucasnoah/taintfactory/internal/pipeline"
+	"github.com/lucasnoah/taintfactory/internal/triage"
 	"github.com/lucasnoah/taintfactory/internal/web"
 	"github.com/spf13/cobra"
 )
@@ -39,7 +40,8 @@ started from.`,
 			return fmt.Errorf("store: %w", err)
 		}
 
-		return web.NewServer(store, database, port).Start()
+		triageDir, _ := triage.DefaultTriageDir()
+		return web.NewServer(store, database, port, triageDir).Start()
 	},
 }
 
