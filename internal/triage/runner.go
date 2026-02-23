@@ -162,29 +162,7 @@ func (r *Runner) advanceOne(st *TriageState) TriageAction {
 		return base
 	}
 
-	// 5. Append to StageHistory and update state.
-	historyEntry := TriageStageHistoryEntry{
-		Stage:   st.CurrentStage,
-		Outcome: outcome.Outcome,
-		Summary: outcome.Summary,
-	}
-	if err := r.store.Update(st.Issue, func(s *TriageState) {
-		s.StageHistory = append(s.StageHistory, historyEntry)
-	}); err != nil {
-		base.Action = "error"
-		base.Message = fmt.Sprintf("update history: %v", err)
-		return base
-	}
-
-	// Re-read the updated state for subsequent logic.
-	updatedSt, err := r.store.Get(st.Issue)
-	if err != nil {
-		base.Action = "error"
-		base.Message = fmt.Sprintf("re-read state: %v", err)
-		return base
-	}
-
-	// 6. Look up the outcome routing in the current stage config.
+	// 5. Look up the outcome routing in the current stage config.
 	stageCfg := r.cfg.StageByID(st.CurrentStage)
 
 	nextStageID := ""
@@ -192,9 +170,16 @@ func (r *Runner) advanceOne(st *TriageState) TriageAction {
 		nextStageID = stageCfg.Outcomes[outcome.Outcome]
 	}
 
+	historyEntry := TriageStageHistoryEntry{
+		Stage:   st.CurrentStage,
+		Outcome: outcome.Outcome,
+		Summary: outcome.Summary,
+	}
+
 	// "done" or empty means the triage pipeline is complete for this issue.
 	if nextStageID == "" || nextStageID == "done" {
 		if err := r.store.Update(st.Issue, func(s *TriageState) {
+			s.StageHistory = append(s.StageHistory, historyEntry)
 			s.Status = "completed"
 			s.CurrentSession = ""
 		}); err != nil {
@@ -208,7 +193,17 @@ func (r *Runner) advanceOne(st *TriageState) TriageAction {
 		return base
 	}
 
-	// 7. Route to next stage — fetch fresh issue data and start the next stage.
+	// 6. Route to next stage — append history + advance stage in one update,
+	// then fetch fresh issue data and start the next stage.
+	if err := r.store.Update(st.Issue, func(s *TriageState) {
+		s.StageHistory = append(s.StageHistory, historyEntry)
+		s.CurrentStage = nextStageID
+	}); err != nil {
+		base.Action = "error"
+		base.Message = fmt.Sprintf("update history and stage: %v", err)
+		return base
+	}
+
 	var issueTitle, issueBody string
 	if r.gh != nil {
 		ghIssue, err := r.gh.GetIssue(st.Issue)
@@ -221,8 +216,6 @@ func (r *Runner) advanceOne(st *TriageState) TriageAction {
 		issueTitle = ghIssue.Title
 		issueBody = ghIssue.Body
 	}
-
-	_ = updatedSt // used to carry updated state context; actual writes go through store.Update
 
 	if err := r.startStage(st.Issue, nextStageID, issueTitle, issueBody); err != nil {
 		r.logf("triage issue %d: error starting stage %s: %v", st.Issue, nextStageID, err)
@@ -273,6 +266,7 @@ func (r *Runner) startStage(issue int, stageID, title, body string) error {
 
 	// 5. Send the prompt.
 	if err := r.sessions.Send(sessionName, prompt); err != nil {
+		_, _ = r.sessions.Kill(sessionName)
 		return fmt.Errorf("send prompt to session %s: %w", sessionName, err)
 	}
 
@@ -305,7 +299,7 @@ func (r *Runner) renderPrompt(issue int, stageID, title, body, outcomePath strin
 		return "", fmt.Errorf("no prompt template found for stage %q (checked %s and embedded defaults)", stageID, overridePath)
 	}
 
-	tmpl, err := template.New(stageID).Parse(tmplSrc)
+	tmpl, err := template.New(stageID).Option("missingkey=error").Parse(tmplSrc)
 	if err != nil {
 		return "", fmt.Errorf("parse template for stage %q: %w", stageID, err)
 	}
