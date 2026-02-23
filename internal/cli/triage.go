@@ -45,7 +45,7 @@ var triageRunCmd = &cobra.Command{
 			return fmt.Errorf("enqueue issue #%d: %w", issue, err)
 		}
 
-		fmt.Fprintf(os.Stdout, "  → triage #%d: starting %q\n", issue, runner.FirstStageID())
+		fmt.Fprintf(cmd.OutOrStdout(), "  → triage #%d: starting %q\n", issue, runner.FirstStageID())
 		return nil
 	},
 }
