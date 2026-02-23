@@ -84,7 +84,8 @@ func (r *Runner) logf(format string, args ...any) {
 	}
 }
 
-// Enqueue saves an initial pending→in_progress state for the issue and starts the first stage.
+// Enqueue saves an initial pending state for the issue. If no triage is currently
+// in_progress, it starts the first stage immediately; otherwise it queues for serial pickup.
 func (r *Runner) Enqueue(issue int, issueTitle, issueBody string) error {
 	firstStage := r.FirstStageID()
 	if firstStage == "" {
@@ -94,12 +95,23 @@ func (r *Runner) Enqueue(issue int, issueTitle, issueBody string) error {
 	st := &TriageState{
 		Issue:        issue,
 		Repo:         r.cfg.Triage.Repo,
+		RepoRoot:     r.repoRoot,
 		CurrentStage: firstStage,
 		Status:       "pending",
 		StageHistory: []TriageStageHistoryEntry{},
 	}
 	if err := r.store.Save(st); err != nil {
 		return fmt.Errorf("save initial state for issue %d: %w", issue, err)
+	}
+
+	// Only start immediately if no other triage is in_progress (serial execution).
+	active, err := r.store.List("in_progress")
+	if err != nil {
+		return fmt.Errorf("check active triage: %w", err)
+	}
+	if len(active) > 0 {
+		r.logf("triage issue %d: queued (issue %d in progress)", issue, active[0].Issue)
+		return nil
 	}
 
 	if err := r.startStage(issue, firstStage, issueTitle, issueBody); err != nil {
@@ -109,19 +121,39 @@ func (r *Runner) Enqueue(issue int, issueTitle, issueBody string) error {
 	return nil
 }
 
-// Advance lists all in_progress triage states and advances each one.
+// Advance processes at most ONE triage pipeline per call (serial execution).
+// If a pipeline is in_progress, it advances that one. If none is active, it
+// starts the next pending pipeline.
 func (r *Runner) Advance() ([]TriageAction, error) {
-	states, err := r.store.List("in_progress")
+	// Check for an active pipeline first.
+	active, err := r.store.List("in_progress")
 	if err != nil {
 		return nil, fmt.Errorf("list in_progress triage states: %w", err)
 	}
-
-	var actions []TriageAction
-	for i := range states {
-		action := r.advanceOne(&states[i])
-		actions = append(actions, action)
+	if len(active) > 0 {
+		action := r.advanceOne(&active[0])
+		return []TriageAction{action}, nil
 	}
-	return actions, nil
+
+	// No active pipeline — start the next pending one.
+	pending, err := r.store.List("pending")
+	if err != nil {
+		return nil, fmt.Errorf("list pending triage states: %w", err)
+	}
+	if len(pending) == 0 {
+		return nil, nil
+	}
+
+	next := &pending[0]
+	issueData, err := r.gh.GetIssue(next.Issue)
+	if err != nil {
+		return []TriageAction{{Issue: next.Issue, Stage: next.CurrentStage, Action: "error", Message: fmt.Sprintf("fetch issue: %v", err)}}, nil
+	}
+	if err := r.startStage(next.Issue, next.CurrentStage, issueData.Title, issueData.Body); err != nil {
+		return []TriageAction{{Issue: next.Issue, Stage: next.CurrentStage, Action: "error", Message: fmt.Sprintf("start stage: %v", err)}}, nil
+	}
+	r.logf("triage issue %d: started from queue", next.Issue)
+	return []TriageAction{{Issue: next.Issue, Stage: next.CurrentStage, Action: "started", Message: "dequeued from pending"}}, nil
 }
 
 // advanceOne checks a single in_progress triage state and advances it if ready.

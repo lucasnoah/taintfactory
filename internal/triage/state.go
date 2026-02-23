@@ -17,6 +17,7 @@ import (
 type TriageState struct {
 	Issue          int                       `json:"issue"`
 	Repo           string                    `json:"repo"`
+	RepoRoot       string                    `json:"repo_root,omitempty"` // local filesystem path to repo root
 	CurrentStage   string                    `json:"current_stage"`
 	Status         string                    `json:"status"` // pending, in_progress, completed
 	CurrentSession string                    `json:"current_session,omitempty"`
@@ -49,13 +50,22 @@ func NewStore(baseDir string) *Store {
 	return &Store{baseDir: baseDir}
 }
 
+// DefaultTriageDir returns the base directory for triage state (~/.factory/triage).
+func DefaultTriageDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("home dir: %w", err)
+	}
+	return filepath.Join(home, ".factory", "triage"), nil
+}
+
 // DefaultStore returns a Store at ~/.factory/triage/{repoSlug}, creating the directory if needed.
 func DefaultStore(repoSlug string) (*Store, error) {
-	home, err := os.UserHomeDir()
+	base, err := DefaultTriageDir()
 	if err != nil {
 		return nil, fmt.Errorf("get home dir: %w", err)
 	}
-	dir := filepath.Join(home, ".factory", "triage", repoSlug)
+	dir := filepath.Join(base, repoSlug)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
 	}
