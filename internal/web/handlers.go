@@ -20,6 +20,18 @@ type DashboardData struct {
 	Pipelines      []PipelineRow
 	QueueItems     []QueueRowView
 	RecentActivity []ActivityRow
+	TriageRows     []TriageRow
+}
+
+type TriageRow struct {
+	Slug         string // filesystem slug for URL (e.g. "mbrucker-deathcookies")
+	Issue        int
+	Repo         string
+	Status       string
+	CurrentStage string
+	UpdatedAgo   string
+	SessionDot   string
+	IsLive       bool
 }
 
 type PipelineRow struct {
@@ -266,6 +278,32 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	triageStates := s.allTriageStates()
+	// Sort by UpdatedAt descending
+	sort.Slice(triageStates, func(i, j int) bool {
+		return triageStates[i].UpdatedAt > triageStates[j].UpdatedAt
+	})
+	triageRows := make([]TriageRow, 0, len(triageStates))
+	for _, ts := range triageStates {
+		isLive := false
+		if ts.Status == "in_progress" && ts.CurrentSession != "" {
+			if _, err := capturePane(ts.CurrentSession); err == nil {
+				isLive = true
+			}
+		}
+		slug := strings.ReplaceAll(ts.Repo, "/", "-")
+		triageRows = append(triageRows, TriageRow{
+			Slug:         slug,
+			Issue:        ts.Issue,
+			Repo:         ts.Repo,
+			Status:       ts.Status,
+			CurrentStage: ts.CurrentStage,
+			UpdatedAgo:   relTime(ts.UpdatedAt),
+			SessionDot:   s.sessionDot(ts.CurrentSession),
+			IsLive:       isLive,
+		})
+	}
+
 	queueRows := make([]QueueRowView, 0, len(queueItems))
 	for _, q := range queueItems {
 		var pStatus string
@@ -303,6 +341,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Pipelines:      rows,
 		QueueItems:     queueRows,
 		RecentActivity: activityRows,
+		TriageRows:     triageRows,
 	}
 
 	if err := s.dashboardTmpl.ExecuteTemplate(w, "base", data); err != nil {
