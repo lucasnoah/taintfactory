@@ -202,10 +202,18 @@ func (r *Runner) advanceOne(st *TriageState) TriageAction {
 		nextStageID = stageCfg.Outcomes[outcome.Outcome]
 	}
 
+	var stageDuration string
+	if st.StartedAt != "" {
+		if started, err := time.Parse(time.RFC3339, st.StartedAt); err == nil {
+			stageDuration = time.Since(started).Round(time.Second).String()
+		}
+	}
+
 	historyEntry := TriageStageHistoryEntry{
-		Stage:   st.CurrentStage,
-		Outcome: outcome.Outcome,
-		Summary: outcome.Summary,
+		Stage:    st.CurrentStage,
+		Outcome:  outcome.Outcome,
+		Summary:  outcome.Summary,
+		Duration: stageDuration,
 	}
 
 	// "done" or empty means the triage pipeline is complete for this issue.
@@ -214,6 +222,7 @@ func (r *Runner) advanceOne(st *TriageState) TriageAction {
 			s.StageHistory = append(s.StageHistory, historyEntry)
 			s.Status = "completed"
 			s.CurrentSession = ""
+			s.StartedAt = ""
 		}); err != nil {
 			base.Action = "error"
 			base.Message = fmt.Sprintf("mark completed: %v", err)
@@ -311,6 +320,7 @@ func (r *Runner) startStage(issue int, stageID, title, body string) error {
 		st.Status = "in_progress"
 		st.CurrentStage = stageID
 		st.CurrentSession = sessionName
+		st.StartedAt = time.Now().UTC().Format(time.RFC3339)
 	}); err != nil {
 		return fmt.Errorf("update triage state for issue %d: %w", issue, err)
 	}

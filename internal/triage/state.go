@@ -21,6 +21,7 @@ type TriageState struct {
 	CurrentStage   string                    `json:"current_stage"`
 	Status         string                    `json:"status"` // pending, in_progress, completed
 	CurrentSession string                    `json:"current_session,omitempty"`
+	StartedAt      string                    `json:"started_at,omitempty"` // RFC3339 time when current stage started
 	StageHistory   []TriageStageHistoryEntry `json:"stage_history"`
 	UpdatedAt      string                    `json:"updated_at,omitempty"`
 }

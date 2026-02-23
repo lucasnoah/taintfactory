@@ -215,6 +215,14 @@ func (s *Server) routePipeline(w http.ResponseWriter, r *http.Request) {
 func (s *Server) routeTriage(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/triage/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	// Validate slug to prevent path traversal: reject if it contains / \ or starts with .
+	if len(parts) >= 1 {
+		slug := parts[0]
+		if strings.ContainsAny(slug, "/\\") || slug == ".." || strings.HasPrefix(slug, ".") {
+			http.NotFound(w, r)
+			return
+		}
+	}
 	switch {
 	case len(parts) == 2:
 		s.handleTriageDetail(w, r, parts[0], parts[1])
