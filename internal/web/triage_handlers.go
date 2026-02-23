@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/lucasnoah/taintfactory/internal/triage"
 )
@@ -123,5 +125,59 @@ func (s *Server) handleTriageDetail(w http.ResponseWriter, r *http.Request, slug
 
 // handleTriageStream streams the tmux session output for a triage issue via SSE.
 func (s *Server) handleTriageStream(w http.ResponseWriter, r *http.Request, slug, issueStr string) {
-	http.Error(w, "triage stream not yet implemented", http.StatusNotImplemented)
+	issue, err := strconv.Atoi(issueStr)
+	if err != nil {
+		http.Error(w, "invalid issue", http.StatusBadRequest)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	sendDone := func(reason string) {
+		fmt.Fprintf(w, "event: done\ndata: %s\n\n", reason)
+		flusher.Flush()
+	}
+
+	tick := time.NewTicker(2 * time.Second)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-tick.C:
+		}
+
+		store := s.triageStoreFor(slug)
+		ts, err := store.Get(issue)
+		if err != nil {
+			sendDone("triage state not found")
+			return
+		}
+		if ts.CurrentSession == "" {
+			sendDone("no active session")
+			return
+		}
+
+		output, err := capturePane(ts.CurrentSession)
+		if err != nil {
+			sendDone("session ended")
+			return
+		}
+
+		for _, line := range strings.Split(output, "\n") {
+			fmt.Fprintf(w, "data: %s\n", line)
+		}
+		fmt.Fprintf(w, "\n")
+		flusher.Flush()
+	}
 }
