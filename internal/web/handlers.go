@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -235,6 +236,11 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	activity, _ := s.recentActivity(20)
 
+	// Sort pipelines by updated_at descending (most recently active first).
+	sort.Slice(pipelines, func(i, j int) bool {
+		return pipelines[i].UpdatedAt > pipelines[j].UpdatedAt
+	})
+
 	pipelineByIssue := make(map[int]*pipeline.PipelineState)
 	for i := range pipelines {
 		p := &pipelines[i]
@@ -288,10 +294,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Reverse both lists so newest/highest-position items appear first.
-	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
-		rows[i], rows[j] = rows[j], rows[i]
-	}
+	// Reverse queue so highest-position items appear first.
 	for i, j := 0, len(queueRows)-1; i < j; i, j = i+1, j-1 {
 		queueRows[i], queueRows[j] = queueRows[j], queueRows[i]
 	}
