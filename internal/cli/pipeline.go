@@ -17,6 +17,7 @@ import (
 	"github.com/lucasnoah/taintfactory/internal/pipeline"
 	"github.com/lucasnoah/taintfactory/internal/session"
 	"github.com/lucasnoah/taintfactory/internal/stage"
+	"github.com/lucasnoah/taintfactory/internal/triage"
 	"github.com/lucasnoah/taintfactory/internal/worktree"
 	"github.com/spf13/cobra"
 )
@@ -409,6 +410,16 @@ func newOrchestrator() (*orchestrator.Orchestrator, func(), error) {
 	orch := orchestrator.NewOrchestrator(store, database, ghClient, wt, sessions, engine, builder, cfg)
 	orch.SetClaudeFn(github.DefaultClaudeFn)
 	orch.SetProgress(os.Stderr)
+
+	// Attach triage runner if triage.yaml exists in the repo root
+	if triageCfg, err := triage.LoadDefault(repoDir); err == nil {
+		slug := strings.ReplaceAll(triageCfg.Triage.Repo, "/", "-")
+		if triageStore, err := triage.DefaultStore(slug); err == nil {
+			triageRunner := triage.NewRunner(triageCfg, triageStore, database, sessions, ghClient, repoDir)
+			triageRunner.SetProgress(os.Stderr)
+			orch.SetTriageRunner(triageRunner)
+		}
+	}
 
 	cleanup := func() { database.Close() }
 	return orch, cleanup, nil

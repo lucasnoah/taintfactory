@@ -15,21 +15,23 @@ import (
 	"github.com/lucasnoah/taintfactory/internal/pipeline"
 	"github.com/lucasnoah/taintfactory/internal/session"
 	"github.com/lucasnoah/taintfactory/internal/stage"
+	"github.com/lucasnoah/taintfactory/internal/triage"
 	"github.com/lucasnoah/taintfactory/internal/worktree"
 )
 
 // Orchestrator composes pipeline lifecycle operations.
 type Orchestrator struct {
-	store    *pipeline.Store
-	db       *db.DB
-	gh       *github.Client
-	wt       *worktree.Manager
-	sessions *session.Manager
-	engine   *stage.Engine
-	builder  *appctx.Builder
-	cfg      *config.PipelineConfig
-	claudeFn github.LLMFunc
-	progress io.Writer // live progress output; nil = silent
+	store        *pipeline.Store
+	db           *db.DB
+	gh           *github.Client
+	wt           *worktree.Manager
+	sessions     *session.Manager
+	engine       *stage.Engine
+	builder      *appctx.Builder
+	cfg          *config.PipelineConfig
+	claudeFn     github.LLMFunc
+	progress     io.Writer       // live progress output; nil = silent
+	triageRunner *triage.Runner  // optional; nil if no triage.yaml
 }
 
 // NewOrchestrator creates an Orchestrator.
@@ -63,6 +65,11 @@ func (o *Orchestrator) SetClaudeFn(fn github.LLMFunc) {
 // SetProgress sets a writer for live progress output (e.g. os.Stderr).
 func (o *Orchestrator) SetProgress(w io.Writer) {
 	o.progress = w
+}
+
+// SetTriageRunner configures an optional triage runner to advance alongside dev pipelines.
+func (o *Orchestrator) SetTriageRunner(r *triage.Runner) {
+	o.triageRunner = r
 }
 
 // logf prints a progress line if a progress writer is configured.
@@ -681,6 +688,22 @@ func (o *Orchestrator) CheckIn() (*CheckInResult, error) {
 	if !hasActive {
 		if action := o.processQueue(); action != nil {
 			result.Actions = append(result.Actions, *action)
+		}
+	}
+
+	// Advance triage pipelines (if configured)
+	if o.triageRunner != nil {
+		triageActions, err := o.triageRunner.Advance()
+		if err != nil {
+			o.logf("triage advance error: %v", err)
+		}
+		for _, a := range triageActions {
+			result.Actions = append(result.Actions, CheckInAction{
+				Issue:   a.Issue,
+				Action:  "triage:" + a.Action,
+				Stage:   a.Stage,
+				Message: a.Message,
+			})
 		}
 	}
 
