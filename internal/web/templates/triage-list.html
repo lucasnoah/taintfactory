@@ -1,0 +1,26 @@
+{{define "title"}}Triage{{end}}
+{{define "refresh"}}<meta http-equiv="refresh" content="10">{{end}}
+{{define "content"}}
+<h2>Triage Pipelines</h2>
+{{if .TriageRows}}
+<table>
+  <thead><tr><th>Issue</th><th>Repo</th><th>Status</th><th>Stage</th><th>Updated</th></tr></thead>
+  <tbody>
+  {{range .TriageRows}}
+  <tr>
+    <td><a href="/triage/{{.Slug}}/{{.Issue}}">#{{.Issue}}</a></td>
+    <td class="muted" style="font-size:.8rem">{{.Repo}}</td>
+    <td>
+      {{if .SessionDot}}<span class="{{dotClass .SessionDot}}" style="margin-right:.35rem"></span>{{end}}
+      {{if .IsLive}}<span class="badge badge-live">● live</span>{{else}}<span class="{{badgeClass .Status}}">{{.Status}}</span>{{end}}
+    </td>
+    <td class="muted">{{.CurrentStage}}</td>
+    <td class="muted">{{.UpdatedAgo}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="muted">No triage pipelines found.</p>
+{{end}}
+{{end}}

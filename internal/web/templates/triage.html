@@ -3,7 +3,7 @@
 {{define "content"}}
 <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1.25rem;flex-wrap:wrap">
   <h1 style="font-size:1.2rem;font-weight:700">
-    <a href="/" style="color:var(--muted);font-weight:400;font-size:.875rem">← Dashboard</a>
+    <a href="/triage" style="color:var(--muted);font-weight:400;font-size:.875rem">← Triage</a>
     &nbsp;#{{.State.Issue}} <span class="muted" style="font-weight:400;font-size:.9rem">{{.State.Repo}}</span>
     {{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener" style="font-size:.8rem;font-weight:400;margin-left:.4rem" title="Open GitHub issue">↗ GitHub</a>{{end}}
   </h1>

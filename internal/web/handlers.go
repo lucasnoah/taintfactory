@@ -23,6 +23,10 @@ type DashboardData struct {
 	TriageRows     []TriageRow
 }
 
+type TriageListData struct {
+	TriageRows []TriageRow
+}
+
 type TriageRow struct {
 	Slug         string // filesystem slug for URL (e.g. "mbrucker-deathcookies")
 	Issue        int
@@ -278,33 +282,6 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	triageStates := s.allTriageStates()
-	// Sort by UpdatedAt descending
-	sort.Slice(triageStates, func(i, j int) bool {
-		return triageStates[i].UpdatedAt > triageStates[j].UpdatedAt
-	})
-	triageRows := make([]TriageRow, 0, len(triageStates))
-	for _, ts := range triageStates {
-		isLive := false
-		if ts.Status == "in_progress" && ts.CurrentSession != "" {
-			if _, err := capturePane(ts.CurrentSession); err == nil {
-				isLive = true
-			}
-		}
-		// slug must match the on-disk triage directory name under triageDir
-		slug := strings.ReplaceAll(ts.Repo, "/", "-")
-		triageRows = append(triageRows, TriageRow{
-			Slug:         slug,
-			Issue:        ts.Issue,
-			Repo:         ts.Repo,
-			Status:       ts.Status,
-			CurrentStage: ts.CurrentStage,
-			UpdatedAgo:   relTime(ts.UpdatedAt),
-			SessionDot:   s.sessionDot(ts.CurrentSession),
-			IsLive:       isLive,
-		})
-	}
-
 	queueRows := make([]QueueRowView, 0, len(queueItems))
 	for _, q := range queueItems {
 		var pStatus string
@@ -338,6 +315,42 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		queueRows[i], queueRows[j] = queueRows[j], queueRows[i]
 	}
 
+	// Collect active/recent triage states (in_progress first, then recently completed).
+	triageStates := s.allTriageStates()
+	sort.Slice(triageStates, func(i, j int) bool {
+		// in_progress before completed; within same status, most-recently-updated first
+		si, sj := triageStates[i].Status, triageStates[j].Status
+		if si != sj {
+			if si == "in_progress" {
+				return true
+			}
+			if sj == "in_progress" {
+				return false
+			}
+		}
+		return triageStates[i].UpdatedAt > triageStates[j].UpdatedAt
+	})
+	triageRows := make([]TriageRow, 0, len(triageStates))
+	for _, ts := range triageStates {
+		isLive := false
+		if ts.Status == "in_progress" && ts.CurrentSession != "" {
+			if _, err := capturePane(ts.CurrentSession); err == nil {
+				isLive = true
+			}
+		}
+		slug := strings.ReplaceAll(ts.Repo, "/", "-")
+		triageRows = append(triageRows, TriageRow{
+			Slug:         slug,
+			Issue:        ts.Issue,
+			Repo:         ts.Repo,
+			Status:       ts.Status,
+			CurrentStage: ts.CurrentStage,
+			UpdatedAgo:   relTime(ts.UpdatedAt),
+			SessionDot:   s.sessionDot(ts.CurrentSession),
+			IsLive:       isLive,
+		})
+	}
+
 	data := DashboardData{
 		Pipelines:      rows,
 		QueueItems:     queueRows,
@@ -346,6 +359,40 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.dashboardTmpl.ExecuteTemplate(w, "base", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// ---- Triage List ----
+
+func (s *Server) handleTriageList(w http.ResponseWriter, r *http.Request) {
+	triageStates := s.allTriageStates()
+	sort.Slice(triageStates, func(i, j int) bool {
+		return triageStates[i].UpdatedAt > triageStates[j].UpdatedAt
+	})
+	rows := make([]TriageRow, 0, len(triageStates))
+	for _, ts := range triageStates {
+		isLive := false
+		if ts.Status == "in_progress" && ts.CurrentSession != "" {
+			if _, err := capturePane(ts.CurrentSession); err == nil {
+				isLive = true
+			}
+		}
+		// slug must match the on-disk triage directory name under triageDir
+		slug := strings.ReplaceAll(ts.Repo, "/", "-")
+		rows = append(rows, TriageRow{
+			Slug:         slug,
+			Issue:        ts.Issue,
+			Repo:         ts.Repo,
+			Status:       ts.Status,
+			CurrentStage: ts.CurrentStage,
+			UpdatedAgo:   relTime(ts.UpdatedAt),
+			SessionDot:   s.sessionDot(ts.CurrentSession),
+			IsLive:       isLive,
+		})
+	}
+	data := TriageListData{TriageRows: rows}
+	if err := s.triageListTmpl.ExecuteTemplate(w, "base", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }

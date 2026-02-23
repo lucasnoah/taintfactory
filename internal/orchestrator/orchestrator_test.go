@@ -1606,9 +1606,10 @@ func TestAdvance_MergeStage_HappyPath(t *testing.T) {
 	}
 	env := setupTest(t, cfg)
 
-	// Mock responses: fetch, rebase, push (force-with-lease), FindPRByBranch, CreatePR, MergePR
+	// Mock responses: fetch, stash, rebase, push (force-with-lease), FindPRByBranch, CreatePR, MergePR
 	env.ghCmd.results = []mockCmdResult{
 		{output: ""},                          // fetch origin main
+		{output: "No local changes to save"},  // stash (nothing to stash)
 		{output: ""},                          // rebase origin/main (clean)
 		{output: ""},                          // push --force-with-lease
 		{output: "[]"},                        // FindPRByBranch (no existing PR)
@@ -1639,27 +1640,30 @@ func TestAdvance_MergeStage_HappyPath(t *testing.T) {
 		t.Errorf("expected status 'completed', got %q", ps.Status)
 	}
 
-	// Verify the right commands were called: fetch, rebase, push, pr list, pr create, pr merge
-	if len(env.ghCmd.calls) != 6 {
-		t.Fatalf("expected 6 calls, got %d: %v", len(env.ghCmd.calls), env.ghCmd.calls)
+	// Verify the right commands were called: fetch, stash, rebase, push, pr list, pr create, pr merge
+	if len(env.ghCmd.calls) != 7 {
+		t.Fatalf("expected 7 calls, got %d: %v", len(env.ghCmd.calls), env.ghCmd.calls)
 	}
 	if env.ghCmd.calls[0][0] != "fetch" {
 		t.Errorf("expected call[0] to be fetch, got %v", env.ghCmd.calls[0])
 	}
-	if env.ghCmd.calls[1][0] != "rebase" {
-		t.Errorf("expected call[1] to be rebase, got %v", env.ghCmd.calls[1])
+	if env.ghCmd.calls[1][0] != "stash" {
+		t.Errorf("expected call[1] to be stash, got %v", env.ghCmd.calls[1])
 	}
-	if env.ghCmd.calls[2][0] != "push" {
-		t.Errorf("expected call[2] to be push, got %v", env.ghCmd.calls[2])
+	if env.ghCmd.calls[2][0] != "rebase" {
+		t.Errorf("expected call[2] to be rebase, got %v", env.ghCmd.calls[2])
 	}
-	if env.ghCmd.calls[3][0] != "pr" || env.ghCmd.calls[3][1] != "list" {
-		t.Errorf("expected call[3] to be pr list, got %v", env.ghCmd.calls[3])
+	if env.ghCmd.calls[3][0] != "push" {
+		t.Errorf("expected call[3] to be push, got %v", env.ghCmd.calls[3])
 	}
-	if env.ghCmd.calls[4][0] != "pr" || env.ghCmd.calls[4][1] != "create" {
-		t.Errorf("expected call[4] to be pr create, got %v", env.ghCmd.calls[4])
+	if env.ghCmd.calls[4][0] != "pr" || env.ghCmd.calls[4][1] != "list" {
+		t.Errorf("expected call[4] to be pr list, got %v", env.ghCmd.calls[4])
 	}
-	if env.ghCmd.calls[5][0] != "pr" || env.ghCmd.calls[5][1] != "merge" {
-		t.Errorf("expected call[5] to be pr merge, got %v", env.ghCmd.calls[5])
+	if env.ghCmd.calls[5][0] != "pr" || env.ghCmd.calls[5][1] != "create" {
+		t.Errorf("expected call[5] to be pr create, got %v", env.ghCmd.calls[5])
+	}
+	if env.ghCmd.calls[6][0] != "pr" || env.ghCmd.calls[6][1] != "merge" {
+		t.Errorf("expected call[6] to be pr merge, got %v", env.ghCmd.calls[6])
 	}
 }
 
@@ -1673,9 +1677,10 @@ func TestAdvance_MergeStage_PushFails(t *testing.T) {
 	}
 	env := setupTest(t, cfg)
 
-	// Push fails (fetch and rebase succeed first)
+	// Push fails (fetch, stash, and rebase succeed first)
 	env.ghCmd.results = []mockCmdResult{
 		{output: ""},                                          // fetch origin main
+		{output: "No local changes to save"},                  // stash (nothing to stash)
 		{output: ""},                                          // rebase origin/main (clean)
 		{output: "error", err: fmt.Errorf("push rejected")},  // push fails
 	}
@@ -1713,6 +1718,7 @@ func TestAdvance_MergeStage_DefaultStrategy(t *testing.T) {
 
 	env.ghCmd.results = []mockCmdResult{
 		{output: ""},                          // fetch origin main
+		{output: "No local changes to save"},  // stash (nothing to stash)
 		{output: ""},                          // rebase origin/main (clean)
 		{output: ""},                          // push --force-with-lease
 		{output: "[]"},                        // FindPRByBranch (no existing PR)
@@ -1735,7 +1741,7 @@ func TestAdvance_MergeStage_DefaultStrategy(t *testing.T) {
 	}
 
 	// Verify merge was called with --squash (default)
-	mergeCall := env.ghCmd.calls[5]
+	mergeCall := env.ghCmd.calls[6]
 	foundSquash := false
 	for _, arg := range mergeCall {
 		if arg == "--squash" {
@@ -1757,9 +1763,10 @@ func TestAdvance_MergeStage_CreatePRFails(t *testing.T) {
 	}
 	env := setupTest(t, cfg)
 
-	// Fetch and rebase succeed, push succeeds, FindPRByBranch returns none, CreatePR fails
+	// Fetch, stash, and rebase succeed, push succeeds, FindPRByBranch returns none, CreatePR fails
 	env.ghCmd.results = []mockCmdResult{
 		{output: ""},                                     // fetch origin main
+		{output: "No local changes to save"},             // stash (nothing to stash)
 		{output: ""},                                     // rebase origin/main (clean)
 		{output: ""},                                     // push --force-with-lease
 		{output: "[]"},                                   // FindPRByBranch (no existing PR)
@@ -1799,6 +1806,7 @@ func TestAdvance_MergeStage_ReusesExistingPR(t *testing.T) {
 	// Fetch and rebase succeed, push succeeds, FindPRByBranch finds existing PR, skip CreatePR, MergePR
 	env.ghCmd.results = []mockCmdResult{
 		{output: ""},                                                // fetch origin main
+		{output: "No local changes to save"},                       // stash (nothing to stash)
 		{output: ""},                                                // rebase origin/main (clean)
 		{output: ""},                                                // push --force-with-lease
 		{output: `[{"url":"https://github.com/org/repo/pull/99"}]`}, // FindPRByBranch (existing PR)
@@ -1822,24 +1830,27 @@ func TestAdvance_MergeStage_ReusesExistingPR(t *testing.T) {
 		t.Errorf("expected outcome 'success', got %q", result.Outcome)
 	}
 
-	// Verify CreatePR was NOT called: fetch, rebase, push, pr list, pr merge
-	if len(env.ghCmd.calls) != 5 {
-		t.Fatalf("expected 5 calls (fetch, rebase, push, pr list, pr merge), got %d: %v", len(env.ghCmd.calls), env.ghCmd.calls)
+	// Verify CreatePR was NOT called: fetch, stash, rebase, push, pr list, pr merge
+	if len(env.ghCmd.calls) != 6 {
+		t.Fatalf("expected 6 calls (fetch, stash, rebase, push, pr list, pr merge), got %d: %v", len(env.ghCmd.calls), env.ghCmd.calls)
 	}
 	if env.ghCmd.calls[0][0] != "fetch" {
 		t.Errorf("expected call[0] to be fetch, got %v", env.ghCmd.calls[0])
 	}
-	if env.ghCmd.calls[1][0] != "rebase" {
-		t.Errorf("expected call[1] to be rebase, got %v", env.ghCmd.calls[1])
+	if env.ghCmd.calls[1][0] != "stash" {
+		t.Errorf("expected call[1] to be stash, got %v", env.ghCmd.calls[1])
 	}
-	if env.ghCmd.calls[2][0] != "push" {
-		t.Errorf("expected call[2] to be push, got %v", env.ghCmd.calls[2])
+	if env.ghCmd.calls[2][0] != "rebase" {
+		t.Errorf("expected call[2] to be rebase, got %v", env.ghCmd.calls[2])
 	}
-	if env.ghCmd.calls[3][0] != "pr" || env.ghCmd.calls[3][1] != "list" {
-		t.Errorf("expected call[3] to be pr list, got %v", env.ghCmd.calls[3])
+	if env.ghCmd.calls[3][0] != "push" {
+		t.Errorf("expected call[3] to be push, got %v", env.ghCmd.calls[3])
 	}
-	if env.ghCmd.calls[4][0] != "pr" || env.ghCmd.calls[4][1] != "merge" {
-		t.Errorf("expected call[4] to be pr merge (not create), got %v", env.ghCmd.calls[4])
+	if env.ghCmd.calls[4][0] != "pr" || env.ghCmd.calls[4][1] != "list" {
+		t.Errorf("expected call[4] to be pr list, got %v", env.ghCmd.calls[4])
+	}
+	if env.ghCmd.calls[5][0] != "pr" || env.ghCmd.calls[5][1] != "merge" {
+		t.Errorf("expected call[5] to be pr merge (not create), got %v", env.ghCmd.calls[5])
 	}
 }
 
@@ -1853,9 +1864,10 @@ func TestAdvance_MergeStage_RebaseConflict(t *testing.T) {
 	}
 	env := setupTest(t, cfg)
 
-	// Fetch succeeds, rebase reports conflict, abort succeeds
+	// Fetch succeeds, stash (nothing), rebase reports conflict, abort succeeds
 	env.ghCmd.results = []mockCmdResult{
 		{output: ""},                                                              // fetch origin main
+		{output: "No local changes to save"},                                     // stash (nothing to stash)
 		{output: "CONFLICT (add/add): Merge conflict in foo.go", err: fmt.Errorf("exit status 1")}, // rebase conflicts
 		{output: ""},                                                              // rebase --abort
 	}
@@ -1874,12 +1886,12 @@ func TestAdvance_MergeStage_RebaseConflict(t *testing.T) {
 		t.Errorf("expected outcome 'fail' on rebase conflict, got %q", result.Outcome)
 	}
 
-	// Verify rebase --abort was called (call[2])
-	if len(env.ghCmd.calls) != 3 {
-		t.Fatalf("expected 3 calls (fetch, rebase, rebase --abort), got %d: %v", len(env.ghCmd.calls), env.ghCmd.calls)
+	// Verify rebase --abort was called (call[3])
+	if len(env.ghCmd.calls) != 4 {
+		t.Fatalf("expected 4 calls (fetch, stash, rebase, rebase --abort), got %d: %v", len(env.ghCmd.calls), env.ghCmd.calls)
 	}
-	if env.ghCmd.calls[2][0] != "rebase" || env.ghCmd.calls[2][1] != "--abort" {
-		t.Errorf("expected call[2] to be 'rebase --abort', got %v", env.ghCmd.calls[2])
+	if env.ghCmd.calls[3][0] != "rebase" || env.ghCmd.calls[3][1] != "--abort" {
+		t.Errorf("expected call[3] to be 'rebase --abort', got %v", env.ghCmd.calls[3])
 	}
 
 	// Pipeline should be retrying (not stuck at attempt 1)

@@ -270,13 +270,26 @@ func (c *Client) RebaseOntoMain(dir string) (conflicted bool, err error) {
 	if _, err := c.git.RunGit(dir, "fetch", "origin", "main"); err != nil {
 		return false, fmt.Errorf("fetch origin main: %w", err)
 	}
+
+	// Stash any uncommitted changes so the rebase doesn't refuse to start.
+	// Common cause: setup steps (npm install, go mod download) leave modified
+	// lock files that were never committed.
+	stashOut, _ := c.git.RunGit(dir, "stash", "--include-untracked")
+	stashed := !strings.Contains(stashOut, "No local changes to save")
+
 	out, rebaseErr := c.git.RunGit(dir, "rebase", "origin/main")
 	if rebaseErr == nil {
+		if stashed {
+			_, _ = c.git.RunGit(dir, "stash", "pop")
+		}
 		return false, nil
 	}
 	// Distinguish conflict failures from other errors (permission denied, bad ref, etc.)
 	if strings.Contains(out, "CONFLICT") || strings.Contains(out, "conflict") {
 		_, _ = c.git.RunGit(dir, "rebase", "--abort")
+		if stashed {
+			_, _ = c.git.RunGit(dir, "stash", "pop")
+		}
 		return true, nil
 	}
 	return false, fmt.Errorf("rebase onto origin/main: %w", rebaseErr)

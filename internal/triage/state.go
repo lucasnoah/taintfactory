@@ -51,6 +51,11 @@ func NewStore(baseDir string) *Store {
 	return &Store{baseDir: baseDir}
 }
 
+// BaseDir returns the base directory for this store.
+func (s *Store) BaseDir() string {
+	return s.baseDir
+}
+
 // DefaultTriageDir returns the base directory for triage state (~/.factory/triage).
 func DefaultTriageDir() (string, error) {
 	home, err := os.UserHomeDir()

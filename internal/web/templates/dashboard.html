@@ -28,25 +28,6 @@
     <p class="muted">No pipelines found.</p>
     {{end}}
 
-    {{if .TriageRows}}
-    <h2>Triage</h2>
-    <table>
-      <thead><tr><th>Issue</th><th>Repo</th><th>Status</th><th>Stage</th><th>Updated</th></tr></thead>
-      <tbody>
-      {{range .TriageRows}}
-      <tr>
-        <td><a href="/triage/{{.Slug}}/{{.Issue}}">#{{.Issue}}</a></td>
-        <td class="muted" style="font-size:.8rem">{{.Repo}}</td>
-        <td>
-          {{if .IsLive}}<span class="badge badge-live">● live</span>{{else}}<span class="{{badgeClass .Status}}">{{.Status}}</span>{{end}}
-        </td>
-        <td class="muted">{{.CurrentStage}}</td>
-        <td class="muted">{{.UpdatedAgo}}</td>
-      </tr>
-      {{end}}
-      </tbody>
-    </table>
-    {{end}}
   </div>
 
   <div>
@@ -67,6 +48,28 @@
     {{end}}
   </div>
 </div>
+
+<h2>Triage <a href="/triage" style="font-size:.75rem;font-weight:400;margin-left:.5rem">view all →</a></h2>
+{{if .TriageRows}}
+<table>
+  <thead><tr><th>Repo</th><th>Issue</th><th>Status</th><th>Stage</th><th>Updated</th></tr></thead>
+  <tbody>
+  {{range .TriageRows}}
+  <tr>
+    <td class="muted" style="font-size:.8rem">{{.Repo}}</td>
+    <td><a href="/triage/{{.Slug}}/{{.Issue}}">#{{.Issue}}</a></td>
+    <td>
+      {{if .IsLive}}<span class="badge badge-live">● live</span>{{else}}<span class="{{badgeClass .Status}}">{{.Status}}</span>{{end}}
+    </td>
+    <td class="muted">{{.CurrentStage}}</td>
+    <td class="muted">{{.UpdatedAgo}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="muted">No triage activity yet.</p>
+{{end}}
 
 <h2>Recent Activity</h2>
 {{if .RecentActivity}}

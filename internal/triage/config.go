@@ -25,6 +25,9 @@ type TriageStage struct {
 	ID             string            `yaml:"id"`
 	PromptTemplate string            `yaml:"prompt_template"` // optional override path relative to repo root
 	Timeout        string            `yaml:"timeout"`
+	Model          string            `yaml:"model"`  // claude model override, e.g. "claude-sonnet-4-6"; empty = CLI default
+	Mode           string            `yaml:"mode"`   // execution mode: "" (default interactive) or "print" (synchronous, no tmux session)
+	Label          string            `yaml:"label"`  // GitHub label to add when outcome is "yes"; empty = no label
 	Outcomes       map[string]string `yaml:"outcomes"` // e.g. {"stale": "done", "clean": "already_implemented"}
 }
 

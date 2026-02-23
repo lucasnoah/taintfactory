@@ -1,12 +1,18 @@
 package triage
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"text/template"
 	"time"
 
@@ -30,7 +36,7 @@ var defaultTemplates = map[string]string{
 type TriageAction struct {
 	Issue   int
 	Stage   string
-	Action  string // "skip", "advance", "completed", "error"
+	Action  string // "skip", "advance", "completed", "error", "started"
 	Message string
 }
 
@@ -49,11 +55,19 @@ type Runner struct {
 	repoRoot string
 	progress io.Writer
 	bootWait time.Duration // defaults to 15s; set to 0 in tests
+
+	// printExec executes claude --print for a stage and returns stdout.
+	// Defaults to the real exec.Command implementation; overridable in tests.
+	printExec func(stageCfg *TriageStage, prompt string) (string, error)
+
+	// labelExec applies a GitHub label to an issue.
+	// Defaults to the real gh CLI implementation; overridable in tests.
+	labelExec func(repo string, issue int, label string) error
 }
 
 // NewRunner creates a new Runner. bootWait defaults to 15s.
 func NewRunner(cfg *TriageConfig, store *Store, database *db.DB, sessions *session.Manager, gh GHClient, repoRoot string) *Runner {
-	return &Runner{
+	r := &Runner{
 		cfg:      cfg,
 		store:    store,
 		db:       database,
@@ -62,6 +76,9 @@ func NewRunner(cfg *TriageConfig, store *Store, database *db.DB, sessions *sessi
 		repoRoot: repoRoot,
 		bootWait: 15 * time.Second,
 	}
+	r.printExec = r.defaultExecPrint
+	r.labelExec = r.defaultApplyLabel
+	return r
 }
 
 // SetProgress sets the writer for progress logging.
@@ -114,6 +131,13 @@ func (r *Runner) Enqueue(issue int, issueTitle, issueBody string) error {
 		return nil
 	}
 
+	stageCfg := r.cfg.StageByID(firstStage)
+	if stageCfg != nil && stageCfg.Mode == "print" {
+		// Print-mode: run synchronously inline (no tmux session needed).
+		r.runPrintStage(st)
+		return nil
+	}
+
 	if err := r.startStage(issue, firstStage, issueTitle, issueBody); err != nil {
 		return fmt.Errorf("start first stage for issue %d: %w", issue, err)
 	}
@@ -121,39 +145,105 @@ func (r *Runner) Enqueue(issue int, issueTitle, issueBody string) error {
 	return nil
 }
 
-// Advance processes at most ONE triage pipeline per call (serial execution).
-// If a pipeline is in_progress, it advances that one. If none is active, it
-// starts the next pending pipeline.
-func (r *Runner) Advance() ([]TriageAction, error) {
-	// Check for an active pipeline first.
-	active, err := r.store.List("in_progress")
-	if err != nil {
-		return nil, fmt.Errorf("list in_progress triage states: %w", err)
-	}
-	if len(active) > 0 {
-		action := r.advanceOne(&active[0])
-		return []TriageAction{action}, nil
+// acquireAdvanceLock creates an exclusive lock file in baseDir to prevent two
+// concurrent Advance() calls from processing the same stages simultaneously.
+// Returns a release function and nil on success, or an error if the lock is
+// already held. Stale lock files (> 30 min old) are removed automatically.
+func acquireAdvanceLock(baseDir string) (release func(), err error) {
+	lockPath := filepath.Join(baseDir, ".advance.lock")
+
+	// Remove stale locks (e.g. from a crash).
+	if info, statErr := os.Stat(lockPath); statErr == nil {
+		if time.Since(info.ModTime()) > 30*time.Minute {
+			_ = os.Remove(lockPath)
+		}
 	}
 
-	// No active pipeline — start the next pending one.
-	pending, err := r.store.List("pending")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("list pending triage states: %w", err)
+		if os.IsExist(err) {
+			return nil, fmt.Errorf("advance lock already held")
+		}
+		return nil, fmt.Errorf("acquire advance lock: %w", err)
 	}
-	if len(pending) == 0 {
+	f.Close()
+
+	return func() { os.Remove(lockPath) }, nil
+}
+
+// Advance processes at most one triage pipeline per call for async stages.
+// Print-mode stages chain and run to completion within a single call.
+func (r *Runner) Advance() ([]TriageAction, error) {
+	release, err := acquireAdvanceLock(r.store.BaseDir())
+	if err != nil {
+		r.logf("advance: %v — skipping this check-in", err)
 		return nil, nil
 	}
+	defer release()
 
-	next := &pending[0]
-	issueData, err := r.gh.GetIssue(next.Issue)
-	if err != nil {
-		return []TriageAction{{Issue: next.Issue, Stage: next.CurrentStage, Action: "error", Message: fmt.Sprintf("fetch issue: %v", err)}}, nil
+	var actions []TriageAction
+
+	for {
+		// Check for an in_progress pipeline.
+		active, err := r.store.List("in_progress")
+		if err != nil {
+			return actions, fmt.Errorf("list in_progress triage states: %w", err)
+		}
+
+		if len(active) > 0 {
+			st := &active[0]
+			stageCfg := r.cfg.StageByID(st.CurrentStage)
+
+			// Print-mode stage with no active session: run synchronously.
+			if stageCfg != nil && stageCfg.Mode == "print" && st.CurrentSession == "" {
+				action := r.runPrintStage(st)
+				actions = append(actions, action)
+				if action.Action == "error" || action.Action == "completed" {
+					return actions, nil
+				}
+				// Loop: the next stage might also be print-mode.
+				continue
+			}
+
+			// Async stage: advance as normal (one stage per call).
+			action := r.advanceOne(st)
+			return append(actions, action), nil
+		}
+
+		// No in_progress pipeline — start the next pending one.
+		pending, err := r.store.List("pending")
+		if err != nil {
+			return actions, fmt.Errorf("list pending triage states: %w", err)
+		}
+		if len(pending) == 0 {
+			return actions, nil
+		}
+
+		next := &pending[0]
+		stageCfg := r.cfg.StageByID(next.CurrentStage)
+
+		// Print-mode first stage: run immediately without creating a session.
+		if stageCfg != nil && stageCfg.Mode == "print" {
+			action := r.runPrintStage(next)
+			actions = append(actions, action)
+			if action.Action == "error" || action.Action == "completed" {
+				return actions, nil
+			}
+			// Loop: next stage might also be print-mode.
+			continue
+		}
+
+		// Async first stage: fetch issue and start session.
+		issueData, err := r.gh.GetIssue(next.Issue)
+		if err != nil {
+			return append(actions, TriageAction{Issue: next.Issue, Stage: next.CurrentStage, Action: "error", Message: fmt.Sprintf("fetch issue: %v", err)}), nil
+		}
+		if err := r.startStage(next.Issue, next.CurrentStage, issueData.Title, issueData.Body); err != nil {
+			return append(actions, TriageAction{Issue: next.Issue, Stage: next.CurrentStage, Action: "error", Message: fmt.Sprintf("start stage: %v", err)}), nil
+		}
+		r.logf("triage issue %d: started from queue", next.Issue)
+		return append(actions, TriageAction{Issue: next.Issue, Stage: next.CurrentStage, Action: "started", Message: "dequeued from pending"}), nil
 	}
-	if err := r.startStage(next.Issue, next.CurrentStage, issueData.Title, issueData.Body); err != nil {
-		return []TriageAction{{Issue: next.Issue, Stage: next.CurrentStage, Action: "error", Message: fmt.Sprintf("start stage: %v", err)}}, nil
-	}
-	r.logf("triage issue %d: started from queue", next.Issue)
-	return []TriageAction{{Issue: next.Issue, Stage: next.CurrentStage, Action: "started", Message: "dequeued from pending"}}, nil
 }
 
 // advanceOne checks a single in_progress triage state and advances it if ready.
@@ -234,14 +324,32 @@ func (r *Runner) advanceOne(st *TriageState) TriageAction {
 		return base
 	}
 
-	// 6. Route to next stage — append history + advance stage in one update,
-	// then fetch fresh issue data and start the next stage.
+	// 6. Kill the old session before starting the next stage.
+	if st.CurrentSession != "" {
+		if _, err := r.sessions.Kill(st.CurrentSession); err != nil {
+			r.logf("triage issue %d: warning: kill old session %s: %v", st.Issue, st.CurrentSession, err)
+		}
+	}
+
+	// Update history and advance to next stage.
 	if err := r.store.Update(st.Issue, func(s *TriageState) {
 		s.StageHistory = append(s.StageHistory, historyEntry)
 		s.CurrentStage = nextStageID
+		s.CurrentSession = ""
+		s.StartedAt = ""
 	}); err != nil {
 		base.Action = "error"
 		base.Message = fmt.Sprintf("update history and stage: %v", err)
+		return base
+	}
+
+	// 7. If the next stage is print-mode, don't start a session.
+	// Advance() will pick it up and run it synchronously on the next loop iteration.
+	nextStageCfg := r.cfg.StageByID(nextStageID)
+	if nextStageCfg != nil && nextStageCfg.Mode == "print" {
+		r.logf("triage issue %d: queued print stage %s (outcome=%s)", st.Issue, nextStageID, outcome.Outcome)
+		base.Action = "advance"
+		base.Message = fmt.Sprintf("→ %s (outcome=%s)", nextStageID, outcome.Outcome)
 		return base
 	}
 
@@ -294,11 +402,13 @@ func (r *Runner) startStage(issue int, stageID, title, body string) error {
 	// 3. Create the tmux session.
 	sessionName := fmt.Sprintf("triage-%d-%s", issue, stageID)
 	opts := session.CreateOpts{
-		Name:    sessionName,
-		Workdir: r.repoRoot,
-		Flags:   "--dangerously-skip-permissions",
-		Issue:   issue,
-		Stage:   stageID,
+		Name:        sessionName,
+		Workdir:     r.repoRoot,
+		Flags:       "--dangerously-skip-permissions",
+		Model:       stageCfg.Model,
+		Issue:       issue,
+		Stage:       stageID,
+		Interactive: true,
 	}
 	if err := r.sessions.Create(opts); err != nil {
 		return fmt.Errorf("create session %s: %w", sessionName, err)
@@ -327,6 +437,138 @@ func (r *Runner) startStage(issue int, stageID, title, body string) error {
 
 	r.logf("triage issue %d: started stage %s in session %s", issue, stageID, sessionName)
 	return nil
+}
+
+// runPrintStage executes a print-mode stage synchronously using claude --print.
+// It renders the prompt, runs the command, parses stdout as the outcome JSON,
+// writes the outcome file for audit, applies any configured GitHub label, and
+// advances (or completes) the triage state — all in one call.
+func (r *Runner) runPrintStage(st *TriageState) TriageAction {
+	base := TriageAction{Issue: st.Issue, Stage: st.CurrentStage}
+
+	stageCfg := r.cfg.StageByID(st.CurrentStage)
+	if stageCfg == nil {
+		base.Action = "error"
+		base.Message = fmt.Sprintf("stage %q not found in config", st.CurrentStage)
+		return base
+	}
+
+	// Record when this stage started.
+	stageStart := time.Now().UTC()
+
+	// Mark in_progress with a fresh StartedAt for this stage.
+	if err := r.store.Update(st.Issue, func(s *TriageState) {
+		s.Status = "in_progress"
+		s.CurrentSession = ""
+		s.StartedAt = stageStart.Format(time.RFC3339)
+	}); err != nil {
+		base.Action = "error"
+		base.Message = fmt.Sprintf("mark in_progress: %v", err)
+		return base
+	}
+
+	// Fetch issue data for template rendering.
+	var issueTitle, issueBody string
+	if r.gh != nil {
+		ghIssue, err := r.gh.GetIssue(st.Issue)
+		if err != nil {
+			base.Action = "error"
+			base.Message = fmt.Sprintf("fetch issue: %v", err)
+			return base
+		}
+		issueTitle = ghIssue.Title
+		issueBody = ghIssue.Body
+	}
+
+	// Ensure outcome directory and compute output path.
+	if err := r.store.EnsureOutcomeDir(st.Issue); err != nil {
+		base.Action = "error"
+		base.Message = fmt.Sprintf("ensure outcome dir: %v", err)
+		return base
+	}
+	outPath := r.store.OutcomePath(st.Issue, st.CurrentStage)
+
+	// Render the prompt template.
+	prompt, err := r.renderPrompt(st.Issue, stageCfg, issueTitle, issueBody, outPath)
+	if err != nil {
+		base.Action = "error"
+		base.Message = fmt.Sprintf("render prompt: %v", err)
+		return base
+	}
+
+	r.logf("triage issue %d: running print stage %s", st.Issue, st.CurrentStage)
+
+	// Execute claude --print.
+	stdout, err := r.printExec(stageCfg, prompt)
+	if err != nil {
+		base.Action = "error"
+		base.Message = fmt.Sprintf("exec print: %v", err)
+		return base
+	}
+
+	// Parse the outcome from stdout.
+	outcome, err := parseOutcomeFromOutput(stdout)
+	if err != nil {
+		base.Action = "error"
+		base.Message = fmt.Sprintf("parse outcome: %v (output: %.200s)", err, stdout)
+		return base
+	}
+
+	// Write outcome file for audit trail.
+	if data, jsonErr := json.Marshal(outcome); jsonErr == nil {
+		_ = os.WriteFile(outPath, data, 0o644)
+	}
+
+	// Apply GitHub label if configured and outcome is affirmative.
+	if stageCfg.Label != "" && outcome.Outcome == "yes" {
+		if labelErr := r.labelExec(st.Repo, st.Issue, stageCfg.Label); labelErr != nil {
+			r.logf("triage issue %d stage %s: warning: apply label %q: %v", st.Issue, st.CurrentStage, stageCfg.Label, labelErr)
+		}
+	}
+
+	// Determine next stage and compute duration.
+	nextStageID := stageCfg.Outcomes[outcome.Outcome]
+	stageDuration := time.Since(stageStart).Round(time.Second).String()
+
+	historyEntry := TriageStageHistoryEntry{
+		Stage:    st.CurrentStage,
+		Outcome:  outcome.Outcome,
+		Summary:  outcome.Summary,
+		Duration: stageDuration,
+	}
+
+	if nextStageID == "" || nextStageID == "done" {
+		if err := r.store.Update(st.Issue, func(s *TriageState) {
+			s.StageHistory = append(s.StageHistory, historyEntry)
+			s.Status = "completed"
+			s.CurrentSession = ""
+			s.StartedAt = ""
+		}); err != nil {
+			base.Action = "error"
+			base.Message = fmt.Sprintf("mark completed: %v", err)
+			return base
+		}
+		r.logf("triage issue %d stage %s: completed (outcome=%s)", st.Issue, st.CurrentStage, outcome.Outcome)
+		base.Action = "completed"
+		base.Message = fmt.Sprintf("outcome=%s", outcome.Outcome)
+		return base
+	}
+
+	if err := r.store.Update(st.Issue, func(s *TriageState) {
+		s.StageHistory = append(s.StageHistory, historyEntry)
+		s.CurrentStage = nextStageID
+		s.CurrentSession = ""
+		s.StartedAt = ""
+	}); err != nil {
+		base.Action = "error"
+		base.Message = fmt.Sprintf("advance state: %v", err)
+		return base
+	}
+
+	r.logf("triage issue %d: advanced to stage %s (outcome=%s)", st.Issue, nextStageID, outcome.Outcome)
+	base.Action = "advance"
+	base.Message = fmt.Sprintf("→ %s (outcome=%s)", nextStageID, outcome.Outcome)
+	return base
 }
 
 // renderPrompt renders the prompt template for the given issue and stage.
@@ -369,4 +611,134 @@ func (r *Runner) renderPrompt(issue int, stageCfg *TriageStage, title, body, out
 	}
 
 	return buf.String(), nil
+}
+
+// parseOutcomeFromOutput extracts a TriageOutcome from claude --print stdout.
+// It tries the full trimmed output first, then scans lines in reverse for the
+// last line that parses as valid JSON with a non-empty "outcome" field.
+func parseOutcomeFromOutput(output string) (*TriageOutcome, error) {
+	trimmed := strings.TrimSpace(output)
+
+	// Fast path: entire output is clean JSON.
+	var outcome TriageOutcome
+	if err := json.Unmarshal([]byte(trimmed), &outcome); err == nil && outcome.Outcome != "" {
+		return &outcome, nil
+	}
+
+	// Scan lines in reverse for the last valid outcome JSON.
+	lines := strings.Split(trimmed, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		var o TriageOutcome
+		if err := json.Unmarshal([]byte(line), &o); err == nil && o.Outcome != "" {
+			return &o, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no valid outcome JSON found in output (%.200s)", trimmed)
+}
+
+// defaultExecPrint is the real implementation of printExec: runs claude --print
+// as a subprocess with the prompt as a positional argument and returns stdout.
+func (r *Runner) defaultExecPrint(stageCfg *TriageStage, prompt string) (string, error) {
+	timeout := 15 * time.Minute
+	if stageCfg.Timeout != "" {
+		if d, err := time.ParseDuration(stageCfg.Timeout); err == nil {
+			timeout = d
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// Build args: [--model <m>] --dangerously-skip-permissions --print <prompt>
+	args := []string{"--dangerously-skip-permissions", "--print", prompt}
+	if stageCfg.Model != "" {
+		args = append([]string{"--model", stageCfg.Model}, args...)
+	}
+
+	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd.Env = buildClaudeEnv()
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("claude --print: %w (stderr: %s)", err, stderr.String())
+	}
+
+	return stdout.String(), nil
+}
+
+// buildClaudeEnv returns an environment for running claude as a subprocess:
+// CLAUDECODE is removed (allows nested sessions) and CLAUDE_CODE_OAUTH_TOKEN
+// is injected from ~/.factory/.env if not already set.
+func buildClaudeEnv() []string {
+	var env []string
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "CLAUDECODE=") {
+			continue // must unset to allow nested claude sessions
+		}
+		env = append(env, e)
+	}
+	// Inject OAuth token from .env file if not already in environment.
+	if os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") == "" {
+		if token := readFactoryEnvToken(); token != "" {
+			env = append(env, "CLAUDE_CODE_OAUTH_TOKEN="+token)
+		}
+	}
+	return env
+}
+
+// readFactoryEnvToken reads CLAUDE_CODE_OAUTH_TOKEN from ~/.factory/.env.
+func readFactoryEnvToken() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	f, err := os.Open(filepath.Join(home, ".factory", ".env"))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		if k, v, ok := strings.Cut(line, "="); ok && strings.TrimSpace(k) == "CLAUDE_CODE_OAUTH_TOKEN" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// defaultApplyLabel is the real implementation of labelExec: ensures the label
+// exists (creating it if needed) then applies it to the issue.
+func (r *Runner) defaultApplyLabel(repo string, issue int, label string) error {
+	// Idempotently create the label so gh issue edit doesn't fail.
+	create := exec.Command("gh", "label", "create", label,
+		"--repo", repo,
+		"--color", "#0075ca",
+		"--force",
+	)
+	_ = create.Run() // best-effort; failure here is non-fatal
+
+	cmd := exec.Command("gh", "issue", "edit",
+		strconv.Itoa(issue),
+		"--add-label", label,
+		"--repo", repo,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("gh issue edit: %w (output: %s)", err, string(out))
+	}
+	return nil
 }

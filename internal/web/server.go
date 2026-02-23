@@ -60,6 +60,7 @@ type Server struct {
 	// Triage support
 	triageDir      string
 	triageTmpl     *template.Template
+	triageListTmpl *template.Template
 	triageCfgMu    sync.RWMutex
 	triageCfgCache map[string]*triage.TriageConfig // keyed by repoRoot
 }
@@ -80,6 +81,7 @@ func NewServer(store *pipeline.Store, database *db.DB, port int, triageDir strin
 		queueTmpl:      mustParseTmpl("base.html", "queue.html"),
 		configTmpl:     mustParseTmpl("base.html", "config.html"),
 		triageTmpl:     mustParseTmpl("base.html", "triage.html"),
+		triageListTmpl: mustParseTmpl("base.html", "triage-list.html"),
 	}
 }
 
@@ -179,6 +181,8 @@ func (s *Server) Start() error {
 		switch {
 		case r.URL.Path == "/":
 			s.handleDashboard(w, r)
+		case r.URL.Path == "/triage":
+			s.handleTriageList(w, r)
 		case strings.HasPrefix(r.URL.Path, "/pipeline/"):
 			s.routePipeline(w, r)
 		case strings.HasPrefix(r.URL.Path, "/triage/"):
