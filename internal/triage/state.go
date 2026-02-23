@@ -7,7 +7,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/lucasnoah/taintfactory/internal/pipeline"
 )
 
 // TriageState is the persisted state for a single issue's triage pipeline.
@@ -78,17 +81,12 @@ func (s *Store) EnsureOutcomeDir(issue int) error {
 	return nil
 }
 
-// Save marshals state and writes it to disk, creating directories as needed.
+// Save marshals state and writes it to disk atomically, creating directories as needed.
 func (s *Store) Save(state *TriageState) error {
 	if err := os.MkdirAll(s.baseDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.baseDir, err)
 	}
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal state: %w", err)
-	}
-	data = append(data, '\n')
-	if err := os.WriteFile(s.statePath(state.Issue), data, 0o644); err != nil {
+	if err := pipeline.WriteJSON(s.statePath(state.Issue), state); err != nil {
 		return fmt.Errorf("write state: %w", err)
 	}
 	return nil
@@ -139,10 +137,10 @@ func (s *Store) List(statusFilter string) ([]TriageState, error) {
 		}
 		name := entry.Name()
 		// Only process files matching the pattern "<number>.json"
-		if len(name) < 6 || name[len(name)-5:] != ".json" {
+		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		stem := name[:len(name)-5]
+		stem := strings.TrimSuffix(name, ".json")
 		issue, err := strconv.Atoi(stem)
 		if err != nil {
 			continue // skip non-numeric filenames

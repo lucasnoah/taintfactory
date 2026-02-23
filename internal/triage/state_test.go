@@ -1,6 +1,9 @@
 package triage
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -130,11 +133,58 @@ func TestStore_Update(t *testing.T) {
 }
 
 func TestStore_OutcomePath(t *testing.T) {
-	s := NewStore("/tmp/triage-test-base")
+	s := NewStore(t.TempDir())
 
 	got := s.OutcomePath(7, "stale_context")
-	want := "/tmp/triage-test-base/7/stale_context.outcome.json"
-	if got != want {
-		t.Errorf("OutcomePath(7, \"stale_context\") = %q, want %q", got, want)
+	// The path must end with /<issue>/<stageID>.outcome.json
+	wantSuffix := "/7/stale_context.outcome.json"
+	if !strings.HasSuffix(got, wantSuffix) {
+		t.Errorf("OutcomePath(7, \"stale_context\") = %q, want suffix %q", got, wantSuffix)
+	}
+}
+
+func TestStore_EnsureOutcomeDir(t *testing.T) {
+	store := NewStore(t.TempDir())
+	if err := store.EnsureOutcomeDir(42); err != nil {
+		t.Fatalf("EnsureOutcomeDir() error: %v", err)
+	}
+	// Calling again should be idempotent
+	if err := store.EnsureOutcomeDir(42); err != nil {
+		t.Fatalf("EnsureOutcomeDir() second call error: %v", err)
+	}
+	// Directory should exist
+	dir := filepath.Dir(store.OutcomePath(42, "test"))
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("outcome dir not created: %v", err)
+	}
+}
+
+func TestStore_ReadOutcome(t *testing.T) {
+	store := NewStore(t.TempDir())
+	if err := store.EnsureOutcomeDir(42); err != nil {
+		t.Fatal(err)
+	}
+	// Write an outcome file manually
+	data := []byte(`{"outcome":"clean","summary":"All good"}`)
+	if err := os.WriteFile(store.OutcomePath(42, "stale_context"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := store.ReadOutcome(42, "stale_context")
+	if err != nil {
+		t.Fatalf("ReadOutcome() error: %v", err)
+	}
+	if outcome.Outcome != "clean" {
+		t.Errorf("Outcome = %q, want clean", outcome.Outcome)
+	}
+	if outcome.Summary != "All good" {
+		t.Errorf("Summary = %q, want 'All good'", outcome.Summary)
+	}
+}
+
+func TestStore_ReadOutcome_NotFound(t *testing.T) {
+	store := NewStore(t.TempDir())
+	_, err := store.ReadOutcome(42, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for missing outcome file, got nil")
 	}
 }
