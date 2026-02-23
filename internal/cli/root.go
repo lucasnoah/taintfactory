@@ -42,4 +42,5 @@ func init() {
 	rootCmd.AddCommand(orchestratorCmd)
 	rootCmd.AddCommand(queueCmd)
 	rootCmd.AddCommand(serveCmd)
+	rootCmd.AddCommand(triageCmd)
 }
