@@ -25,9 +25,10 @@ type TriageDetailData struct {
 
 // TriageHistoryView wraps a TriageStageHistoryEntry with derived fields.
 type TriageHistoryView struct {
-	Stage   string
-	Outcome string
-	Summary string
+	Stage    string
+	Outcome  string
+	Summary  string
+	Duration string
 }
 
 // handleTriageDetail renders the triage detail page for a single issue.
@@ -49,20 +50,23 @@ func (s *Server) handleTriageDetail(w http.ResponseWriter, r *http.Request, slug
 	// Build stage order from config (progress bar)
 	var stageOrder []StageStatusItem
 	if cfg := s.triageConfigFor(ts.RepoRoot); cfg != nil {
-		completedOutcomes := make(map[string]string) // stage -> outcome
+		completedStages := make(map[string]string) // stage -> duration
 		for _, h := range ts.StageHistory {
-			completedOutcomes[h.Stage] = h.Outcome
+			completedStages[h.Stage] = h.Duration
 		}
 		for _, stage := range cfg.Stages {
 			status := "upcoming"
-			if _, done := completedOutcomes[stage.ID]; done {
+			duration := ""
+			if dur, done := completedStages[stage.ID]; done {
 				status = "done"
+				duration = fmtDuration(dur)
 			} else if stage.ID == ts.CurrentStage && ts.Status == "in_progress" {
 				status = "active"
 			}
 			stageOrder = append(stageOrder, StageStatusItem{
-				ID:     stage.ID,
-				Status: status,
+				ID:       stage.ID,
+				Status:   status,
+				Duration: duration,
 			})
 		}
 	}
@@ -71,9 +75,10 @@ func (s *Server) handleTriageDetail(w http.ResponseWriter, r *http.Request, slug
 	history := make([]TriageHistoryView, len(ts.StageHistory))
 	for i, h := range ts.StageHistory {
 		history[i] = TriageHistoryView{
-			Stage:   h.Stage,
-			Outcome: h.Outcome,
-			Summary: h.Summary,
+			Stage:    h.Stage,
+			Outcome:  h.Outcome,
+			Summary:  h.Summary,
+			Duration: fmtDuration(h.Duration),
 		}
 	}
 

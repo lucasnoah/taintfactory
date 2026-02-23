@@ -291,6 +291,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 				isLive = true
 			}
 		}
+		// slug must match the on-disk triage directory name under triageDir
 		slug := strings.ReplaceAll(ts.Repo, "/", "-")
 		triageRows = append(triageRows, TriageRow{
 			Slug:         slug,
