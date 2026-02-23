@@ -27,6 +27,26 @@
     {{else}}
     <p class="muted">No pipelines found.</p>
     {{end}}
+
+    {{if .TriageRows}}
+    <h2>Triage</h2>
+    <table>
+      <thead><tr><th>Issue</th><th>Repo</th><th>Status</th><th>Stage</th><th>Updated</th></tr></thead>
+      <tbody>
+      {{range .TriageRows}}
+      <tr>
+        <td><a href="/triage/{{.Slug}}/{{.Issue}}">#{{.Issue}}</a></td>
+        <td class="muted" style="font-size:.8rem">{{.Repo}}</td>
+        <td>
+          {{if .IsLive}}<span class="badge badge-live">● live</span>{{else}}<span class="{{badgeClass .Status}}">{{.Status}}</span>{{end}}
+        </td>
+        <td class="muted">{{.CurrentStage}}</td>
+        <td class="muted">{{.UpdatedAgo}}</td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{end}}
   </div>
 
   <div>

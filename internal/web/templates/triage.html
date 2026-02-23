@@ -1,3 +1,87 @@
-{{define "title"}}Triage #{{.State.Issue}}{{end}}
-{{define "refresh"}}{{end}}
-{{define "content"}}<p>Triage detail placeholder</p>{{end}}
+{{define "title"}}#{{.State.Issue}} {{.State.Repo}}{{end}}
+{{define "refresh"}}{{if .ShouldAutoRefresh}}<meta http-equiv="refresh" content="15">{{end}}{{end}}
+{{define "content"}}
+<div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1.25rem;flex-wrap:wrap">
+  <h1 style="font-size:1.2rem;font-weight:700">
+    <a href="/" style="color:var(--muted);font-weight:400;font-size:.875rem">← Dashboard</a>
+    &nbsp;#{{.State.Issue}} <span class="muted" style="font-weight:400;font-size:.9rem">{{.State.Repo}}</span>
+    {{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener" style="font-size:.8rem;font-weight:400;margin-left:.4rem" title="Open GitHub issue">↗ GitHub</a>{{end}}
+  </h1>
+  <span class="{{badgeClass .State.Status}}">{{.State.Status}}</span>
+  {{if .SessionDot}}<span class="{{dotClass .SessionDot}}"></span>{{end}}
+  {{if .TmuxCmd}}<code style="font-size:.78rem;background:#e9ecef;padding:.2em .45em;border-radius:3px;user-select:all">{{.TmuxCmd}}</code>{{end}}
+  <span class="muted" style="margin-left:auto;font-size:.8rem">updated {{.UpdatedAgo}}</span>
+</div>
+
+{{if .StageOrder}}
+<h2>Progress</h2>
+<div class="progress-bar">
+  {{range .StageOrder}}<div class="{{segClass .Status}}" title="{{.ID}}{{if .Duration}} ({{.Duration}}){{end}}"></div>{{end}}
+</div>
+<div class="seg-labels">
+  {{range .StageOrder}}
+  <div class="seg-label" style="color:{{if eq .Status "active"}}#0d6efd{{else if eq .Status "done"}}#198754{{else}}#adb5bd{{end}}">
+    <span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{.ID}}</span>
+    {{if .Duration}}<span style="display:block;font-size:.6rem;opacity:.75">{{.Duration}}</span>{{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}
+
+{{if .HasLiveStream}}
+<h2>Live Session
+  <span id="stream-status" style="font-size:.7rem;font-weight:400;color:#adb5bd;margin-left:.5rem">connecting…</span>
+</h2>
+<div style="position:relative">
+  <pre id="live-output" style="height:480px;overflow-y:auto;margin-bottom:1.5rem;font-size:.75rem">&#x200b;</pre>
+</div>
+<script>(function(){
+  var pre = document.getElementById('live-output');
+  var status = document.getElementById('stream-status');
+  var lastContent = '';
+  var src = new EventSource('/triage/{{.Slug}}/{{.State.Issue}}/session/stream');
+  src.onmessage = function(e) {
+    if (e.data === lastContent) return; // no change — skip repaint entirely
+    var distFromBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight;
+    var atBottom = distFromBottom < 20;
+    lastContent = e.data;
+    pre.textContent = e.data;
+    if (atBottom) {
+      pre.scrollTop = pre.scrollHeight;
+    } else {
+      // Restore the user's scroll position relative to the bottom
+      pre.scrollTop = pre.scrollHeight - pre.clientHeight - distFromBottom;
+    }
+    status.textContent = 'live';
+    status.style.color = '#198754';
+  };
+  src.addEventListener('done', function(e) {
+    src.close();
+    status.textContent = 'session ended';
+    status.style.color = '#adb5bd';
+  });
+  src.onerror = function() {
+    src.close();
+    status.textContent = 'disconnected';
+    status.style.color = '#dc3545';
+  };
+})();</script>
+{{end}}
+
+{{if .History}}
+<h2>Stage History</h2>
+<table>
+  <thead><tr><th>Stage</th><th>Outcome</th><th>Summary</th><th>Duration</th></tr></thead>
+  <tbody>
+  {{range .History}}
+  <tr>
+    <td>{{.Stage}}</td>
+    <td><span class="{{badgeClass .Outcome}}">{{.Outcome}}</span></td>
+    <td class="muted">{{.Summary}}</td>
+    <td class="muted">{{.Duration}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}
