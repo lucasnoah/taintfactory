@@ -3,6 +3,8 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -24,6 +26,13 @@ var queueAddCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		intent, _ := cmd.Flags().GetString("intent")
 		dependsOnStr, _ := cmd.Flags().GetString("depends-on")
+		configFlag, _ := cmd.Flags().GetString("config")
+
+		// Resolve config path to absolute and validate it exists
+		resolvedConfigPath, err := resolveConfigPath(configFlag)
+		if err != nil {
+			return err
+		}
 
 		// Parse --depends-on flag
 		var dependsOn []int
@@ -85,7 +94,7 @@ var queueAddCmd = &cobra.Command{
 				itemIntent = derived
 			}
 
-			items = append(items, db.QueueAddItem{Issue: n, FeatureIntent: itemIntent, DependsOn: dependsOn})
+			items = append(items, db.QueueAddItem{Issue: n, FeatureIntent: itemIntent, DependsOn: dependsOn, ConfigPath: resolvedConfigPath})
 		}
 
 		dbPath, err := db.DefaultDBPath()
@@ -271,9 +280,26 @@ var queueClearCmd = &cobra.Command{
 	},
 }
 
+// resolveConfigPath converts a --config flag value to an absolute path and
+// validates the file exists. Returns ("", nil) when configFlag is empty.
+func resolveConfigPath(configFlag string) (string, error) {
+	if configFlag == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(configFlag)
+	if err != nil {
+		return "", fmt.Errorf("resolve --config path: %w", err)
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return "", fmt.Errorf("config file %q not found", abs)
+	}
+	return abs, nil
+}
+
 func init() {
 	queueAddCmd.Flags().String("intent", "", "Feature intent: what value this brings to the end user")
 	queueAddCmd.Flags().String("depends-on", "", "Comma-separated issue numbers this must wait for (e.g. --depends-on 133,134 or --depends-on #133,#134)")
+	queueAddCmd.Flags().String("config", "", "Path to pipeline.yaml for this project (default: searches ./pipeline.yaml then ~/.factory/config.yaml)")
 	queueListCmd.Flags().String("format", "table", "Output format: table or json")
 	queueClearCmd.Flags().Bool("confirm", false, "Confirm clearing the entire queue")
 
