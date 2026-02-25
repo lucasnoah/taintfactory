@@ -415,7 +415,7 @@ func (s *Server) handlePipelineDetail(w http.ResponseWriter, r *http.Request, is
 	events, _ := s.db.GetPipelineHistory(issue)
 
 	var stageOrder []StageStatusItem
-	if cfg := s.configFor(ps.Worktree); cfg != nil {
+	if cfg := s.configForPS(ps); cfg != nil {
 		succeeded := make(map[string]bool)
 		stageDuration := make(map[string]string)
 		for _, h := range ps.StageHistory {
@@ -456,7 +456,7 @@ func (s *Server) handlePipelineDetail(w http.ResponseWriter, r *http.Request, is
 
 	// Build a model lookup from config for history rows (agent stages only).
 	stageModel := make(map[string]string)
-	if cfg := s.configFor(ps.Worktree); cfg != nil {
+	if cfg := s.configForPS(ps); cfg != nil {
 		for _, stage := range cfg.Pipeline.Stages {
 			t := stage.Type
 			if t == "" {
@@ -503,14 +503,14 @@ func (s *Server) handlePipelineDetail(w http.ResponseWriter, r *http.Request, is
 	}
 
 	var issueURL string
-	if cfg := s.configFor(ps.Worktree); cfg != nil && cfg.Pipeline.Repo != "" {
+	if cfg := s.configForPS(ps); cfg != nil && cfg.Pipeline.Repo != "" {
 		repo := strings.TrimPrefix(cfg.Pipeline.Repo, "github.com/")
 		issueURL = fmt.Sprintf("https://github.com/%s/issues/%d", repo, issue)
 	}
 
 	// Build dependency graph from queue.
 	var repoBase string // e.g. "https://github.com/owner/repo/issues/"
-	if cfg := s.configFor(ps.Worktree); cfg != nil && cfg.Pipeline.Repo != "" {
+	if cfg := s.configForPS(ps); cfg != nil && cfg.Pipeline.Repo != "" {
 		repo := strings.TrimPrefix(cfg.Pipeline.Repo, "github.com/")
 		repoBase = fmt.Sprintf("https://github.com/%s/issues/", repo)
 	}

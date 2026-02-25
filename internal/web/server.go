@@ -109,6 +109,38 @@ func findRepoRoot(path string) string {
 	}
 }
 
+// configForPS returns the PipelineConfig for a pipeline state.
+// When ps.ConfigPath is set (multi-project pipelines), it loads directly from
+// that path, using ps.RepoDir (or filepath.Dir(ConfigPath)) as the cache key.
+// Otherwise it falls back to the filesystem-walk behaviour of configFor.
+func (s *Server) configForPS(ps *pipeline.PipelineState) *config.PipelineConfig {
+	if ps.ConfigPath != "" {
+		repoDir := ps.RepoDir
+		if repoDir == "" {
+			repoDir = filepath.Dir(ps.ConfigPath)
+		}
+
+		s.cfgMu.RLock()
+		if cfg, ok := s.cfgCache[repoDir]; ok {
+			s.cfgMu.RUnlock()
+			return cfg
+		}
+		s.cfgMu.RUnlock()
+
+		s.cfgMu.Lock()
+		defer s.cfgMu.Unlock()
+		if _, loaded := s.cfgCache[repoDir]; !loaded {
+			cfg, err := config.Load(ps.ConfigPath)
+			if err != nil {
+				cfg = nil
+			}
+			s.cfgCache[repoDir] = cfg
+		}
+		return s.cfgCache[repoDir]
+	}
+	return s.configFor(ps.Worktree)
+}
+
 // configFor returns the PipelineConfig for the given worktree path,
 // discovering it by walking up to find pipeline.yaml. Results are cached.
 // Returns nil if no pipeline.yaml is found.
@@ -153,13 +185,21 @@ func (s *Server) allRepoConfigs() []repoConfig {
 	seen := make(map[string]bool)
 	var result []repoConfig
 	for _, ps := range pipelines {
-		cfg := s.configFor(ps.Worktree)
+		cfg := s.configForPS(&ps)
 		if cfg == nil {
 			continue
 		}
-		s.cfgMu.RLock()
-		repoDir := s.wtCache[ps.Worktree]
-		s.cfgMu.RUnlock()
+		var repoDir string
+		if ps.ConfigPath != "" {
+			repoDir = ps.RepoDir
+			if repoDir == "" {
+				repoDir = filepath.Dir(ps.ConfigPath)
+			}
+		} else {
+			s.cfgMu.RLock()
+			repoDir = s.wtCache[ps.Worktree]
+			s.cfgMu.RUnlock()
+		}
 		if repoDir == "" || seen[repoDir] {
 			continue
 		}
