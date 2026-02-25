@@ -249,7 +249,7 @@ func TestAdvance_CompletedPipeline(t *testing.T) {
 
 	// Create pipeline directly
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.Status = "completed"
 	})
@@ -268,7 +268,7 @@ func TestAdvance_FailedPipeline(t *testing.T) {
 	env := setupTest(t, cfg)
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.Status = "failed"
 	})
@@ -299,7 +299,7 @@ func TestAdvance_ChecksOnlyPass(t *testing.T) {
 	env.checkCmd.results = []cmdResult{{exitCode: 0}}
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "validate", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "validate", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -330,7 +330,7 @@ func TestAdvance_MultiStage(t *testing.T) {
 	env.checkCmd.results = []cmdResult{{exitCode: 0}}
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "validate", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "validate", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -370,7 +370,7 @@ func TestAdvance_StageFailure_Retry(t *testing.T) {
 	env.checkCmd.results = []cmdResult{{exitCode: 1}}
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "validate", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "validate", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -406,7 +406,7 @@ func TestAdvance_StageFailure_MaxAttempts(t *testing.T) {
 	env.checkCmd.results = []cmdResult{{exitCode: 1}}
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "validate", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "validate", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 3 // at max
 	})
@@ -441,7 +441,7 @@ func TestAdvance_OnFail_Escalate(t *testing.T) {
 	env.checkCmd.results = []cmdResult{{exitCode: 1}}
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "validate", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "validate", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -477,7 +477,7 @@ func TestAdvance_OnFail_RouteToStage(t *testing.T) {
 	env.checkCmd.results = []cmdResult{{exitCode: 1}}
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "review", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "review", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -513,7 +513,7 @@ func TestAdvance_GoalGate(t *testing.T) {
 
 	worktreeDir := t.TempDir()
 	goalGates := map[string]string{"review": ""}
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "review", goalGates)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "review", GoalGates: goalGates})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -550,12 +550,12 @@ func TestAdvance_GoalGate_Unsatisfied(t *testing.T) {
 	env := setupTest(t, cfg)
 	worktreeDir := t.TempDir()
 	goalGates := map[string]string{"review": ""}
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "implement", goalGates)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "implement", GoalGates: goalGates})
 
 	// Add a goal gate stage to the config AFTER creating orchestrator
 	cfg.Pipeline.Stages = append(cfg.Pipeline.Stages, config.Stage{ID: "review", GoalGate: true})
 
-	err := env.orch.checkGoalGates(42)
+	err := env.orch.checkGoalGates(42, cfg)
 	if err == nil {
 		t.Fatal("expected error for unsatisfied goal gate")
 	}
@@ -568,7 +568,7 @@ func TestRetry(t *testing.T) {
 	env := setupTest(t, defaultConfig())
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 		ps.Status = "failed"
@@ -592,7 +592,7 @@ func TestRetry_CompletedPipeline(t *testing.T) {
 	env := setupTest(t, defaultConfig())
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.Status = "completed"
 	})
@@ -607,7 +607,7 @@ func TestFail(t *testing.T) {
 	env := setupTest(t, defaultConfig())
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -627,7 +627,7 @@ func TestAbort(t *testing.T) {
 	env := setupTest(t, defaultConfig())
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -647,7 +647,7 @@ func TestStatus(t *testing.T) {
 	env := setupTest(t, defaultConfig())
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -670,8 +670,8 @@ func TestStatusAll(t *testing.T) {
 
 	worktreeDir1 := t.TempDir()
 	worktreeDir2 := t.TempDir()
-	env.store.Create(42, "Issue A", "branch-a", worktreeDir1, "implement", nil)
-	env.store.Create(43, "Issue B", "branch-b", worktreeDir2, "review", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Issue A", Branch: "branch-a", Worktree: worktreeDir1, FirstStage: "implement", GoalGates: nil})
+	env.store.Create(pipeline.CreateOpts{Issue: 43, Title: "Issue B", Branch: "branch-b", Worktree: worktreeDir2, FirstStage: "review", GoalGates: nil})
 
 	infos, err := env.orch.StatusAll()
 	if err != nil {
@@ -699,7 +699,7 @@ func TestAdvance_OnFail_InvalidTarget(t *testing.T) {
 	env.checkCmd.results = []cmdResult{{exitCode: 1}}
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "validate", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "validate", GoalGates: nil})
 
 	_, err := env.orch.Advance(42)
 	if err == nil {
@@ -714,7 +714,7 @@ func TestRetry_BlockedPipeline(t *testing.T) {
 	env := setupTest(t, defaultConfig())
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 		ps.Status = "blocked"
@@ -761,16 +761,16 @@ func TestNextStageID(t *testing.T) {
 	cfg := defaultConfig()
 	env := setupTest(t, cfg)
 
-	if next := env.orch.nextStageID("implement"); next != "review" {
+	if next := env.orch.nextStageID("implement", cfg); next != "review" {
 		t.Errorf("expected 'review', got %q", next)
 	}
-	if next := env.orch.nextStageID("review"); next != "qa" {
+	if next := env.orch.nextStageID("review", cfg); next != "qa" {
 		t.Errorf("expected 'qa', got %q", next)
 	}
-	if next := env.orch.nextStageID("qa"); next != "" {
+	if next := env.orch.nextStageID("qa", cfg); next != "" {
 		t.Errorf("expected empty for last stage, got %q", next)
 	}
-	if next := env.orch.nextStageID("nonexistent"); next != "" {
+	if next := env.orch.nextStageID("nonexistent", cfg); next != "" {
 		t.Errorf("expected empty for nonexistent, got %q", next)
 	}
 }
@@ -792,11 +792,11 @@ func TestCheckIn_SkipsCompletedAndFailed(t *testing.T) {
 
 	wtDir1 := t.TempDir()
 	wtDir2 := t.TempDir()
-	env.store.Create(42, "Completed", "b-a", wtDir1, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Completed", Branch: "b-a", Worktree: wtDir1, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.Status = "completed"
 	})
-	env.store.Create(43, "Failed", "b-b", wtDir2, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 43, Title: "Failed", Branch: "b-b", Worktree: wtDir2, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(43, func(ps *pipeline.PipelineState) {
 		ps.Status = "failed"
 	})
@@ -814,7 +814,7 @@ func TestCheckIn_BlockedSkipped(t *testing.T) {
 	env := setupTest(t, defaultConfig())
 
 	wtDir := t.TempDir()
-	env.store.Create(42, "Blocked", "b-a", wtDir, "review", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Blocked", Branch: "b-a", Worktree: wtDir, FirstStage: "review", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.Status = "blocked"
 	})
@@ -849,7 +849,7 @@ func TestCheckIn_AdvancesPendingNoSession(t *testing.T) {
 	env.checkCmd.results = []cmdResult{{exitCode: 0}}
 
 	wtDir := t.TempDir()
-	env.store.Create(42, "Test", "b-a", wtDir, "validate", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "b-a", Worktree: wtDir, FirstStage: "validate", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -876,7 +876,7 @@ func TestCheckIn_ActiveSessionWithinTimeout(t *testing.T) {
 	env := setupTest(t, cfg)
 
 	wtDir := t.TempDir()
-	env.store.Create(42, "Test", "b-a", wtDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "b-a", Worktree: wtDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentSession = "sess-42"
 		ps.CurrentAttempt = 1
@@ -916,7 +916,7 @@ func TestCheckIn_IdleSessionAdvances(t *testing.T) {
 	env.checkCmd.results = []cmdResult{{exitCode: 0}}
 
 	wtDir := t.TempDir()
-	env.store.Create(42, "Test", "b-a", wtDir, "validate", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "b-a", Worktree: wtDir, FirstStage: "validate", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentSession = "sess-42"
 		ps.CurrentAttempt = 1
@@ -953,7 +953,7 @@ func TestCheckIn_ExitedSessionAdvances(t *testing.T) {
 	env.checkCmd.results = []cmdResult{{exitCode: 0}}
 
 	wtDir := t.TempDir()
-	env.store.Create(42, "Test", "b-a", wtDir, "validate", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "b-a", Worktree: wtDir, FirstStage: "validate", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentSession = "sess-42"
 		ps.CurrentAttempt = 1
@@ -992,11 +992,11 @@ func TestCheckIn_MultiplePipelines(t *testing.T) {
 
 	wtDir1 := t.TempDir()
 	wtDir2 := t.TempDir()
-	env.store.Create(42, "Issue A", "b-a", wtDir1, "validate", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Issue A", Branch: "b-a", Worktree: wtDir1, FirstStage: "validate", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
-	env.store.Create(43, "Issue B", "b-b", wtDir2, "validate", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 43, Title: "Issue B", Branch: "b-b", Worktree: wtDir2, FirstStage: "validate", GoalGates: nil})
 	env.store.Update(43, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -1023,7 +1023,7 @@ func TestCheckIn_HumanInterventionSkipped(t *testing.T) {
 	env := setupTest(t, cfg)
 
 	wtDir := t.TempDir()
-	env.store.Create(42, "Test", "b-a", wtDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "b-a", Worktree: wtDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentSession = "sess-42"
 		ps.CurrentAttempt = 1
@@ -1055,7 +1055,7 @@ func TestCheckIn_InProgress_NoSession_Advances(t *testing.T) {
 	env := setupTest(t, defaultConfig())
 
 	wtDir := t.TempDir()
-	env.store.Create(42, "Test", "b-a", wtDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "b-a", Worktree: wtDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.Status = "in_progress"
 		ps.CurrentAttempt = 1
@@ -1085,7 +1085,7 @@ func TestCheckIn_ActiveSessionPastTimeout_Steers(t *testing.T) {
 	env := setupTest(t, cfg)
 
 	wtDir := t.TempDir()
-	env.store.Create(42, "Test", "b-a", wtDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "b-a", Worktree: wtDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentSession = "sess-42"
 		ps.CurrentAttempt = 1
@@ -1123,7 +1123,7 @@ func TestCheckIn_ActiveSessionPastTimeout_SteerGuard(t *testing.T) {
 	env := setupTest(t, cfg)
 
 	wtDir := t.TempDir()
-	env.store.Create(42, "Test", "b-a", wtDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "b-a", Worktree: wtDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentSession = "sess-42"
 		ps.CurrentAttempt = 1
@@ -1160,7 +1160,7 @@ func TestCheckIn_HumanInputState(t *testing.T) {
 	env := setupTest(t, cfg)
 
 	wtDir := t.TempDir()
-	env.store.Create(42, "Test", "b-a", wtDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "b-a", Worktree: wtDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentSession = "sess-42"
 		ps.CurrentAttempt = 1
@@ -1203,7 +1203,7 @@ func TestCheckIn_OrphanedSessionCleared(t *testing.T) {
 	env.checkCmd.results = []cmdResult{{exitCode: 0}}
 
 	wtDir := t.TempDir()
-	env.store.Create(42, "Test", "b-a", wtDir, "validate", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "b-a", Worktree: wtDir, FirstStage: "validate", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentSession = "orphaned-sess"
 		ps.CurrentAttempt = 1
@@ -1247,7 +1247,7 @@ func TestCheckIn_AdvanceError_Escalates(t *testing.T) {
 	env := setupTest(t, cfg)
 
 	wtDir := t.TempDir()
-	env.store.Create(42, "Test", "b-a", wtDir, "nonexistent_stage", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "b-a", Worktree: wtDir, FirstStage: "nonexistent_stage", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -1280,7 +1280,7 @@ func TestCheckIn_SteerFactorySendState(t *testing.T) {
 	env := setupTest(t, cfg)
 
 	wtDir := t.TempDir()
-	env.store.Create(42, "Test", "b-a", wtDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "b-a", Worktree: wtDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentSession = "sess-42"
 		ps.CurrentAttempt = 1
@@ -1374,7 +1374,7 @@ func TestCheckIn_QueueWaitsForActivePipeline(t *testing.T) {
 	// Create an active pipeline (pending status)
 	env.checkCmd.results = []cmdResult{{exitCode: 0}}
 	wtDir := t.TempDir()
-	env.store.Create(42, "Active", "b-a", wtDir, "validate", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Active", Branch: "b-a", Worktree: wtDir, FirstStage: "validate", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -1438,7 +1438,7 @@ func TestCheckIn_QueueCompletedUpdatesStatus(t *testing.T) {
 	// Create the pipeline at the last stage, checks will pass → completed
 	env.checkCmd.results = []cmdResult{{exitCode: 0}}
 	wtDir := t.TempDir()
-	env.store.Create(42, "Test", "b-a", wtDir, "validate", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "b-a", Worktree: wtDir, FirstStage: "validate", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -1618,7 +1618,7 @@ func TestAdvance_MergeStage_HappyPath(t *testing.T) {
 	}
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test Feature", "feature/test", worktreeDir, "merge", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test Feature", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "merge", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -1686,7 +1686,7 @@ func TestAdvance_MergeStage_PushFails(t *testing.T) {
 	}
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test Feature", "feature/test", worktreeDir, "merge", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test Feature", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "merge", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -1727,7 +1727,7 @@ func TestAdvance_MergeStage_DefaultStrategy(t *testing.T) {
 	}
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test Feature", "feature/test", worktreeDir, "merge", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test Feature", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "merge", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -1774,7 +1774,7 @@ func TestAdvance_MergeStage_CreatePRFails(t *testing.T) {
 	}
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test Feature", "feature/test", worktreeDir, "merge", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test Feature", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "merge", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -1814,7 +1814,7 @@ func TestAdvance_MergeStage_ReusesExistingPR(t *testing.T) {
 	}
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test Feature", "feature/test", worktreeDir, "merge", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test Feature", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "merge", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -1873,7 +1873,7 @@ func TestAdvance_MergeStage_RebaseConflict(t *testing.T) {
 	}
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test Feature", "feature/test", worktreeDir, "merge", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test Feature", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "merge", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.CurrentAttempt = 1
 	})
@@ -1905,7 +1905,7 @@ func TestCleanup_CompletedPipeline(t *testing.T) {
 	env := setupTest(t, defaultConfig())
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.Status = "completed"
 	})
@@ -1932,7 +1932,7 @@ func TestCleanup_FailedPipeline(t *testing.T) {
 	env := setupTest(t, defaultConfig())
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.Status = "failed"
 	})
@@ -1956,7 +1956,7 @@ func TestCleanup_ActivePipeline_Rejected(t *testing.T) {
 	env := setupTest(t, defaultConfig())
 
 	worktreeDir := t.TempDir()
-	env.store.Create(42, "Test", "feature/test", worktreeDir, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Test", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "implement", GoalGates: nil})
 
 	// Test each non-terminal status
 	for _, status := range []string{"pending", "in_progress", "blocked"} {
@@ -1980,15 +1980,15 @@ func TestCleanupAll(t *testing.T) {
 	wtDir1 := t.TempDir()
 	wtDir2 := t.TempDir()
 	wtDir3 := t.TempDir()
-	env.store.Create(42, "Completed", "b-a", wtDir1, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 42, Title: "Completed", Branch: "b-a", Worktree: wtDir1, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(42, func(ps *pipeline.PipelineState) {
 		ps.Status = "completed"
 	})
-	env.store.Create(43, "Failed", "b-b", wtDir2, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 43, Title: "Failed", Branch: "b-b", Worktree: wtDir2, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(43, func(ps *pipeline.PipelineState) {
 		ps.Status = "failed"
 	})
-	env.store.Create(44, "Active", "b-c", wtDir3, "implement", nil)
+	env.store.Create(pipeline.CreateOpts{Issue: 44, Title: "Active", Branch: "b-c", Worktree: wtDir3, FirstStage: "implement", GoalGates: nil})
 	env.store.Update(44, func(ps *pipeline.PipelineState) {
 		ps.Status = "pending"
 	})
@@ -2025,5 +2025,182 @@ func TestCleanupAll(t *testing.T) {
 	}
 	if ps.Status != "pending" {
 		t.Errorf("expected pipeline 44 status 'pending', got %q", ps.Status)
+	}
+}
+
+// --- Multi-project tests ---
+
+func TestNamespaceFromRepo(t *testing.T) {
+	cases := []struct {
+		repo string
+		want string
+	}{
+		{"github.com/myorg/myapp", "myorg/myapp"},
+		{"github.com/acme/backend-api", "acme/backend-api"},
+		{"https://github.com/myorg/myapp", "myorg/myapp"},
+		{"http://github.com/myorg/myapp", "myorg/myapp"},
+	}
+	for _, tc := range cases {
+		got := namespaceFromRepo(tc.repo)
+		if got != tc.want {
+			t.Errorf("namespaceFromRepo(%q) = %q, want %q", tc.repo, got, tc.want)
+		}
+	}
+}
+
+func TestConfigFor_NoConfigPath(t *testing.T) {
+	env := setupTest(t, defaultConfig())
+	ps := &pipeline.PipelineState{Issue: 1} // no ConfigPath
+	cfg, err := env.orch.configFor(ps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg != env.orch.cfg {
+		t.Error("expected configFor to return o.cfg when ps.ConfigPath is empty")
+	}
+}
+
+func TestConfigFor_WithConfigPath(t *testing.T) {
+	env := setupTest(t, defaultConfig())
+
+	// Write a minimal pipeline.yaml to a temp file
+	cfgContent := `pipeline:
+  name: test-multi
+  repo: github.com/myorg/myapp
+  stages:
+    - id: impl
+      type: agent
+      prompt_template: impl.md
+`
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "pipeline.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	ps := &pipeline.PipelineState{Issue: 1, ConfigPath: cfgPath}
+	cfg, err := env.orch.configFor(ps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Pipeline.Name != "test-multi" {
+		t.Errorf("expected loaded config name 'test-multi', got %q", cfg.Pipeline.Name)
+	}
+	if cfg.Pipeline.Repo != "github.com/myorg/myapp" {
+		t.Errorf("expected repo 'github.com/myorg/myapp', got %q", cfg.Pipeline.Repo)
+	}
+}
+
+func TestCreate_MultiProjectConfig(t *testing.T) {
+	env := setupTest(t, defaultConfig())
+
+	// Write a minimal pipeline.yaml
+	cfgContent := `pipeline:
+  name: myapp
+  repo: github.com/myorg/myapp
+  stages:
+    - id: impl
+      type: agent
+      prompt_template: impl.md
+`
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "pipeline.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Mock GitHub: return issue JSON
+	env.ghCmd.results = []mockCmdResult{
+		{output: mockIssueJSON(42, "Add feature X")},
+	}
+
+	ps, err := env.orch.Create(CreateOpts{
+		Issue:         42,
+		FeatureIntent: "add feature X",
+		ConfigPath:    cfgPath,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if ps.ConfigPath != cfgPath {
+		t.Errorf("ConfigPath = %q, want %q", ps.ConfigPath, cfgPath)
+	}
+	if ps.RepoDir != tmpDir {
+		t.Errorf("RepoDir = %q, want %q", ps.RepoDir, tmpDir)
+	}
+	if ps.Namespace != "myorg/myapp" {
+		t.Errorf("Namespace = %q, want 'myorg/myapp'", ps.Namespace)
+	}
+
+	// Verify it was stored under the namespaced path
+	stored, err := env.store.Get(42)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.Namespace != "myorg/myapp" {
+		t.Errorf("stored Namespace = %q, want 'myorg/myapp'", stored.Namespace)
+	}
+}
+
+func TestProcessQueue_PassesConfigPath(t *testing.T) {
+	env := setupTest(t, defaultConfig())
+
+	// Write a minimal pipeline.yaml
+	cfgContent := `pipeline:
+  name: myapp
+  repo: github.com/myorg/myapp
+  stages:
+    - id: impl
+      type: agent
+      prompt_template: impl.md
+`
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "pipeline.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Enqueue with config path and feature intent
+	if err := env.database.QueueAdd([]db.QueueAddItem{{
+		Issue:         99,
+		FeatureIntent: "do something",
+		ConfigPath:    cfgPath,
+	}}); err != nil {
+		t.Fatalf("QueueAdd: %v", err)
+	}
+
+	// Mock GitHub issue fetch
+	env.ghCmd.results = []mockCmdResult{
+		{output: mockIssueJSON(99, "Do something")},
+	}
+
+	// Run CheckIn so processQueue picks it up
+	result, err := env.orch.CheckIn()
+	if err != nil {
+		t.Fatalf("CheckIn: %v", err)
+	}
+
+	// Verify a queue_started action
+	started := false
+	for _, a := range result.Actions {
+		if a.Action == "queue_started" && a.Issue == 99 {
+			started = true
+		}
+	}
+	if !started {
+		t.Fatalf("expected queue_started action for issue 99, got: %+v", result.Actions)
+	}
+
+	// Verify the pipeline has the ConfigPath and Namespace set
+	ps, err := env.store.Get(99)
+	if err != nil {
+		t.Fatalf("Get pipeline 99: %v", err)
+	}
+	if ps.ConfigPath != cfgPath {
+		t.Errorf("pipeline.ConfigPath = %q, want %q", ps.ConfigPath, cfgPath)
+	}
+	if ps.Namespace != "myorg/myapp" {
+		t.Errorf("pipeline.Namespace = %q, want 'myorg/myapp'", ps.Namespace)
 	}
 }

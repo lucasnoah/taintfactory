@@ -40,6 +40,12 @@ func NewManager(git GitRunner, repoDir string, baseDir string) *Manager {
 	return &Manager{git: git, repoDir: repoDir, baseDir: baseDir}
 }
 
+// WithRepoDir creates a new Manager for a different repo root, reusing the same GitRunner.
+// The baseDir for worktrees is set to <repoDir>/worktrees.
+func (m *Manager) WithRepoDir(repoDir string) *Manager {
+	return &Manager{git: m.git, repoDir: repoDir, baseDir: filepath.Join(repoDir, "worktrees")}
+}
+
 // CreateOpts holds options for creating a worktree.
 type CreateOpts struct {
 	Issue  int

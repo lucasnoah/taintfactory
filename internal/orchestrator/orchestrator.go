@@ -83,12 +83,64 @@ func (o *Orchestrator) logf(format string, args ...interface{}) {
 type CreateOpts struct {
 	Issue         int
 	FeatureIntent string
+	ConfigPath    string // optional: absolute path to pipeline.yaml for multi-project support
+}
+
+// configFor returns the effective config for a pipeline.
+// If ps.ConfigPath is set, loads and returns that config; otherwise returns o.cfg.
+func (o *Orchestrator) configFor(ps *pipeline.PipelineState) (*config.PipelineConfig, error) {
+	if ps.ConfigPath == "" {
+		return o.cfg, nil
+	}
+	return config.Load(ps.ConfigPath)
+}
+
+// worktreeFor returns a worktree.Manager scoped to the pipeline's repo.
+// If ps.RepoDir is set, derives a new manager (sharing the same git runner) for that dir;
+// otherwise returns o.wt.
+func (o *Orchestrator) worktreeFor(ps *pipeline.PipelineState) *worktree.Manager {
+	if ps.RepoDir == "" || o.wt == nil {
+		return o.wt
+	}
+	return o.wt.WithRepoDir(ps.RepoDir)
+}
+
+// namespaceFromRepo derives "{org}/{repo}" from a pipeline repo URL.
+// e.g. "github.com/myorg/myapp" → "myorg/myapp"
+func namespaceFromRepo(repo string) string {
+	repo = strings.TrimPrefix(repo, "https://")
+	repo = strings.TrimPrefix(repo, "http://")
+	parts := strings.SplitN(repo, "/", 2)
+	if len(parts) >= 2 {
+		return parts[1]
+	}
+	return repo
 }
 
 // Create initializes a new pipeline: fetch issue, create worktree, init state.
 func (o *Orchestrator) Create(opts CreateOpts) (*pipeline.PipelineState, error) {
 	if opts.Issue <= 0 {
 		return nil, fmt.Errorf("invalid issue number %d: must be positive", opts.Issue)
+	}
+
+	// Load per-pipeline config if a config path is specified; otherwise use default.
+	cfg := o.cfg
+	repoDir := ""
+	namespace := ""
+	if opts.ConfigPath != "" {
+		var err error
+		cfg, err = config.Load(opts.ConfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("load pipeline config %s: %w", opts.ConfigPath, err)
+		}
+		repoDir = filepath.Dir(opts.ConfigPath)
+		namespace = namespaceFromRepo(cfg.Pipeline.Repo)
+	}
+
+	// Select worktree manager scoped to the repo (reuses the same git runner as o.wt)
+	wt := o.wt
+	if repoDir != "" && o.wt != nil {
+		wt = o.wt.WithRepoDir(repoDir)
 	}
 
 	// Fetch issue metadata from GitHub
@@ -98,7 +150,7 @@ func (o *Orchestrator) Create(opts CreateOpts) (*pipeline.PipelineState, error) 
 	}
 
 	// Create worktree
-	wtResult, err := o.wt.Create(worktree.CreateOpts{
+	wtResult, err := wt.Create(worktree.CreateOpts{
 		Issue: opts.Issue,
 		Title: issue.Title,
 	})
@@ -107,20 +159,20 @@ func (o *Orchestrator) Create(opts CreateOpts) (*pipeline.PipelineState, error) 
 	}
 
 	// Run setup commands in the worktree (e.g. install dependencies)
-	if err := o.runSetup(wtResult.Path); err != nil {
-		_ = o.wt.Remove(opts.Issue, true)
+	if err := o.runSetupWith(wtResult.Path, cfg); err != nil {
+		_ = wt.Remove(opts.Issue, true)
 		return nil, fmt.Errorf("worktree setup: %w", err)
 	}
 
 	// Determine first stage
 	firstStage := ""
-	if len(o.cfg.Pipeline.Stages) > 0 {
-		firstStage = o.cfg.Pipeline.Stages[0].ID
+	if len(cfg.Pipeline.Stages) > 0 {
+		firstStage = cfg.Pipeline.Stages[0].ID
 	}
 
 	// Build goal gates from stages with goal_gate=true
 	goalGates := make(map[string]string)
-	for _, s := range o.cfg.Pipeline.Stages {
+	for _, s := range cfg.Pipeline.Stages {
 		if s.GoalGate {
 			goalGates[s.ID] = ""
 		}
@@ -134,10 +186,13 @@ func (o *Orchestrator) Create(opts CreateOpts) (*pipeline.PipelineState, error) 
 		Worktree:   wtResult.Path,
 		FirstStage: firstStage,
 		GoalGates:  goalGates,
+		ConfigPath: opts.ConfigPath,
+		RepoDir:    repoDir,
+		Namespace:  namespace,
 	})
 	if err != nil {
 		// Clean up orphaned worktree on store failure
-		_ = o.wt.Remove(opts.Issue, true)
+		_ = wt.Remove(opts.Issue, true)
 		return nil, fmt.Errorf("create pipeline: %w", err)
 	}
 
@@ -182,11 +237,17 @@ func (o *Orchestrator) Advance(issue int) (*AdvanceResult, error) {
 		return &AdvanceResult{Issue: issue, Action: "failed", Message: fmt.Sprintf("pipeline is %s", ps.Status)}, nil
 	}
 
+	// Load per-pipeline config (falls back to o.cfg for legacy pipelines)
+	cfg, err := o.configFor(ps)
+	if err != nil {
+		return nil, fmt.Errorf("load pipeline config: %w", err)
+	}
+
 	currentStage := ps.CurrentStage
 	currentAttempt := ps.CurrentAttempt
 	o.logf("pipeline #%d: advancing stage %q (attempt %d)", issue, currentStage, currentAttempt)
 
-	stageCfg := o.findStage(currentStage)
+	stageCfg := o.findStage(currentStage, cfg)
 	if stageCfg == nil {
 		return nil, fmt.Errorf("stage %q not found in config", currentStage)
 	}
@@ -198,10 +259,10 @@ func (o *Orchestrator) Advance(issue int) (*AdvanceResult, error) {
 		return nil, fmt.Errorf("update status: %w", err)
 	}
 
-	// Determine timeout
+	// Determine timeout from per-pipeline config
 	timeout := 30 * time.Minute
-	if o.cfg.Pipeline.Defaults.Timeout != "" {
-		if d, err := time.ParseDuration(o.cfg.Pipeline.Defaults.Timeout); err == nil {
+	if cfg.Pipeline.Defaults.Timeout != "" {
+		if d, err := time.ParseDuration(cfg.Pipeline.Defaults.Timeout); err == nil {
 			timeout = d
 		}
 	}
@@ -215,6 +276,7 @@ func (o *Orchestrator) Advance(issue int) (*AdvanceResult, error) {
 			Issue:   issue,
 			Stage:   currentStage,
 			Timeout: timeout,
+			Config:  cfg,
 		})
 	}
 	if err != nil {
@@ -278,29 +340,29 @@ func (o *Orchestrator) Advance(issue int) (*AdvanceResult, error) {
 	if runResult.Outcome == "success" {
 		// After any merge-path stage succeeds (merge itself or the agent-merge
 		// fallback), prepare runtime vars for the contract-check stage.
-		if stageCfg.Type == "merge" || currentStage == o.findMergeOnFailTarget() {
+		if stageCfg.Type == "merge" || currentStage == o.findMergeOnFailTarget(cfg) {
 			o.preparePostMerge(issue, ps)
 		}
-		return o.advanceToNextStage(issue, currentStage, stageCfg, runResult)
+		return o.advanceToNextStage(issue, currentStage, stageCfg, runResult, cfg)
 	}
 
 	// Stage failed — route via on_fail
-	return o.handleStageFailure(issue, currentStage, currentAttempt, stageCfg, runResult)
+	return o.handleStageFailure(issue, currentStage, currentAttempt, stageCfg, runResult, cfg)
 }
 
 // advanceToNextStage moves the pipeline to the next stage or completes it.
 // stageCfg is the config of the just-completed stage; it is used to skip
 // the on_fail fallback stage when a merge stage succeeds (the fallback is
 // only relevant on failure and should not run on the happy path).
-func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, stageCfg *config.Stage, runResult *stage.RunResult) (*AdvanceResult, error) {
-	nextStage := o.nextStageID(currentStage)
+func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, stageCfg *config.Stage, runResult *stage.RunResult, cfg *config.PipelineConfig) (*AdvanceResult, error) {
+	nextStage := o.nextStageID(currentStage, cfg)
 
 	// When a merge stage succeeds, skip past its on_fail fallback stage (e.g.
 	// agent-merge) so the pipeline proceeds directly to the post-merge stage
 	// (e.g. contract-check) or completes if no further stages remain.
 	if stageCfg != nil && stageCfg.Type == "merge" && nextStage != "" {
 		if onFailTarget := resolveOnFail(stageCfg.OnFail); nextStage == onFailTarget {
-			nextStage = o.nextStageID(nextStage)
+			nextStage = o.nextStageID(nextStage, cfg)
 		}
 	}
 
@@ -308,10 +370,10 @@ func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, stageC
 	// preparePostMerge already queried the queue and stored the result in
 	// RuntimeVars; if it's empty there's nothing for the agent to do.
 	if nextStage != "" {
-		if nextCfg := o.findStage(nextStage); nextCfg != nil && nextCfg.PromptTemplate == "contract-check.md" {
+		if nextCfg := o.findStage(nextStage, cfg); nextCfg != nil && nextCfg.PromptTemplate == "contract-check.md" {
 			if ps, err := o.store.Get(issue); err == nil && ps.RuntimeVars["dependent_issues"] == "" {
 				o.logf("pipeline #%d: skipping contract-check — no downstream dependents", issue)
-				nextStage = o.nextStageID(nextStage)
+				nextStage = o.nextStageID(nextStage, cfg)
 			}
 		}
 	}
@@ -319,7 +381,7 @@ func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, stageC
 	if nextStage == "" {
 		o.logf("pipeline #%d: no more stages, checking goal gates", issue)
 		// No more stages — check goal gates before completing
-		if err := o.checkGoalGates(issue); err != nil {
+		if err := o.checkGoalGates(issue, cfg); err != nil {
 			return &AdvanceResult{
 				Issue:   issue,
 				Action:  "failed",
@@ -372,7 +434,7 @@ func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, stageC
 
 // handleStageFailure routes the pipeline based on on_fail config.
 // Uses captured values from the start of Advance() to avoid stale-snapshot issues.
-func (o *Orchestrator) handleStageFailure(issue int, currentStage string, currentAttempt int, stageCfg *config.Stage, runResult *stage.RunResult) (*AdvanceResult, error) {
+func (o *Orchestrator) handleStageFailure(issue int, currentStage string, currentAttempt int, stageCfg *config.Stage, runResult *stage.RunResult, cfg *config.PipelineConfig) (*AdvanceResult, error) {
 	target := resolveOnFail(stageCfg.OnFail)
 
 	if target == "escalate" {
@@ -394,7 +456,7 @@ func (o *Orchestrator) handleStageFailure(issue int, currentStage string, curren
 
 	// Validate on_fail target stage exists (if routing to a different stage)
 	if target != "" && target != currentStage {
-		if o.findStage(target) == nil {
+		if o.findStage(target, cfg) == nil {
 			return nil, fmt.Errorf("on_fail target stage %q not found in config", target)
 		}
 	}
@@ -805,8 +867,8 @@ func (o *Orchestrator) checkInPipeline(ps *pipeline.PipelineState) CheckInAction
 // handleActiveSession decides what to do with a running session.
 func (o *Orchestrator) handleActiveSession(ps *pipeline.PipelineState) CheckInAction {
 	timeout := 30 * time.Minute
-	if o.cfg.Pipeline.Defaults.Timeout != "" {
-		if d, err := time.ParseDuration(o.cfg.Pipeline.Defaults.Timeout); err == nil {
+	if cfg, err := o.configFor(ps); err == nil && cfg.Pipeline.Defaults.Timeout != "" {
+		if d, err := time.ParseDuration(cfg.Pipeline.Defaults.Timeout); err == nil {
 			timeout = d
 		}
 	}
@@ -972,7 +1034,7 @@ func (o *Orchestrator) processQueue() *CheckInAction {
 	}
 
 	o.logf("queue: creating pipeline for issue #%d", item.Issue)
-	_, err = o.Create(CreateOpts{Issue: item.Issue, FeatureIntent: item.FeatureIntent})
+	_, err = o.Create(CreateOpts{Issue: item.Issue, FeatureIntent: item.FeatureIntent, ConfigPath: item.ConfigPath})
 	if err != nil {
 		_ = o.db.QueueUpdateStatus(item.Issue, "failed")
 		return &CheckInAction{
@@ -989,9 +1051,9 @@ func (o *Orchestrator) processQueue() *CheckInAction {
 	}
 }
 
-// runSetup runs the pipeline.setup commands inside the worktree directory.
-func (o *Orchestrator) runSetup(worktreePath string) error {
-	for _, cmdStr := range o.cfg.Pipeline.Setup {
+// runSetupWith runs the pipeline.setup commands from cfg inside the worktree directory.
+func (o *Orchestrator) runSetupWith(worktreePath string, cfg *config.PipelineConfig) error {
+	for _, cmdStr := range cfg.Pipeline.Setup {
 		o.logf("setup: running %q in %s", cmdStr, worktreePath)
 		cmd := exec.Command("sh", "-c", cmdStr)
 		cmd.Dir = worktreePath
@@ -1075,8 +1137,8 @@ func (o *Orchestrator) runMerge(issue int, ps *pipeline.PipelineState, stageCfg 
 
 	// Remove worktree before merging so that --delete-branch can delete the
 	// local branch (git refuses to delete a branch checked out in a worktree).
-	if o.wt != nil {
-		if err := o.wt.Remove(issue, false); err != nil {
+	if wt := o.worktreeFor(ps); wt != nil {
+		if err := wt.Remove(issue, false); err != nil {
 			o.logf("warning: remove worktree before merge: %v", err)
 		}
 	}
@@ -1208,9 +1270,9 @@ func (o *Orchestrator) preparePostMerge(issue int, ps *pipeline.PipelineState) {
 }
 
 // findMergeOnFailTarget returns the on_fail routing target of the first
-// merge-type stage in the config, or "" if none exists.
-func (o *Orchestrator) findMergeOnFailTarget() string {
-	for _, s := range o.cfg.Pipeline.Stages {
+// merge-type stage in cfg, or "" if none exists.
+func (o *Orchestrator) findMergeOnFailTarget(cfg *config.PipelineConfig) string {
+	for _, s := range cfg.Pipeline.Stages {
 		if s.Type == "merge" {
 			return resolveOnFail(s.OnFail)
 		}
@@ -1218,34 +1280,34 @@ func (o *Orchestrator) findMergeOnFailTarget() string {
 	return ""
 }
 
-// findStage finds a stage config by ID.
-func (o *Orchestrator) findStage(stageID string) *config.Stage {
-	for i := range o.cfg.Pipeline.Stages {
-		if o.cfg.Pipeline.Stages[i].ID == stageID {
-			return &o.cfg.Pipeline.Stages[i]
+// findStage finds a stage config by ID in cfg.
+func (o *Orchestrator) findStage(stageID string, cfg *config.PipelineConfig) *config.Stage {
+	for i := range cfg.Pipeline.Stages {
+		if cfg.Pipeline.Stages[i].ID == stageID {
+			return &cfg.Pipeline.Stages[i]
 		}
 	}
 	return nil
 }
 
-// nextStageID returns the stage ID after the given one, or "" if last.
-func (o *Orchestrator) nextStageID(currentID string) string {
-	for i, s := range o.cfg.Pipeline.Stages {
-		if s.ID == currentID && i+1 < len(o.cfg.Pipeline.Stages) {
-			return o.cfg.Pipeline.Stages[i+1].ID
+// nextStageID returns the stage ID after the given one in cfg, or "" if last.
+func (o *Orchestrator) nextStageID(currentID string, cfg *config.PipelineConfig) string {
+	for i, s := range cfg.Pipeline.Stages {
+		if s.ID == currentID && i+1 < len(cfg.Pipeline.Stages) {
+			return cfg.Pipeline.Stages[i+1].ID
 		}
 	}
 	return ""
 }
 
-// checkGoalGates verifies all goal_gate stages have passed.
-func (o *Orchestrator) checkGoalGates(issue int) error {
+// checkGoalGates verifies all goal_gate stages in cfg have passed.
+func (o *Orchestrator) checkGoalGates(issue int, cfg *config.PipelineConfig) error {
 	ps, err := o.store.Get(issue)
 	if err != nil {
 		return err
 	}
 
-	for _, s := range o.cfg.Pipeline.Stages {
+	for _, s := range cfg.Pipeline.Stages {
 		if !s.GoalGate {
 			continue
 		}
