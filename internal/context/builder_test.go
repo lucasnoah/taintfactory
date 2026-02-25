@@ -50,8 +50,9 @@ func newTestStore(t *testing.T) *pipeline.Store {
 
 func newTestPipeline(t *testing.T, store *pipeline.Store) *pipeline.PipelineState {
 	t.Helper()
-	ps, err := store.Create(42, "Add auth", "feature/42", "/tmp/worktree", "implement", map[string]string{
-		"implement": "User can log in",
+	ps, err := store.Create(pipeline.CreateOpts{
+		Issue: 42, Title: "Add auth", Branch: "feature/42", Worktree: "/tmp/worktree",
+		FirstStage: "implement", GoalGates: map[string]string{"implement": "User can log in"},
 	})
 	if err != nil {
 		t.Fatalf("create pipeline: %v", err)
