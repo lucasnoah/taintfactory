@@ -264,6 +264,9 @@ func (s *Server) execTemplate(w http.ResponseWriter, tmpl interface {
 // ---- Dashboard ----
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	proj := currentProject(r)
+	sidebar := s.sidebarData(proj)
+
 	pipelines, err := s.store.List("")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -282,6 +285,46 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(pipelines, func(i, j int) bool {
 		return pipelines[i].UpdatedAt > pipelines[j].UpdatedAt
 	})
+
+	// Build project summary cards before filtering (needs all namespaced pipelines).
+	var projectSummary []ProjectSummaryCard
+	if proj == "" {
+		nsCounts := make(map[string]*ProjectSummaryCard)
+		for _, p := range pipelines {
+			if p.Namespace == "" {
+				continue
+			}
+			c := nsCounts[p.Namespace]
+			if c == nil {
+				c = &ProjectSummaryCard{Namespace: p.Namespace}
+				nsCounts[p.Namespace] = c
+			}
+			c.TotalCount++
+			if p.Status == "in_progress" {
+				c.ActiveCount++
+			}
+			if p.Status == "failed" {
+				c.FailedCount++
+			}
+		}
+		for _, c := range nsCounts {
+			projectSummary = append(projectSummary, *c)
+		}
+		sort.Slice(projectSummary, func(i, j int) bool {
+			return projectSummary[i].Namespace < projectSummary[j].Namespace
+		})
+	}
+
+	// Filter pipelines by project.
+	if proj != "" {
+		var filtered []pipeline.PipelineState
+		for _, p := range pipelines {
+			if p.Namespace == proj {
+				filtered = append(filtered, p)
+			}
+		}
+		pipelines = filtered
+	}
 
 	pipelineByIssue := make(map[int]*pipeline.PipelineState)
 	for i := range pipelines {
@@ -308,8 +351,18 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Build queue rows, filtered by project and annotated with namespace.
 	queueRows := make([]QueueRowView, 0, len(queueItems))
 	for _, q := range queueItems {
+		ns := ""
+		if p, ok := pipelineByIssue[q.Issue]; ok {
+			ns = p.Namespace
+		} else {
+			ns = s.namespaceFromConfigPath(q.ConfigPath)
+		}
+		if proj != "" && ns != proj {
+			continue
+		}
 		var pStatus string
 		hasPipeline := false
 		if p, ok := pipelineByIssue[q.Issue]; ok {
@@ -323,6 +376,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			DependsOnStr:   formatDeps(q.DependsOn),
 			HasPipeline:    hasPipeline,
 			PipelineStatus: pStatus,
+			Namespace:      ns,
 		})
 	}
 
@@ -382,6 +436,8 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		QueueItems:     queueRows,
 		RecentActivity: activityRows,
 		TriageRows:     triageRows,
+		ProjectSummary: projectSummary,
+		Sidebar:        sidebar,
 	}
 
 	if err := s.dashboardTmpl.ExecuteTemplate(w, "base", data); err != nil {
@@ -417,7 +473,7 @@ func (s *Server) handleTriageList(w http.ResponseWriter, r *http.Request) {
 			IsLive:       isLive,
 		})
 	}
-	data := TriageListData{TriageRows: rows}
+	data := TriageListData{TriageRows: rows, Sidebar: s.sidebarData("")}
 	if err := s.triageListTmpl.ExecuteTemplate(w, "base", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -581,6 +637,7 @@ func (s *Server) handlePipelineDetail(w http.ResponseWriter, r *http.Request, is
 		Upstream:         upstream,
 		Downstream:       downstream,
 		ShouldAutoRefresh: ps.Status == "in_progress" && !hasLiveStream,
+		Sidebar:          s.sidebarData(ps.Namespace),
 	}
 
 	if err := s.pipelineTmpl.ExecuteTemplate(w, "base", data); err != nil {
@@ -617,6 +674,10 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request, iss
 		logTruncated = true
 	}
 
+	var attemptNS string
+	if ps, err := s.store.Get(issue); err == nil {
+		attemptNS = ps.Namespace
+	}
 	data := AttemptDetailData{
 		Issue:        issue,
 		Stage:        stage,
@@ -627,6 +688,7 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request, iss
 		Checks:       checks,
 		Summary:      summary,
 		Outcome:      outcome,
+		Sidebar:      s.sidebarData(attemptNS),
 	}
 
 	if err := s.attemptTmpl.ExecuteTemplate(w, "base", data); err != nil {
@@ -661,6 +723,9 @@ func (s *Server) handleAttemptLog(w http.ResponseWriter, r *http.Request, issueS
 // ---- Queue ----
 
 func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
+	proj := currentProject(r)
+	sidebar := s.sidebarData(proj)
+
 	queueItems, err := s.db.QueueList()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -676,6 +741,15 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 
 	rows := make([]QueueRowView, 0, len(queueItems))
 	for _, q := range queueItems {
+		ns := ""
+		if p, ok := pipelineByIssue[q.Issue]; ok {
+			ns = p.Namespace
+		} else {
+			ns = s.namespaceFromConfigPath(q.ConfigPath)
+		}
+		if proj != "" && ns != proj {
+			continue
+		}
 		var pStatus string
 		hasPipeline := false
 		if p, ok := pipelineByIssue[q.Issue]; ok {
@@ -689,10 +763,11 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 			DependsOnStr:   formatDeps(q.DependsOn),
 			HasPipeline:    hasPipeline,
 			PipelineStatus: pStatus,
+			Namespace:      ns,
 		})
 	}
 
-	data := QueueData{Items: rows}
+	data := QueueData{Items: rows, Sidebar: sidebar}
 	if err := s.queueTmpl.ExecuteTemplate(w, "base", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -701,7 +776,21 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 // ---- Config ----
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	proj := currentProject(r)
+	sidebar := s.sidebarData(proj)
+
 	repos := s.allRepoConfigs()
+
+	// Filter repos by project.
+	if proj != "" {
+		var filtered []repoConfig
+		for _, rc := range repos {
+			if repoToNamespace(rc.Cfg.Pipeline.Repo) == proj {
+				filtered = append(filtered, rc)
+			}
+		}
+		repos = filtered
+	}
 
 	var views []RepoConfigView
 	for _, rc := range repos {
@@ -755,7 +844,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		views = append(views, view)
 	}
 
-	data := ConfigData{Repos: views}
+	data := ConfigData{Repos: views, Sidebar: sidebar}
 	if err := s.configTmpl.ExecuteTemplate(w, "base", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
