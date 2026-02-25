@@ -1,11 +1,22 @@
 {{define "title"}}Queue{{end}}
 {{define "refresh"}}<meta http-equiv="refresh" content="30">{{end}}
 {{define "content"}}
-<h1 style="font-size:1.2rem;font-weight:700;margin-bottom:1.25rem">Queue</h1>
+<h1 style="font-size:1.2rem;font-weight:700;margin-bottom:1.25rem">
+  Queue{{if .Sidebar.CurrentProject}} — <span style="font-family:monospace;font-weight:400;font-size:1rem">{{.Sidebar.CurrentProject}}</span>{{end}}
+</h1>
 
 {{if .Items}}
 <table>
-  <thead><tr><th>Pos</th><th>Issue</th><th>Queue Status</th><th>Depends On</th><th>Pipeline</th></tr></thead>
+  <thead>
+    <tr>
+      <th>Pos</th>
+      <th>Issue</th>
+      {{if not .Sidebar.CurrentProject}}<th>Project</th>{{end}}
+      <th>Queue Status</th>
+      <th>Depends On</th>
+      <th>Pipeline</th>
+    </tr>
+  </thead>
   <tbody>
   {{range .Items}}
   <tr>
@@ -17,6 +28,11 @@
         <strong>#{{.Issue}}</strong>
       {{end}}
     </td>
+    {{if not $.Sidebar.CurrentProject}}
+    <td>
+      {{if .Namespace}}<span class="badge badge-ns">{{.Namespace}}</span>{{else}}<span class="muted">—</span>{{end}}
+    </td>
+    {{end}}
     <td><span class="{{badgeClass .Status}}">{{.Status}}</span></td>
     <td class="muted">{{if .DependsOnStr}}{{.DependsOnStr}}{{else}}—{{end}}</td>
     <td>
@@ -31,6 +47,6 @@
   </tbody>
 </table>
 {{else}}
-<p class="muted">Queue is empty.</p>
+<p class="muted">Queue is empty{{if .Sidebar.CurrentProject}} for <code>{{.Sidebar.CurrentProject}}</code>{{end}}.</p>
 {{end}}
 {{end}}

@@ -1,6 +1,8 @@
 {{define "title"}}Config{{end}}
 {{define "content"}}
-<h1 style="font-size:1.2rem;font-weight:700;margin-bottom:1.25rem">Pipeline Configs</h1>
+<h1 style="font-size:1.2rem;font-weight:700;margin-bottom:1.25rem">
+  Pipeline Configs{{if .Sidebar.CurrentProject}} — <span style="font-family:monospace;font-weight:400;font-size:1rem">{{.Sidebar.CurrentProject}}</span>{{end}}
+</h1>
 
 {{if .Repos}}
 {{range .Repos}}
@@ -58,8 +60,12 @@
 
 {{else}}
 <p class="muted">
+  {{if .Sidebar.CurrentProject}}
+  No config found for <code>{{.Sidebar.CurrentProject}}</code>.
+  {{else}}
   No pipeline configs found. Configs are discovered automatically from each pipeline's
   worktree path — they'll appear here once pipelines have been created.
+  {{end}}
 </p>
 {{end}}
 {{end}}

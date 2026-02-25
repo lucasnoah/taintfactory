@@ -1,9 +1,28 @@
 {{define "title"}}Dashboard{{end}}
 {{define "refresh"}}<meta http-equiv="refresh" content="10">{{end}}
 {{define "content"}}
+
+{{if not .Sidebar.CurrentProject}}
+{{if .ProjectSummary}}
+<h2>Projects</h2>
+<div class="project-cards">
+  {{range .ProjectSummary}}
+  <a href="/?project={{.Namespace}}" class="project-card">
+    <div class="project-card-name">{{.Namespace}}</div>
+    <div class="project-card-stats">
+      {{if .ActiveCount}}<span class="badge badge-in-progress">{{.ActiveCount}} active</span>{{end}}
+      {{if .FailedCount}}<span class="badge badge-failed">{{.FailedCount}} failed</span>{{end}}
+      <span class="muted" style="font-size:.75rem">{{.TotalCount}} total</span>
+    </div>
+  </a>
+  {{end}}
+</div>
+{{end}}
+{{end}}
+
 <div class="grid-2">
   <div>
-    <h2>Pipelines</h2>
+    <h2>Pipelines{{if .Sidebar.CurrentProject}} — <span style="font-family:monospace;font-weight:400">{{.Sidebar.CurrentProject}}</span>{{end}}</h2>
     {{if .Pipelines}}
     <table>
       <thead><tr><th>Issue</th><th>Title</th><th>Status</th><th>Stage</th><th>Updated</th></tr></thead>
@@ -25,9 +44,8 @@
       </tbody>
     </table>
     {{else}}
-    <p class="muted">No pipelines found.</p>
+    <p class="muted">No pipelines found{{if .Sidebar.CurrentProject}} for <code>{{.Sidebar.CurrentProject}}</code>{{end}}.</p>
     {{end}}
-
   </div>
 
   <div>
