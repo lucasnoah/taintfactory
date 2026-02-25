@@ -8,16 +8,28 @@
 <style>
 :root {
   --bg: #f8f9fa; --border: #dee2e6; --text: #212529;
-  --nav-bg: #212529; --nav-text: #adb5bd; --nav-active: #fff;
+  --sidebar-bg: #1a1d23; --sidebar-text: #8b949e; --sidebar-active: #e6edf3;
   --muted: #6c757d;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; }
-nav { background: var(--nav-bg); padding: 0 1.5rem; display: flex; align-items: center; gap: 1.5rem; height: 48px; border-bottom: 1px solid #000; }
-nav .brand { color: #fff; font-weight: 700; font-size: 1rem; margin-right: 0.5rem; letter-spacing: -0.02em; }
-nav a { color: var(--nav-text); text-decoration: none; font-size: 0.875rem; padding: 0.25rem 0; }
-nav a:hover { color: var(--nav-active); }
+body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; display: flex; min-height: 100vh; }
+
+/* ---- Sidebar ---- */
+.sidebar { width: 200px; min-width: 200px; background: var(--sidebar-bg); display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; overflow-y: auto; flex-shrink: 0; }
+.sidebar-brand { color: #fff; font-weight: 700; font-size: .9rem; letter-spacing: -.02em; padding: 1rem 1rem .75rem; border-bottom: 1px solid #2d333b; margin-bottom: .5rem; }
+.sidebar-section { font-size: .65rem; font-weight: 600; color: #484f58; text-transform: uppercase; letter-spacing: .08em; padding: .75rem 1rem .25rem; }
+.sidebar-link { display: flex; align-items: center; justify-content: space-between; padding: .3rem .75rem; color: var(--sidebar-text); text-decoration: none; font-size: .8rem; border-radius: 4px; margin: 0 .35rem .1rem; }
+.sidebar-link:hover { color: var(--sidebar-active); background: #2d333b; text-decoration: none; }
+.sidebar-link.active { color: var(--sidebar-active); background: #2d333b; }
+.sidebar-ns { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-family: monospace; font-size: .75rem; }
+.sidebar-count { background: #2d333b; color: #8b949e; font-size: .65rem; font-weight: 600; padding: .1em .45em; border-radius: 10px; min-width: 1.4em; text-align: center; flex-shrink: 0; margin-left: .35rem; }
+.sidebar-link.active .sidebar-count { background: #1f6feb; color: #fff; }
+.sidebar-divider { border-top: 1px solid #2d333b; margin: .5rem .75rem; }
+
+/* ---- Content area ---- */
+.content { flex: 1; min-width: 0; }
 main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
+
 h2 { font-size: 0.75rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin: 1.5rem 0 0.75rem; }
 h2:first-child { margin-top: 0; }
 table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; background: #fff; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
@@ -40,6 +52,7 @@ a:hover { text-decoration: underline; }
 .badge-blocked      { background: #fff3cd; color: #664d03; }
 .badge-escalate     { background: #fff3cd; color: #664d03; }
 .badge-rate-limited { background: #e2d9f3; color: #432874; }
+.badge-ns { background: #e9ecef; color: #495057; font-size: .65rem; font-family: monospace; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
 .dot-green  { background: #198754; box-shadow: 0 0 4px #19875488; }
 .dot-yellow { background: #ffc107; }
@@ -63,18 +76,40 @@ pre.prompt { background: #fff; color: var(--text); border: 1px solid var(--borde
 .result-pass { color: #198754; font-weight: 600; }
 .result-fail { color: #842029; font-weight: 600; }
 code { background: #e9ecef; padding: .15em .35em; border-radius: 3px; font-size: .85em; word-break: break-all; }
+/* Project summary cards */
+.project-cards { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 1.5rem; }
+.project-card { background: #fff; border: 1px solid var(--border); border-radius: 6px; padding: .75rem 1rem; min-width: 180px; text-decoration: none; color: var(--text); display: block; }
+.project-card:hover { border-color: #0d6efd; text-decoration: none; }
+.project-card-name { font-size: .8rem; font-weight: 600; font-family: monospace; margin-bottom: .35rem; color: var(--text); }
+.project-card-stats { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
 </style>
 </head>
 <body>
-<nav>
-  <span class="brand">TaintFactory</span>
-  <a href="/">Dashboard</a>
-  <a href="/triage">Triage</a>
-  <a href="/queue">Queue</a>
-  <a href="/config">Config</a>
-</nav>
+
+<aside class="sidebar">
+  <div class="sidebar-brand">TaintFactory</div>
+
+  <div class="sidebar-section">Projects</div>
+  <a href="/" class="sidebar-link{{if not .Sidebar.CurrentProject}} active{{end}}">All</a>
+  {{range .Sidebar.Projects}}
+  <a href="/?project={{.Namespace}}" class="sidebar-link{{if .IsSelected}} active{{end}}">
+    <span class="sidebar-ns">{{.Namespace}}</span>
+    {{if .ActiveCount}}<span class="sidebar-count">{{.ActiveCount}}</span>{{end}}
+  </a>
+  {{end}}
+
+  <div class="sidebar-divider"></div>
+  <div class="sidebar-section">Views</div>
+  <a href="/triage" class="sidebar-link">Triage</a>
+  <a href="/queue" class="sidebar-link">Queue</a>
+  <a href="/config" class="sidebar-link">Config</a>
+</aside>
+
+<div class="content">
 <main>
 {{block "content" .}}{{end}}
 </main>
+</div>
+
 </body>
 </html>{{end}}
