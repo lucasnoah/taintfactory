@@ -21,10 +21,13 @@ type DashboardData struct {
 	QueueItems     []QueueRowView
 	RecentActivity []ActivityRow
 	TriageRows     []TriageRow
+	ProjectSummary []ProjectSummaryCard
+	Sidebar        SidebarData
 }
 
 type TriageListData struct {
 	TriageRows []TriageRow
+	Sidebar    SidebarData
 }
 
 type TriageRow struct {
@@ -48,6 +51,24 @@ type PipelineRow struct {
 	IsLive       bool // true when tmux session is confirmed alive right now
 }
 
+type ProjectSidebarItem struct {
+	Namespace   string
+	ActiveCount int
+	IsSelected  bool
+}
+
+type SidebarData struct {
+	Projects       []ProjectSidebarItem
+	CurrentProject string // empty = All view
+}
+
+type ProjectSummaryCard struct {
+	Namespace   string
+	ActiveCount int
+	TotalCount  int
+	FailedCount int
+}
+
 type QueueRowView struct {
 	Issue          int
 	Position       int
@@ -55,6 +76,7 @@ type QueueRowView struct {
 	DependsOnStr   string
 	HasPipeline    bool
 	PipelineStatus string
+	Namespace      string // project namespace; empty for legacy
 }
 
 type ActivityRow struct {
@@ -79,6 +101,7 @@ type PipelineDetailData struct {
 	Upstream         []DepIssueView // issues this one depends on (must complete first)
 	Downstream       []DepIssueView // issues that depend on this one (blocked until this completes)
 	ShouldAutoRefresh bool // true when active but no live SSE stream (meta-refresh fallback)
+	Sidebar          SidebarData
 }
 
 // DepIssueView represents a dependency relationship to another issue.
@@ -115,14 +138,17 @@ type AttemptDetailData struct {
 	Checks       []db.CheckRun
 	Summary      *pipeline.StageSummary
 	Outcome      *pipeline.StageOutcome
+	Sidebar      SidebarData
 }
 
 type QueueData struct {
-	Items []QueueRowView
+	Items   []QueueRowView
+	Sidebar SidebarData
 }
 
 type ConfigData struct {
-	Repos []RepoConfigView
+	Repos   []RepoConfigView
+	Sidebar SidebarData
 }
 
 type RepoConfigView struct {

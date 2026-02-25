@@ -8,6 +8,104 @@ import (
 	"github.com/lucasnoah/taintfactory/internal/pipeline"
 )
 
+// ---- sidebarData tests ----
+
+func TestSidebarData_GroupsByNamespace(t *testing.T) {
+	dir := t.TempDir()
+	store := pipeline.NewStore(dir)
+	store.Create(pipeline.CreateOpts{Issue: 101, Title: "A", Branch: "b", Worktree: "w", FirstStage: "impl", Namespace: "org/repo-a", ConfigPath: "/x/pipeline.yaml", RepoDir: "/x"})
+	store.Create(pipeline.CreateOpts{Issue: 102, Title: "B", Branch: "b", Worktree: "w", FirstStage: "impl", Namespace: "org/repo-a", ConfigPath: "/x/pipeline.yaml", RepoDir: "/x"})
+	store.Create(pipeline.CreateOpts{Issue: 103, Title: "C", Branch: "b", Worktree: "w", FirstStage: "impl", Namespace: "org/repo-b", ConfigPath: "/y/pipeline.yaml", RepoDir: "/y"})
+
+	s := NewServer(store, nil, 0, "")
+	sd := s.sidebarData("")
+
+	if len(sd.Projects) != 2 {
+		t.Fatalf("expected 2 projects, got %d", len(sd.Projects))
+	}
+	if sd.Projects[0].Namespace != "org/repo-a" {
+		t.Errorf("expected org/repo-a first (sorted), got %q", sd.Projects[0].Namespace)
+	}
+}
+
+func TestSidebarData_CountsOnlyActive(t *testing.T) {
+	dir := t.TempDir()
+	store := pipeline.NewStore(dir)
+	store.Create(pipeline.CreateOpts{Issue: 201, Title: "A", Branch: "b", Worktree: "w", FirstStage: "impl", Namespace: "org/app", ConfigPath: "/x/pipeline.yaml", RepoDir: "/x"})
+	store.Update(201, func(p *pipeline.PipelineState) { p.Status = "in_progress" })
+	store.Create(pipeline.CreateOpts{Issue: 202, Title: "B", Branch: "b", Worktree: "w", FirstStage: "impl", Namespace: "org/app", ConfigPath: "/x/pipeline.yaml", RepoDir: "/x"})
+	// issue 202 stays pending
+
+	s := NewServer(store, nil, 0, "")
+	sd := s.sidebarData("")
+
+	if len(sd.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(sd.Projects))
+	}
+	if sd.Projects[0].ActiveCount != 1 {
+		t.Errorf("expected ActiveCount=1, got %d", sd.Projects[0].ActiveCount)
+	}
+}
+
+func TestSidebarData_MarksSelected(t *testing.T) {
+	dir := t.TempDir()
+	store := pipeline.NewStore(dir)
+	store.Create(pipeline.CreateOpts{Issue: 301, Title: "A", Branch: "b", Worktree: "w", FirstStage: "impl", Namespace: "org/app", ConfigPath: "/x/pipeline.yaml", RepoDir: "/x"})
+	store.Create(pipeline.CreateOpts{Issue: 302, Title: "B", Branch: "b", Worktree: "w", FirstStage: "impl", Namespace: "org/other", ConfigPath: "/y/pipeline.yaml", RepoDir: "/y"})
+
+	s := NewServer(store, nil, 0, "")
+	sd := s.sidebarData("org/app")
+
+	var foundSelected bool
+	for _, p := range sd.Projects {
+		if p.Namespace == "org/app" && p.IsSelected {
+			foundSelected = true
+		}
+		if p.Namespace == "org/other" && p.IsSelected {
+			t.Error("org/other should not be selected")
+		}
+	}
+	if !foundSelected {
+		t.Error("org/app should be marked IsSelected")
+	}
+	if sd.CurrentProject != "org/app" {
+		t.Errorf("CurrentProject = %q, want org/app", sd.CurrentProject)
+	}
+}
+
+func TestSidebarData_ExcludesLegacyPipelines(t *testing.T) {
+	dir := t.TempDir()
+	store := pipeline.NewStore(dir)
+	store.Create(pipeline.CreateOpts{Issue: 401, Title: "Legacy", Branch: "b", Worktree: "/some/worktree", FirstStage: "impl"})
+
+	s := NewServer(store, nil, 0, "")
+	sd := s.sidebarData("")
+
+	if len(sd.Projects) != 0 {
+		t.Errorf("expected 0 projects (legacy has no namespace), got %d", len(sd.Projects))
+	}
+}
+
+// ---- repoToNamespace tests ----
+
+func TestRepoToNamespace(t *testing.T) {
+	cases := []struct {
+		repo string
+		want string
+	}{
+		{"github.com/myorg/myapp", "myorg/myapp"},
+		{"https://github.com/myorg/myapp", "myorg/myapp"},
+		{"http://github.com/myorg/myapp", "myorg/myapp"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		got := repoToNamespace(c.repo)
+		if got != c.want {
+			t.Errorf("repoToNamespace(%q) = %q, want %q", c.repo, got, c.want)
+		}
+	}
+}
+
 func TestConfigForPS_UsesConfigPath(t *testing.T) {
 	dir := t.TempDir()
 	cfgContent := `

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -212,6 +213,88 @@ func (s *Server) allRepoConfigs() []repoConfig {
 type repoConfig struct {
 	Dir string
 	Cfg *config.PipelineConfig
+}
+
+// currentProject reads the ?project= query parameter from a request.
+func currentProject(r *http.Request) string {
+	return r.URL.Query().Get("project")
+}
+
+// repoToNamespace converts a repo URL like "github.com/org/repo" or
+// "https://github.com/org/repo" to a namespace string "org/repo".
+func repoToNamespace(repo string) string {
+	if repo == "" {
+		return ""
+	}
+	repo = strings.TrimPrefix(repo, "https://")
+	repo = strings.TrimPrefix(repo, "http://")
+	parts := strings.SplitN(repo, "/", 2)
+	if len(parts) >= 2 {
+		return parts[1]
+	}
+	return repo
+}
+
+// namespaceFromConfigPath derives the namespace for a config file path by
+// reading the cached pipeline config for that directory. Returns "" if not cached.
+// Call sidebarData first to warm the cache.
+func (s *Server) namespaceFromConfigPath(configPath string) string {
+	if configPath == "" {
+		return ""
+	}
+	repoDir := filepath.Dir(configPath)
+	s.cfgMu.RLock()
+	cfg := s.cfgCache[repoDir]
+	s.cfgMu.RUnlock()
+	if cfg == nil {
+		return ""
+	}
+	return repoToNamespace(cfg.Pipeline.Repo)
+}
+
+// sidebarData returns sidebar state for all known namespaced projects.
+// currentProject should be the ?project= query param value (empty = All view).
+func (s *Server) sidebarData(currentProj string) SidebarData {
+	if s.store == nil {
+		return SidebarData{CurrentProject: currentProj}
+	}
+	pipelines, _ := s.store.List("")
+
+	// Warm config cache so namespaceFromConfigPath works for queue items.
+	for i := range pipelines {
+		s.configForPS(&pipelines[i])
+	}
+
+	type entry struct{ active, total int }
+	counts := make(map[string]*entry)
+	for _, ps := range pipelines {
+		if ps.Namespace == "" {
+			continue
+		}
+		e := counts[ps.Namespace]
+		if e == nil {
+			e = &entry{}
+			counts[ps.Namespace] = e
+		}
+		e.total++
+		if ps.Status == "in_progress" {
+			e.active++
+		}
+	}
+
+	var projects []ProjectSidebarItem
+	for ns, e := range counts {
+		projects = append(projects, ProjectSidebarItem{
+			Namespace:   ns,
+			ActiveCount: e.active,
+			IsSelected:  ns == currentProj,
+		})
+	}
+	sort.Slice(projects, func(i, j int) bool {
+		return projects[i].Namespace < projects[j].Namespace
+	})
+
+	return SidebarData{Projects: projects, CurrentProject: currentProj}
 }
 
 // Start registers routes and starts listening.
