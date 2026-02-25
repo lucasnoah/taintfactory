@@ -12,11 +12,15 @@ func newTestStore(t *testing.T) *Store {
 	return NewStore(t.TempDir())
 }
 
+func c(issue int, title, branch, worktree, firstStage string, gates map[string]string) CreateOpts {
+	return CreateOpts{Issue: issue, Title: title, Branch: branch, Worktree: worktree, FirstStage: firstStage, GoalGates: gates}
+}
+
 func TestCreateAndGet(t *testing.T) {
 	s := newTestStore(t)
 
 	gates := map[string]string{"lint": "pass", "test": "pass"}
-	ps, err := s.Create(42, "Add widget", "feature/42", "/tmp/wt-42", "plan", gates)
+	ps, err := s.Create(c(42, "Add widget", "feature/42", "/tmp/wt-42", "plan", gates))
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -65,11 +69,11 @@ func TestCreateAndGet(t *testing.T) {
 func TestCreateDuplicate(t *testing.T) {
 	s := newTestStore(t)
 
-	_, err := s.Create(1, "First", "b", "w", "plan", nil)
+	_, err := s.Create(c(1, "First", "b", "w", "plan", nil))
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	_, err = s.Create(1, "Duplicate", "b", "w", "plan", nil)
+	_, err = s.Create(c(1, "Duplicate", "b", "w", "plan", nil))
 	if err == nil {
 		t.Fatal("expected error creating duplicate pipeline")
 	}
@@ -87,7 +91,7 @@ func TestGetNotFound(t *testing.T) {
 func TestUpdate(t *testing.T) {
 	s := newTestStore(t)
 
-	_, err := s.Create(10, "Test", "b", "w", "plan", nil)
+	_, err := s.Create(c(10, "Test", "b", "w", "plan", nil))
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -133,10 +137,10 @@ func TestUpdateNotFound(t *testing.T) {
 func TestListAll(t *testing.T) {
 	s := newTestStore(t)
 
-	_, _ = s.Create(1, "A", "b1", "w1", "plan", nil)
-	_, _ = s.Create(2, "B", "b2", "w2", "plan", nil)
+	_, _ = s.Create(c(1, "A", "b1", "w1", "plan", nil))
+	_, _ = s.Create(c(2, "B", "b2", "w2", "plan", nil))
 	_ = s.Update(2, func(ps *PipelineState) { ps.Status = "in_progress" })
-	_, _ = s.Create(3, "C", "b3", "w3", "plan", nil)
+	_, _ = s.Create(c(3, "C", "b3", "w3", "plan", nil))
 
 	all, err := s.List("")
 	if err != nil {
@@ -156,8 +160,8 @@ func TestListAll(t *testing.T) {
 func TestListWithFilter(t *testing.T) {
 	s := newTestStore(t)
 
-	_, _ = s.Create(1, "A", "b1", "w1", "plan", nil)
-	_, _ = s.Create(2, "B", "b2", "w2", "plan", nil)
+	_, _ = s.Create(c(1, "A", "b1", "w1", "plan", nil))
+	_, _ = s.Create(c(2, "B", "b2", "w2", "plan", nil))
 	_ = s.Update(2, func(ps *PipelineState) { ps.Status = "in_progress" })
 
 	pending, err := s.List("pending")
@@ -203,7 +207,7 @@ func TestListEmpty(t *testing.T) {
 func TestDelete(t *testing.T) {
 	s := newTestStore(t)
 
-	_, _ = s.Create(5, "Delete me", "b", "w", "plan", nil)
+	_, _ = s.Create(c(5, "Delete me", "b", "w", "plan", nil))
 
 	err := s.Delete(5)
 	if err != nil {
@@ -216,7 +220,7 @@ func TestDelete(t *testing.T) {
 	}
 
 	// Verify directory is gone.
-	if _, err := os.Stat(s.issueDir(5)); !os.IsNotExist(err) {
+	if _, err := os.Stat(s.issueDir("", 5)); !os.IsNotExist(err) {
 		t.Error("issue directory should not exist after Delete")
 	}
 }
@@ -233,7 +237,7 @@ func TestDeleteNotFound(t *testing.T) {
 func TestInitStageAttempt(t *testing.T) {
 	s := newTestStore(t)
 
-	_, _ = s.Create(7, "Stage test", "b", "w", "code", nil)
+	_, _ = s.Create(c(7, "Stage test", "b", "w", "code", nil))
 	err := s.InitStageAttempt(7, "code", 1)
 	if err != nil {
 		t.Fatalf("InitStageAttempt: %v", err)
@@ -261,7 +265,7 @@ func TestInitStageAttemptPipelineNotFound(t *testing.T) {
 func TestSaveAndGetStageOutcome(t *testing.T) {
 	s := newTestStore(t)
 
-	_, _ = s.Create(8, "Outcome test", "b", "w", "lint", nil)
+	_, _ = s.Create(c(8, "Outcome test", "b", "w", "lint", nil))
 
 	outcome := &StageOutcome{
 		Status:       "success",
@@ -315,7 +319,7 @@ func TestGetStageOutcomeNotFound(t *testing.T) {
 func TestSaveStageSummary(t *testing.T) {
 	s := newTestStore(t)
 
-	_, _ = s.Create(9, "Summary test", "b", "w", "code", nil)
+	_, _ = s.Create(c(9, "Summary test", "b", "w", "code", nil))
 
 	summary := &StageSummary{
 		Stage:           "code",
@@ -352,7 +356,7 @@ func TestSaveStageSummary(t *testing.T) {
 func TestSaveAndGetPrompt(t *testing.T) {
 	s := newTestStore(t)
 
-	_, _ = s.Create(11, "Prompt test", "b", "w", "plan", nil)
+	_, _ = s.Create(c(11, "Prompt test", "b", "w", "plan", nil))
 
 	prompt := "# Stage: plan\n\nImplement the widget feature.\n\n## Requirements\n- Must be fast\n- Must be correct\n"
 
@@ -435,7 +439,7 @@ func TestWriteAndReadJSON(t *testing.T) {
 func TestConcurrentUpdates(t *testing.T) {
 	s := newTestStore(t)
 
-	_, err := s.Create(20, "Concurrent", "b", "w", "plan", nil)
+	_, err := s.Create(c(20, "Concurrent", "b", "w", "plan", nil))
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -472,7 +476,7 @@ func TestConcurrentUpdates(t *testing.T) {
 func TestDirectoryStructure(t *testing.T) {
 	s := newTestStore(t)
 
-	_, _ = s.Create(50, "Dir test", "b", "w", "code", nil)
+	_, _ = s.Create(c(50, "Dir test", "b", "w", "code", nil))
 	_ = s.InitStageAttempt(50, "code", 1)
 	_ = s.SavePrompt(50, "code", 1, "test prompt")
 	_ = s.SaveStageOutcome(50, "code", 1, &StageOutcome{Status: "success"})
@@ -480,10 +484,10 @@ func TestDirectoryStructure(t *testing.T) {
 
 	// Verify expected directory structure.
 	paths := []string{
-		s.issueDir(50),
-		filepath.Join(s.issueDir(50), "pipeline.json"),
-		filepath.Join(s.issueDir(50), "stages"),
-		filepath.Join(s.issueDir(50), "stages", "code"),
+		s.issueDir("", 50),
+		filepath.Join(s.issueDir("", 50), "pipeline.json"),
+		filepath.Join(s.issueDir("", 50), "stages"),
+		filepath.Join(s.issueDir("", 50), "stages", "code"),
 		s.stageAttemptDir(50, "code", 1),
 		filepath.Join(s.stageAttemptDir(50, "code", 1), "checks"),
 		filepath.Join(s.stageAttemptDir(50, "code", 1), "prompt.md"),
@@ -494,5 +498,67 @@ func TestDirectoryStructure(t *testing.T) {
 		if _, err := os.Stat(p); os.IsNotExist(err) {
 			t.Errorf("expected path to exist: %s", p)
 		}
+	}
+}
+
+func TestCreatePreservesConfigFields(t *testing.T) {
+	s := newTestStore(t)
+
+	ps, err := s.Create(CreateOpts{
+		Issue:      55,
+		Title:      "Multi-project test",
+		Branch:     "feature/55",
+		Worktree:   "/tmp/wt-55",
+		FirstStage: "implement",
+		GoalGates:  map[string]string{},
+		ConfigPath: "/projects/myapp/pipeline.yaml",
+		RepoDir:    "/projects/myapp",
+		Namespace:  "myorg/myapp",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if ps.ConfigPath != "/projects/myapp/pipeline.yaml" {
+		t.Errorf("ConfigPath = %q, want %q", ps.ConfigPath, "/projects/myapp/pipeline.yaml")
+	}
+	if ps.RepoDir != "/projects/myapp" {
+		t.Errorf("RepoDir = %q, want %q", ps.RepoDir, "/projects/myapp")
+	}
+	if ps.Namespace != "myorg/myapp" {
+		t.Errorf("Namespace = %q, want %q", ps.Namespace, "myorg/myapp")
+	}
+
+	// Round-trip through disk
+	got, err := s.Get(55)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.ConfigPath != "/projects/myapp/pipeline.yaml" {
+		t.Errorf("after Get: ConfigPath = %q", got.ConfigPath)
+	}
+	if got.Namespace != "myorg/myapp" {
+		t.Errorf("after Get: Namespace = %q", got.Namespace)
+	}
+}
+
+func TestNamespacedStorageIsolatesIssues(t *testing.T) {
+	s := newTestStore(t)
+
+	// Two repos with the same issue number — should not collide
+	_, err := s.Create(CreateOpts{Issue: 1, Title: "Repo A", Branch: "b", Worktree: "w", FirstStage: "impl", Namespace: "org/repo-a"})
+	if err != nil {
+		t.Fatalf("Create repo-a: %v", err)
+	}
+	_, err = s.Create(CreateOpts{Issue: 1, Title: "Repo B", Branch: "b", Worktree: "w", FirstStage: "impl", Namespace: "org/repo-b"})
+	if err != nil {
+		t.Fatalf("Create repo-b: %v", err)
+	}
+	// Both should be accessible (different namespaces)
+	all, err := s.List("")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("List returned %d pipelines, want 2", len(all))
 	}
 }

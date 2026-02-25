@@ -127,7 +127,14 @@ func (o *Orchestrator) Create(opts CreateOpts) (*pipeline.PipelineState, error) 
 	}
 
 	// Create pipeline state (this creates the issue directory)
-	ps, err := o.store.Create(opts.Issue, issue.Title, wtResult.Branch, wtResult.Path, firstStage, goalGates)
+	ps, err := o.store.Create(pipeline.CreateOpts{
+		Issue:      opts.Issue,
+		Title:      issue.Title,
+		Branch:     wtResult.Branch,
+		Worktree:   wtResult.Path,
+		FirstStage: firstStage,
+		GoalGates:  goalGates,
+	})
 	if err != nil {
 		// Clean up orphaned worktree on store failure
 		_ = o.wt.Remove(opts.Issue, true)

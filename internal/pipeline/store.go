@@ -37,19 +37,28 @@ func (s *Store) BaseDir() string {
 	return s.baseDir
 }
 
-// issueDir returns the directory path for a given issue.
-func (s *Store) issueDir(issue int) string {
+// issueDir returns the directory for a given namespace+issue.
+// If namespace is empty, uses the legacy flat path.
+func (s *Store) issueDir(namespace string, issue int) string {
+	if namespace != "" {
+		return filepath.Join(s.baseDir, namespace, strconv.Itoa(issue))
+	}
 	return filepath.Join(s.baseDir, strconv.Itoa(issue))
 }
 
-// pipelinePath returns the path to the pipeline.json file for an issue.
-func (s *Store) pipelinePath(issue int) string {
-	return filepath.Join(s.issueDir(issue), "pipeline.json")
+// pipelinePathFor returns the path to pipeline.json using the state's Namespace.
+func (s *Store) pipelinePathFor(ps *PipelineState) string {
+	return filepath.Join(s.issueDir(ps.Namespace, ps.Issue), "pipeline.json")
 }
 
 // stageAttemptDir returns the directory for a specific stage attempt.
+// It resolves the namespace from disk so callers do not need to pass it.
 func (s *Store) stageAttemptDir(issue int, stage string, attempt int) string {
-	return filepath.Join(s.issueDir(issue), "stages", stage, fmt.Sprintf("attempt-%d", attempt))
+	namespace := ""
+	if ps, err := s.Get(issue); err == nil {
+		namespace = ps.Namespace
+	}
+	return filepath.Join(s.issueDir(namespace, issue), "stages", stage, fmt.Sprintf("attempt-%d", attempt))
 }
 
 // CheckOutputDir returns the directory for storing raw check output.
@@ -62,11 +71,25 @@ func (s *Store) GateResultDir(issue int, stage string, attempt int, fixRound int
 	return filepath.Join(s.stageAttemptDir(issue, stage, attempt), "checks", fmt.Sprintf("post-gate-%d", fixRound))
 }
 
+// CreateOpts holds options for creating a new pipeline on disk.
+type CreateOpts struct {
+	Issue      int
+	Title      string
+	Branch     string
+	Worktree   string
+	FirstStage string
+	GoalGates  map[string]string
+	// Multi-project fields (optional; empty for legacy single-project pipelines)
+	ConfigPath string
+	RepoDir    string
+	Namespace  string
+}
+
 // Create initialises a new pipeline on disk.
-func (s *Store) Create(issue int, title string, branch string, worktree string, firstStage string, goalGates map[string]string) (*PipelineState, error) {
-	dir := s.issueDir(issue)
+func (s *Store) Create(opts CreateOpts) (*PipelineState, error) {
+	dir := s.issueDir(opts.Namespace, opts.Issue)
 	if _, err := os.Stat(dir); err == nil {
-		return nil, fmt.Errorf("pipeline %d already exists", issue)
+		return nil, fmt.Errorf("pipeline %d already exists", opts.Issue)
 	}
 
 	if err := os.MkdirAll(filepath.Join(dir, "stages"), 0o755); err != nil {
@@ -75,35 +98,58 @@ func (s *Store) Create(issue int, title string, branch string, worktree string, 
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	ps := &PipelineState{
-		Issue:          issue,
-		Title:          title,
-		Branch:         branch,
-		Worktree:       worktree,
-		CurrentStage:   firstStage,
+		Issue:          opts.Issue,
+		Title:          opts.Title,
+		Branch:         opts.Branch,
+		Worktree:       opts.Worktree,
+		CurrentStage:   opts.FirstStage,
 		CurrentAttempt: 1,
 		StageHistory:   []StageHistoryEntry{},
-		GoalGates:      goalGates,
+		GoalGates:      opts.GoalGates,
 		Status:         "pending",
 		CreatedAt:      now,
 		UpdatedAt:      now,
+		ConfigPath:     opts.ConfigPath,
+		RepoDir:        opts.RepoDir,
+		Namespace:      opts.Namespace,
 	}
 
-	if err := WriteJSON(s.pipelinePath(issue), ps); err != nil {
+	if err := WriteJSON(s.pipelinePathFor(ps), ps); err != nil {
 		return nil, fmt.Errorf("write pipeline.json: %w", err)
 	}
 	return ps, nil
 }
 
 // Get reads the pipeline state for an issue.
+// It first tries the legacy flat path, then walks for a namespaced path.
 func (s *Store) Get(issue int) (*PipelineState, error) {
+	// Try legacy flat path first (fast path for existing pipelines)
+	flat := filepath.Join(s.baseDir, strconv.Itoa(issue), "pipeline.json")
 	var ps PipelineState
-	if err := ReadJSON(s.pipelinePath(issue), &ps); err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("pipeline %d not found", issue)
-		}
-		return nil, err
+	if err := ReadJSON(flat, &ps); err == nil {
+		return &ps, nil
 	}
-	return &ps, nil
+
+	// Walk for namespaced path: baseDir/{namespace}/{issue}/pipeline.json
+	issueStr := strconv.Itoa(issue)
+	var found *PipelineState
+	_ = filepath.WalkDir(s.baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != "pipeline.json" {
+			return nil
+		}
+		if filepath.Base(filepath.Dir(path)) == issueStr {
+			var p PipelineState
+			if readErr := ReadJSON(path, &p); readErr == nil {
+				found = &p
+			}
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if found != nil {
+		return found, nil
+	}
+	return nil, fmt.Errorf("pipeline %d not found", issue)
 }
 
 // Update performs an atomic read-modify-write of the pipeline state.
@@ -114,37 +160,31 @@ func (s *Store) Update(issue int, fn func(*PipelineState)) error {
 	}
 	fn(ps)
 	ps.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	return WriteJSON(s.pipelinePath(issue), ps)
+	return WriteJSON(s.pipelinePathFor(ps), ps)
 }
 
 // List returns all pipelines, optionally filtered by status.
 // Pass "" for statusFilter to return all pipelines.
+// It walks recursively to find both legacy flat and namespaced pipelines.
 func (s *Store) List(statusFilter string) ([]PipelineState, error) {
-	entries, err := os.ReadDir(s.baseDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read dir %s: %w", s.baseDir, err)
+	if _, err := os.Stat(s.baseDir); os.IsNotExist(err) {
+		return nil, nil
 	}
 
 	var pipelines []PipelineState
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+	_ = filepath.WalkDir(s.baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != "pipeline.json" {
+			return nil
 		}
-		issue, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			continue // skip non-numeric directories
-		}
-		ps, err := s.Get(issue)
-		if err != nil {
-			continue // skip broken entries
+		var ps PipelineState
+		if readErr := ReadJSON(path, &ps); readErr != nil {
+			return nil
 		}
 		if statusFilter == "" || ps.Status == statusFilter {
-			pipelines = append(pipelines, *ps)
+			pipelines = append(pipelines, ps)
 		}
-	}
+		return nil
+	})
 
 	sort.Slice(pipelines, func(i, j int) bool {
 		return pipelines[i].Issue < pipelines[j].Issue
@@ -154,11 +194,11 @@ func (s *Store) List(statusFilter string) ([]PipelineState, error) {
 
 // Delete removes all data for a pipeline.
 func (s *Store) Delete(issue int) error {
-	dir := s.issueDir(issue)
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
+	ps, err := s.Get(issue)
+	if err != nil {
 		return fmt.Errorf("pipeline %d not found", issue)
 	}
-	return os.RemoveAll(dir)
+	return os.RemoveAll(s.issueDir(ps.Namespace, ps.Issue))
 }
 
 // InitStageAttempt creates the directory structure for a new stage attempt.

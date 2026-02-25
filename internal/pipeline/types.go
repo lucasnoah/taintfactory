@@ -19,7 +19,12 @@ type PipelineState struct {
 	// RuntimeVars holds variables injected by the orchestrator at runtime (e.g. after
 	// a merge, dependent_issues is populated for the contract-check stage). These are
 	// merged into template vars with lower priority than pipeline/stage vars.
-	RuntimeVars     map[string]string   `json:"runtime_vars,omitempty"`
+	RuntimeVars map[string]string `json:"runtime_vars,omitempty"`
+
+	// Multi-project fields (optional; empty for legacy single-project pipelines)
+	ConfigPath string `json:"config_path,omitempty"` // abs path to pipeline.yaml
+	RepoDir    string `json:"repo_dir,omitempty"`    // abs path to git repo root
+	Namespace  string `json:"namespace,omitempty"`   // "{org}/{repo}", e.g. "myorg/myapp"
 }
 
 // StageHistoryEntry records the outcome of a completed stage attempt.
