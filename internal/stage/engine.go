@@ -82,7 +82,16 @@ func (e *Engine) logf(format string, args ...interface{}) {
 type RunOpts struct {
 	Issue   int
 	Stage   string
-	Timeout time.Duration // overall timeout for the stage
+	Timeout time.Duration       // overall timeout for the stage
+	Config  *config.PipelineConfig // optional: overrides engine's default config for this run
+}
+
+// cfgFor returns the effective config for a run: RunOpts.Config if set, else e.cfg.
+func (e *Engine) cfgFor(opts RunOpts) *config.PipelineConfig {
+	if opts.Config != nil {
+		return opts.Config
+	}
+	return e.cfg
 }
 
 // RunResult captures the outcome of a stage run.
@@ -104,6 +113,7 @@ type RunResult struct {
 // Run executes the full stage lifecycle.
 func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 	start := time.Now()
+	cfg := e.cfgFor(opts)
 	e.logf("issue #%d: running stage %q", opts.Issue, opts.Stage)
 
 	ps, err := e.store.Get(opts.Issue)
@@ -111,7 +121,7 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 		return nil, fmt.Errorf("get pipeline state: %w", err)
 	}
 
-	stageCfg, err := e.findStageConfig(opts.Stage)
+	stageCfg, err := e.findStageConfig(opts.Stage, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -128,13 +138,13 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 	// For checks_only stages, skip agent and go straight to checks
 	if stageCfg.Type == "checks_only" {
 		e.logf("stage type is checks_only, running checks directly")
-		return e.runChecksOnly(ps, stageCfg, opts, result, start)
+		return e.runChecksOnly(ps, stageCfg, opts, result, start, cfg)
 	}
 
 	// Run checks_before if configured
 	if len(stageCfg.ChecksBefore) > 0 {
 		e.logf("running checks_before: %v", stageCfg.ChecksBefore)
-		gate, _, err := e.runGate(ps, opts, stageCfg.ChecksBefore, 0)
+		gate, _, err := e.runGate(ps, opts, stageCfg.ChecksBefore, 0, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("checks_before: %w", err)
 		}
@@ -151,7 +161,7 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 	// Build context and render prompt
 	e.logf("building context and rendering prompt...")
 	agentStart := time.Now()
-	rendered, err := e.buildAndRenderPrompt(ps, opts, stageCfg)
+	rendered, err := e.buildAndRenderPrompt(ps, opts, stageCfg, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("build prompt: %w", err)
 	}
@@ -164,7 +174,7 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 	sessionName := fmt.Sprintf("%d-%s-%d", opts.Issue, opts.Stage, ps.CurrentAttempt)
 	result.Session = sessionName
 	e.logf("creating agent session: %s", sessionName)
-	if err := e.createAndRunSession(sessionName, ps, opts, stageCfg, rendered); err != nil {
+	if err := e.createAndRunSession(sessionName, ps, opts, stageCfg, rendered, cfg); err != nil {
 		if err == errRateLimited {
 			e.logf("rate limit detected — pausing stage for retry")
 			result.Outcome = "rate_limited"
@@ -191,7 +201,7 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 	}
 
 	e.logf("running post-checks: %v", checkNames)
-	gate, _, err := e.runGate(ps, opts, checkNames, 0)
+	gate, _, err := e.runGate(ps, opts, checkNames, 0, cfg)
 	if err != nil {
 		e.cleanupSession(sessionName)
 		return nil, fmt.Errorf("post-checks: %w", err)
@@ -220,12 +230,12 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 
 	e.logf("post-checks failed, entering fix loop")
 
-	// Enter fix loop
-	maxFixRounds := e.cfg.Pipeline.MaxFixRounds
+	// Enter fix loop — use per-run config for limits
+	maxFixRounds := cfg.Pipeline.MaxFixRounds
 	if maxFixRounds <= 0 {
 		maxFixRounds = 3
 	}
-	freshAfter := e.cfg.Pipeline.FreshSessionAfter
+	freshAfter := cfg.Pipeline.FreshSessionAfter
 	if freshAfter <= 0 {
 		freshAfter = 2
 	}
@@ -252,7 +262,7 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 			if err != nil {
 				return nil, fmt.Errorf("build fix prompt: %w", err)
 			}
-			if err := e.createAndRunSession(sessionName, ps, opts, stageCfg, fixRendered); err != nil {
+			if err := e.createAndRunSession(sessionName, ps, opts, stageCfg, fixRendered, cfg); err != nil {
 				if err == errRateLimited {
 					e.logf("rate limit detected during fix round %d — pausing stage", round)
 					result.Outcome = "rate_limited"
@@ -292,7 +302,7 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 
 		// Re-run checks
 		e.logf("re-running checks after fix round %d", round)
-		gate, _, err = e.runGate(ps, opts, checkNames, round)
+		gate, _, err = e.runGate(ps, opts, checkNames, round, cfg)
 		if err != nil {
 			e.cleanupSession(sessionName)
 			return nil, fmt.Errorf("re-check (round %d): %w", round, err)
@@ -332,7 +342,7 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 }
 
 // runChecksOnly handles checks_only stage type.
-func (e *Engine) runChecksOnly(ps *pipeline.PipelineState, stageCfg *config.Stage, opts RunOpts, result *RunResult, start time.Time) (*RunResult, error) {
+func (e *Engine) runChecksOnly(ps *pipeline.PipelineState, stageCfg *config.Stage, opts RunOpts, result *RunResult, start time.Time, cfg *config.PipelineConfig) (*RunResult, error) {
 	checkNames := stageCfg.Checks
 	if len(checkNames) == 0 {
 		e.logf("no checks configured — stage passed")
@@ -343,7 +353,7 @@ func (e *Engine) runChecksOnly(ps *pipeline.PipelineState, stageCfg *config.Stag
 	}
 
 	e.logf("running checks: %v", checkNames)
-	gate, _, err := e.runGate(ps, opts, checkNames, 0)
+	gate, _, err := e.runGate(ps, opts, checkNames, 0, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("checks_only gate: %w", err)
 	}
@@ -371,7 +381,7 @@ func (e *Engine) runChecksOnly(ps *pipeline.PipelineState, stageCfg *config.Stag
 }
 
 // buildAndRenderPrompt builds context and renders the stage prompt.
-func (e *Engine) buildAndRenderPrompt(ps *pipeline.PipelineState, opts RunOpts, stageCfg *config.Stage) (string, error) {
+func (e *Engine) buildAndRenderPrompt(ps *pipeline.PipelineState, opts RunOpts, stageCfg *config.Stage, cfg *config.PipelineConfig) (string, error) {
 	// Load cached issue body from pipeline directory
 	var issueBody string
 	pipelineDir := fmt.Sprintf("%s/%d", e.store.BaseDir(), opts.Issue)
@@ -384,7 +394,7 @@ func (e *Engine) buildAndRenderPrompt(ps *pipeline.PipelineState, opts RunOpts, 
 		Stage:        opts.Stage,
 		StageCfg:     stageCfg,
 		IssueBody:    issueBody,
-		PipelineVars: e.cfg.Pipeline.Vars,
+		PipelineVars: cfg.Pipeline.Vars,
 	})
 	if err != nil {
 		return "", err
@@ -429,15 +439,15 @@ func (e *Engine) buildFixPrompt(ps *pipeline.PipelineState, opts RunOpts, stageC
 }
 
 // createAndRunSession creates a tmux session, sends the prompt, and waits for idle.
-func (e *Engine) createAndRunSession(name string, ps *pipeline.PipelineState, opts RunOpts, stageCfg *config.Stage, rendered string) error {
+func (e *Engine) createAndRunSession(name string, ps *pipeline.PipelineState, opts RunOpts, stageCfg *config.Stage, rendered string, cfg *config.PipelineConfig) error {
 	flags := stageCfg.Flags
 	if flags == "" {
-		flags = e.cfg.Pipeline.Defaults.Flags
+		flags = cfg.Pipeline.Defaults.Flags
 	}
 
 	model := stageCfg.Model
 	if model == "" {
-		model = e.cfg.Pipeline.Defaults.Model
+		model = cfg.Pipeline.Defaults.Model
 	}
 	if model == "" {
 		model = "claude-opus-4-6"
@@ -492,10 +502,10 @@ func (e *Engine) createAndRunSession(name string, ps *pipeline.PipelineState, op
 }
 
 // runGate runs the check gate for the given check names.
-func (e *Engine) runGate(ps *pipeline.PipelineState, opts RunOpts, checkNames []string, fixRound int) (*checks.GateResult, []*checks.Result, error) {
+func (e *Engine) runGate(ps *pipeline.PipelineState, opts RunOpts, checkNames []string, fixRound int, cfg *config.PipelineConfig) (*checks.GateResult, []*checks.Result, error) {
 	var gateChecks []checks.GateCheckConfig
 	for _, name := range checkNames {
-		chk, ok := e.cfg.Pipeline.Checks[name]
+		chk, ok := cfg.Pipeline.Checks[name]
 		if !ok {
 			return nil, nil, fmt.Errorf("check %q not defined in config", name)
 		}
@@ -621,11 +631,11 @@ func (e *Engine) saveSessionLog(sessionName string, log string) error {
 	return e.store.SaveSessionLog(state.Issue, state.Stage, ps.CurrentAttempt, log)
 }
 
-// findStageConfig finds a stage in the pipeline config.
-func (e *Engine) findStageConfig(stageID string) (*config.Stage, error) {
-	for i := range e.cfg.Pipeline.Stages {
-		if e.cfg.Pipeline.Stages[i].ID == stageID {
-			return &e.cfg.Pipeline.Stages[i], nil
+// findStageConfig finds a stage in the given pipeline config.
+func (e *Engine) findStageConfig(stageID string, cfg *config.PipelineConfig) (*config.Stage, error) {
+	for i := range cfg.Pipeline.Stages {
+		if cfg.Pipeline.Stages[i].ID == stageID {
+			return &cfg.Pipeline.Stages[i], nil
 		}
 	}
 	return nil, fmt.Errorf("stage %q not found in config", stageID)

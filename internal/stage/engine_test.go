@@ -165,7 +165,7 @@ func setupEngine(t *testing.T, cfg *config.PipelineConfig, checkCmd *mockCheckCm
 func createTestPipeline(t *testing.T, store *pipeline.Store, issue int) {
 	t.Helper()
 	worktreeDir := t.TempDir()
-	if _, err := store.Create(issue, "Test Issue", "feature/test", worktreeDir, "impl", nil); err != nil {
+	if _, err := store.Create(pipeline.CreateOpts{Issue: issue, Title: "Test Issue", Branch: "feature/test", Worktree: worktreeDir, FirstStage: "impl", GoalGates: nil}); err != nil {
 		t.Fatalf("create pipeline: %v", err)
 	}
 	if err := store.Update(issue, func(ps *pipeline.PipelineState) {
@@ -253,7 +253,7 @@ func TestFindStageConfig(t *testing.T) {
 
 	engine := &Engine{cfg: cfg}
 
-	stage, err := engine.findStageConfig("impl")
+	stage, err := engine.findStageConfig("impl", cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestFindStageConfig(t *testing.T) {
 		t.Errorf("expected impl, got %q", stage.ID)
 	}
 
-	_, err = engine.findStageConfig("nonexistent")
+	_, err = engine.findStageConfig("nonexistent", cfg)
 	if err == nil {
 		t.Fatal("expected error for nonexistent stage")
 	}
@@ -801,5 +801,29 @@ func TestRunAgent_IssueBodyInPrompt(t *testing.T) {
 	}
 	if !strings.Contains(savedPrompt, "Acceptance Criteria") {
 		t.Errorf("prompt should contain acceptance criteria, got:\n%s", savedPrompt)
+	}
+}
+
+func TestCfgFor_ReturnsOptsConfigWhenSet(t *testing.T) {
+	defaultCfg := testConfig([]config.Stage{{ID: "impl", Type: "agent"}}, nil)
+	defaultCfg.Pipeline.MaxFixRounds = 1
+
+	overrideCfg := testConfig([]config.Stage{{ID: "impl", Type: "agent"}}, nil)
+	overrideCfg.Pipeline.MaxFixRounds = 7
+
+	engine, _, _, _ := setupEngine(t, defaultCfg, &mockCheckCmd{})
+
+	// With Config set in opts, cfgFor should return that config
+	opts := RunOpts{Config: overrideCfg}
+	got := engine.cfgFor(opts)
+	if got.Pipeline.MaxFixRounds != 7 {
+		t.Errorf("cfgFor with Config override: MaxFixRounds = %d, want 7", got.Pipeline.MaxFixRounds)
+	}
+
+	// Without Config set, cfgFor should fall back to engine default
+	opts2 := RunOpts{}
+	got2 := engine.cfgFor(opts2)
+	if got2.Pipeline.MaxFixRounds != 1 {
+		t.Errorf("cfgFor without override: MaxFixRounds = %d, want 1", got2.Pipeline.MaxFixRounds)
 	}
 }
