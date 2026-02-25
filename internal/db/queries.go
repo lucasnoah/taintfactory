@@ -368,6 +368,7 @@ type QueueItem struct {
 	Status        string
 	Position      int
 	FeatureIntent string
+	ConfigPath    string // abs path to pipeline.yaml; empty for legacy items
 	DependsOn     []int  // issue numbers that must be completed first
 	AddedAt       string
 	StartedAt     string
@@ -378,6 +379,7 @@ type QueueItem struct {
 type QueueAddItem struct {
 	Issue         int
 	FeatureIntent string
+	ConfigPath    string // abs path to pipeline.yaml; empty if not specified
 	DependsOn     []int  // issue numbers that must be completed first
 }
 
@@ -398,7 +400,7 @@ func (d *DB) QueueAdd(items []QueueAddItem) error {
 		nextPos = int(maxPos.Int64) + 1
 	}
 
-	stmt, err := tx.Prepare("INSERT INTO issue_queue (issue, position, feature_intent, depends_on) VALUES (?, ?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT INTO issue_queue (issue, position, feature_intent, depends_on, config_path) VALUES (?, ?, ?, ?, ?)")
 	if err != nil {
 		return fmt.Errorf("prepare insert: %w", err)
 	}
@@ -413,7 +415,7 @@ func (d *DB) QueueAdd(items []QueueAddItem) error {
 			}
 			depsJSON = string(b)
 		}
-		if _, err := stmt.Exec(item.Issue, nextPos, item.FeatureIntent, depsJSON); err != nil {
+		if _, err := stmt.Exec(item.Issue, nextPos, item.FeatureIntent, depsJSON, item.ConfigPath); err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return fmt.Errorf("issue %d is already in the queue", item.Issue)
 			}
@@ -444,7 +446,7 @@ func (d *DB) QueueSetIntent(issue int, intent string) error {
 // QueueList returns all queue items ordered by position.
 func (d *DB) QueueList() ([]QueueItem, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, issue, status, position, feature_intent, depends_on, added_at, started_at, finished_at
+		`SELECT id, issue, status, position, feature_intent, depends_on, config_path, added_at, started_at, finished_at
 		 FROM issue_queue ORDER BY position`)
 	if err != nil {
 		return nil, fmt.Errorf("list queue: %w", err)
@@ -456,7 +458,7 @@ func (d *DB) QueueList() ([]QueueItem, error) {
 		var item QueueItem
 		var startedAt, finishedAt sql.NullString
 		var dependsOnJSON string
-		if err := rows.Scan(&item.ID, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &dependsOnJSON, &item.AddedAt, &startedAt, &finishedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &dependsOnJSON, &item.ConfigPath, &item.AddedAt, &startedAt, &finishedAt); err != nil {
 			return nil, fmt.Errorf("scan queue item: %w", err)
 		}
 		if startedAt.Valid {
@@ -481,7 +483,7 @@ func (d *DB) QueueList() ([]QueueItem, error) {
 func (d *DB) QueueNext() (*QueueItem, error) {
 	row := d.conn.QueryRow(`
 		SELECT q.id, q.issue, q.status, q.position, q.feature_intent, q.depends_on,
-		       q.added_at, q.started_at, q.finished_at
+		       q.config_path, q.added_at, q.started_at, q.finished_at
 		FROM issue_queue q
 		WHERE q.status = 'pending'
 		AND NOT EXISTS (
@@ -494,7 +496,7 @@ func (d *DB) QueueNext() (*QueueItem, error) {
 	var item QueueItem
 	var startedAt, finishedAt sql.NullString
 	var dependsOnJSON string
-	err := row.Scan(&item.ID, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &dependsOnJSON, &item.AddedAt, &startedAt, &finishedAt)
+	err := row.Scan(&item.ID, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &dependsOnJSON, &item.ConfigPath, &item.AddedAt, &startedAt, &finishedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

@@ -130,6 +130,10 @@ const schemaV4 = `
 ALTER TABLE issue_queue ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]';
 `
 
+const schemaV5 = `
+ALTER TABLE issue_queue ADD COLUMN config_path TEXT NOT NULL DEFAULT '';
+`
+
 // Migrate applies the database schema.
 func (d *DB) Migrate() error {
 	// Apply v1 if needed
@@ -213,6 +217,27 @@ func (d *DB) Migrate() error {
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit v4: %w", err)
+		}
+	}
+
+	// Apply v5 if needed
+	var v5Count int
+	err = d.conn.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version = 5").Scan(&v5Count)
+	if err != nil || v5Count == 0 {
+		tx, err := d.conn.Begin()
+		if err != nil {
+			return fmt.Errorf("begin transaction: %w", err)
+		}
+		defer tx.Rollback()
+
+		if _, err := tx.Exec(schemaV5); err != nil {
+			return fmt.Errorf("apply schema v5: %w", err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_version (version) VALUES (5)"); err != nil {
+			return fmt.Errorf("record schema version v5: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit v5: %w", err)
 		}
 	}
 

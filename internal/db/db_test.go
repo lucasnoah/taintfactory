@@ -847,3 +847,78 @@ func TestGetCheckHistory(t *testing.T) {
 		t.Errorf("expected 0 runs for issue 999, got %d", len(runsEmpty))
 	}
 }
+
+func TestQueueConfigPath(t *testing.T) {
+	d := testDB(t)
+
+	// Add item with a config path
+	err := d.QueueAdd([]QueueAddItem{
+		{Issue: 42, FeatureIntent: "test intent", ConfigPath: "/projects/myapp/pipeline.yaml"},
+	})
+	if err != nil {
+		t.Fatalf("QueueAdd: %v", err)
+	}
+
+	// QueueNext should return the config path
+	item, err := d.QueueNext()
+	if err != nil || item == nil {
+		t.Fatalf("QueueNext: err=%v item=%v", err, item)
+	}
+	if item.ConfigPath != "/projects/myapp/pipeline.yaml" {
+		t.Errorf("QueueNext ConfigPath = %q, want %q", item.ConfigPath, "/projects/myapp/pipeline.yaml")
+	}
+
+	// QueueList should also return it
+	items, err := d.QueueList()
+	if err != nil {
+		t.Fatalf("QueueList: %v", err)
+	}
+	if len(items) == 0 {
+		t.Fatal("QueueList returned no items")
+	}
+	if items[0].ConfigPath != "/projects/myapp/pipeline.yaml" {
+		t.Errorf("QueueList ConfigPath = %q, want %q", items[0].ConfigPath, "/projects/myapp/pipeline.yaml")
+	}
+}
+
+func TestQueueConfigPath_EmptyByDefault(t *testing.T) {
+	d := testDB(t)
+
+	// Add item without config path — legacy behaviour
+	err := d.QueueAdd([]QueueAddItem{
+		{Issue: 10, FeatureIntent: "legacy"},
+	})
+	if err != nil {
+		t.Fatalf("QueueAdd: %v", err)
+	}
+
+	item, err := d.QueueNext()
+	if err != nil || item == nil {
+		t.Fatalf("QueueNext: err=%v item=%v", err, item)
+	}
+	if item.ConfigPath != "" {
+		t.Errorf("ConfigPath = %q, want empty string for legacy item", item.ConfigPath)
+	}
+}
+
+func TestMigrateV5(t *testing.T) {
+	d := testDB(t)
+
+	// Verify schema_version has version 5
+	var count int
+	if err := d.conn.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version = 5").Scan(&count); err != nil {
+		t.Fatalf("query schema_version: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("schema version 5 not recorded, count=%d", count)
+	}
+
+	// Verify config_path column exists on issue_queue
+	var colName string
+	err := d.conn.QueryRow(
+		"SELECT name FROM pragma_table_info('issue_queue') WHERE name = 'config_path'",
+	).Scan(&colName)
+	if err != nil {
+		t.Fatalf("config_path column not found on issue_queue: %v", err)
+	}
+}
