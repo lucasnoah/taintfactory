@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -33,6 +34,11 @@ Designed to be called on a cron schedule (e.g. every 5 minutes).`,
 		result, err := orch.CheckIn()
 		if err != nil {
 			return err
+		}
+
+		// Fire Discord notifications for any pipeline events since last tick.
+		if err := discordPollTick(); err != nil {
+			fmt.Fprintf(os.Stderr, "discord poll: %v\n", err)
 		}
 
 		format, _ := cmd.Flags().GetString("format")

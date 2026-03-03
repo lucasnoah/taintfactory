@@ -227,6 +227,34 @@ func discordStageChain(ps *pipeline.PipelineState) string {
 	return strings.Join(names, " → ")
 }
 
+// discordPollTick runs one pass of the Discord poller. Called from orchestrator
+// check-in so notifications are sent on the same cadence as pipeline advances.
+// Errors are non-fatal — a failed notification should not block the orchestrator.
+func discordPollTick() error {
+	dbPath, err := db.DefaultDBPath()
+	if err != nil {
+		return err
+	}
+	d, err := db.Open(dbPath)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+
+	store, err := pipeline.DefaultStore()
+	if err != nil {
+		return err
+	}
+
+	home, _ := os.UserHomeDir()
+	cursor, err := discord.LoadCursor(filepath.Join(home, ".factory", "discord_cursor.json"))
+	if err != nil {
+		return err
+	}
+
+	return pollOnce(d, store, cursor)
+}
+
 func init() {
 	discordRunCmd.Flags().Duration("interval", 15*time.Second, "How often to poll for new events")
 	discordCmd.AddCommand(discordRunCmd)
