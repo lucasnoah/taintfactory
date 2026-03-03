@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -898,6 +899,104 @@ func TestQueueConfigPath_EmptyByDefault(t *testing.T) {
 	}
 	if item.ConfigPath != "" {
 		t.Errorf("ConfigPath = %q, want empty string for legacy item", item.ConfigPath)
+	}
+}
+
+func TestGetPipelineEventsSince(t *testing.T) {
+	d := testDB(t)
+
+	// Insert 5 pipeline events
+	for i := 0; i < 5; i++ {
+		if err := d.LogPipelineEvent(1, "stage_completed", "plan", 1, fmt.Sprintf("detail-%d", i)); err != nil {
+			t.Fatalf("log pipeline event %d: %v", i, err)
+		}
+	}
+
+	// Get all events since ID 0 (all of them)
+	events, err := d.GetPipelineEventsSince(0, 10)
+	if err != nil {
+		t.Fatalf("get events since 0: %v", err)
+	}
+	if len(events) != 5 {
+		t.Fatalf("expected 5 events, got %d", len(events))
+	}
+	// Should be ordered by ID ascending
+	if events[0].Detail != "detail-0" {
+		t.Errorf("first event detail = %q, want detail-0", events[0].Detail)
+	}
+	if events[4].Detail != "detail-4" {
+		t.Errorf("last event detail = %q, want detail-4", events[4].Detail)
+	}
+
+	// Cursor-based: get events since first event's ID
+	cursor := events[0].ID
+	later, err := d.GetPipelineEventsSince(cursor, 10)
+	if err != nil {
+		t.Fatalf("get events since cursor: %v", err)
+	}
+	if len(later) != 4 {
+		t.Fatalf("expected 4 events after cursor, got %d", len(later))
+	}
+	if later[0].Detail != "detail-1" {
+		t.Errorf("first later event detail = %q, want detail-1", later[0].Detail)
+	}
+
+	// Limit
+	limited, err := d.GetPipelineEventsSince(0, 2)
+	if err != nil {
+		t.Fatalf("get limited events: %v", err)
+	}
+	if len(limited) != 2 {
+		t.Fatalf("expected 2 events with limit=2, got %d", len(limited))
+	}
+
+	// No new events past the last ID
+	lastID := events[4].ID
+	empty, err := d.GetPipelineEventsSince(lastID, 10)
+	if err != nil {
+		t.Fatalf("get events after last: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected 0 events after last, got %d", len(empty))
+	}
+}
+
+func TestGetQueueItem(t *testing.T) {
+	d := testDB(t)
+
+	if err := d.QueueAdd([]QueueAddItem{
+		{Issue: 42, FeatureIntent: "test feature", ConfigPath: "/path/to/pipeline.yaml"},
+	}); err != nil {
+		t.Fatalf("QueueAdd: %v", err)
+	}
+
+	item, err := d.GetQueueItem(42)
+	if err != nil {
+		t.Fatalf("GetQueueItem: %v", err)
+	}
+	if item == nil {
+		t.Fatal("expected non-nil item")
+	}
+	if item.Issue != 42 {
+		t.Errorf("Issue = %d, want 42", item.Issue)
+	}
+	if item.FeatureIntent != "test feature" {
+		t.Errorf("FeatureIntent = %q, want %q", item.FeatureIntent, "test feature")
+	}
+	if item.ConfigPath != "/path/to/pipeline.yaml" {
+		t.Errorf("ConfigPath = %q, want %q", item.ConfigPath, "/path/to/pipeline.yaml")
+	}
+	if item.Status != "pending" {
+		t.Errorf("Status = %q, want pending", item.Status)
+	}
+
+	// Not found returns nil, no error
+	missing, err := d.GetQueueItem(999)
+	if err != nil {
+		t.Fatalf("GetQueueItem not found: %v", err)
+	}
+	if missing != nil {
+		t.Error("expected nil for missing item")
 	}
 }
 

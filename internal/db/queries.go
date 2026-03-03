@@ -625,6 +625,73 @@ func (d *DB) QueueClear() (int, error) {
 	return int(n), nil
 }
 
+// GetPipelineEventsSince returns pipeline events with ID greater than lastID,
+// ordered by ID ascending, up to limit rows. Used by the Discord poller for
+// cursor-based incremental reads.
+func (d *DB) GetPipelineEventsSince(lastID int, limit int) ([]PipelineEvent, error) {
+	rows, err := d.conn.Query(
+		`SELECT id, issue, event, stage, attempt, detail, timestamp
+		 FROM pipeline_events WHERE id > ? ORDER BY id ASC LIMIT ?`,
+		lastID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get pipeline events since %d: %w", lastID, err)
+	}
+	defer rows.Close()
+
+	var events []PipelineEvent
+	for rows.Next() {
+		var e PipelineEvent
+		var stage, detail sql.NullString
+		var attempt sql.NullInt64
+		if err := rows.Scan(&e.ID, &e.Issue, &e.Event, &stage, &attempt, &detail, &e.Timestamp); err != nil {
+			return nil, fmt.Errorf("scan pipeline event: %w", err)
+		}
+		if stage.Valid {
+			e.Stage = stage.String
+		}
+		if attempt.Valid {
+			e.Attempt = int(attempt.Int64)
+		}
+		if detail.Valid {
+			e.Detail = detail.String
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// GetQueueItem returns the queue item for the given issue number, or nil if not found.
+func (d *DB) GetQueueItem(issue int) (*QueueItem, error) {
+	row := d.conn.QueryRow(
+		`SELECT id, issue, status, position, feature_intent, depends_on, config_path, added_at, started_at, finished_at
+		 FROM issue_queue WHERE issue = ?`,
+		issue,
+	)
+	var item QueueItem
+	var startedAt, finishedAt sql.NullString
+	var dependsOnJSON string
+	err := row.Scan(&item.ID, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &dependsOnJSON, &item.ConfigPath, &item.AddedAt, &startedAt, &finishedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get queue item %d: %w", issue, err)
+	}
+	if startedAt.Valid {
+		item.StartedAt = startedAt.String
+	}
+	if finishedAt.Valid {
+		item.FinishedAt = finishedAt.String
+	}
+	if dependsOnJSON != "" && dependsOnJSON != "[]" {
+		if err := json.Unmarshal([]byte(dependsOnJSON), &item.DependsOn); err != nil {
+			return nil, fmt.Errorf("unmarshal depends_on for issue %d: %w", issue, err)
+		}
+	}
+	return &item, nil
+}
+
 // GetCheckHistory returns all check runs for an issue, ordered by id descending.
 func (d *DB) GetCheckHistory(issue int) ([]CheckRun, error) {
 	rows, err := d.conn.Query(
