@@ -10,7 +10,7 @@ import (
 // recentActivity returns the most recent pipeline events across all issues.
 func (s *Server) recentActivity(limit int) ([]db.PipelineEvent, error) {
 	rows, err := s.db.Conn().Query(
-		`SELECT id, issue, event, stage, attempt, detail, timestamp
+		`SELECT id, namespace, issue, event, stage, attempt, detail, timestamp
 		 FROM pipeline_events ORDER BY id DESC LIMIT ?`,
 		limit,
 	)
@@ -24,7 +24,7 @@ func (s *Server) recentActivity(limit int) ([]db.PipelineEvent, error) {
 		var e db.PipelineEvent
 		var stage, detail sql.NullString
 		var attempt sql.NullInt64
-		if err := rows.Scan(&e.ID, &e.Issue, &e.Event, &stage, &attempt, &detail, &e.Timestamp); err != nil {
+		if err := rows.Scan(&e.ID, &e.Namespace, &e.Issue, &e.Event, &stage, &attempt, &detail, &e.Timestamp); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
 		}
 		if stage.Valid {
@@ -42,14 +42,14 @@ func (s *Server) recentActivity(limit int) ([]db.PipelineEvent, error) {
 }
 
 // checkRunsForAttempt returns all check runs for a specific stage attempt.
-func (s *Server) checkRunsForAttempt(issue int, stage string, attempt int) ([]db.CheckRun, error) {
+func (s *Server) checkRunsForAttempt(namespace string, issue int, stage string, attempt int) ([]db.CheckRun, error) {
 	rows, err := s.db.Conn().Query(
-		`SELECT id, issue, stage, attempt, fix_round, check_name, passed, auto_fixed,
+		`SELECT id, namespace, issue, stage, attempt, fix_round, check_name, passed, auto_fixed,
 		        exit_code, duration_ms, summary, findings, timestamp
 		 FROM check_runs
-		 WHERE issue = ? AND stage = ? AND attempt = ?
+		 WHERE namespace = ? AND issue = ? AND stage = ? AND attempt = ?
 		 ORDER BY fix_round, id`,
-		issue, stage, attempt,
+		namespace, issue, stage, attempt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("check runs for attempt: %w", err)
@@ -61,7 +61,7 @@ func (s *Server) checkRunsForAttempt(issue int, stage string, attempt int) ([]db
 		var r db.CheckRun
 		var exitCode, durationMs sql.NullInt64
 		var summary, findings sql.NullString
-		if err := rows.Scan(&r.ID, &r.Issue, &r.Stage, &r.Attempt, &r.FixRound, &r.CheckName,
+		if err := rows.Scan(&r.ID, &r.Namespace, &r.Issue, &r.Stage, &r.Attempt, &r.FixRound, &r.CheckName,
 			&r.Passed, &r.AutoFixed, &exitCode, &durationMs, &summary, &findings, &r.Timestamp); err != nil {
 			return nil, fmt.Errorf("scan check run: %w", err)
 		}

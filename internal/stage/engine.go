@@ -152,7 +152,7 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 			e.logf("checks_before failed — stage aborted")
 			result.Outcome = "fail"
 			result.TotalDuration = time.Since(start)
-			_ = e.db.LogPipelineEvent(opts.Issue, "checks_before_failed", opts.Stage, ps.CurrentAttempt, "")
+			_ = e.db.LogPipelineEvent(ps.Namespace, opts.Issue, "checks_before_failed", opts.Stage, ps.CurrentAttempt, "")
 			return result, nil
 		}
 		e.logf("checks_before passed")
@@ -251,7 +251,7 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 	for round := 1; round <= maxFixRounds; round++ {
 		e.logf("fix round %d/%d", round, maxFixRounds)
 		result.FixRounds = round
-		_ = e.db.LogPipelineEvent(opts.Issue, "fix_round_start", opts.Stage, ps.CurrentAttempt, fmt.Sprintf("round=%d", round))
+		_ = e.db.LogPipelineEvent(ps.Namespace, opts.Issue, "fix_round_start", opts.Stage, ps.CurrentAttempt, fmt.Sprintf("round=%d", round))
 
 		// Determine if we need a fresh session
 		if round > freshAfter {
@@ -274,7 +274,7 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 		} else {
 			e.logf("sending fix prompt to existing session %s", sessionName)
 			// Send fix prompt to existing session
-			if err := e.sessions.SendFromCheckFailures(sessionName, opts.Issue, opts.Stage); err != nil {
+			if err := e.sessions.SendFromCheckFailures(sessionName, ps.Namespace, opts.Issue, opts.Stage); err != nil {
 				e.cleanupSession(sessionName)
 				return nil, fmt.Errorf("send fix prompt: %w", err)
 			}
@@ -337,7 +337,7 @@ func (e *Engine) Run(opts RunOpts) (*RunResult, error) {
 	result.Outcome = "fail"
 	result.TotalDuration = time.Since(start)
 	e.cleanupSession(sessionName)
-	_ = e.db.LogPipelineEvent(opts.Issue, "fix_loop_exhausted", opts.Stage, ps.CurrentAttempt, fmt.Sprintf("rounds=%d", result.FixRounds))
+	_ = e.db.LogPipelineEvent(ps.Namespace, opts.Issue, "fix_loop_exhausted", opts.Stage, ps.CurrentAttempt, fmt.Sprintf("rounds=%d", result.FixRounds))
 	return result, nil
 }
 
@@ -543,7 +543,7 @@ func (e *Engine) runGate(ps *pipeline.PipelineState, opts RunOpts, checkNames []
 		}
 		e.logf("check %s: %s (%dms)", r.CheckName, status, r.DurationMs)
 		if dbErr := e.db.LogCheckRun(
-			opts.Issue, opts.Stage, ps.CurrentAttempt, fixRound,
+			ps.Namespace, opts.Issue, opts.Stage, ps.CurrentAttempt, fixRound,
 			r.CheckName, r.Passed, r.AutoFixed, r.ExitCode,
 			r.DurationMs, r.Summary, r.Findings,
 		); dbErr != nil {

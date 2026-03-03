@@ -120,6 +120,20 @@ func (s *Store) Create(opts CreateOpts) (*PipelineState, error) {
 	return ps, nil
 }
 
+// GetForNamespace reads the pipeline state for a specific namespace+issue directly,
+// without any filesystem walk. Falls back to Get(issue) when namespace is empty.
+func (s *Store) GetForNamespace(namespace string, issue int) (*PipelineState, error) {
+	if namespace == "" {
+		return s.Get(issue)
+	}
+	path := filepath.Join(s.issueDir(namespace, issue), "pipeline.json")
+	var ps PipelineState
+	if err := ReadJSON(path, &ps); err != nil {
+		return nil, fmt.Errorf("pipeline %d not found in namespace %s", issue, namespace)
+	}
+	return &ps, nil
+}
+
 // Get reads the pipeline state for an issue.
 // It first tries the legacy flat path, then walks for a namespaced path.
 func (s *Store) Get(issue int) (*PipelineState, error) {

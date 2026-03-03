@@ -60,7 +60,7 @@ var prCreateCmd = &cobra.Command{
 		d, cleanup, dbErr := openDB()
 		if dbErr == nil {
 			defer cleanup()
-			_ = d.LogPipelineEvent(issue, "pr_created", ps.CurrentStage, ps.CurrentAttempt, result.URL)
+			_ = d.LogPipelineEvent(ps.Namespace, issue, "pr_created", ps.CurrentStage, ps.CurrentAttempt, result.URL)
 		}
 
 		fmt.Fprintf(cmd.OutOrStdout(), "PR created: %s\n", result.URL)
@@ -103,7 +103,7 @@ var prMergeCmd = &cobra.Command{
 		d, cleanup, dbErr := openDB()
 		if dbErr == nil {
 			defer cleanup()
-			_ = d.LogPipelineEvent(issue, "pr_merged", ps.CurrentStage, ps.CurrentAttempt, "")
+			_ = d.LogPipelineEvent(ps.Namespace, issue, "pr_merged", ps.CurrentStage, ps.CurrentAttempt, "")
 		}
 
 		fmt.Fprintf(cmd.OutOrStdout(), "PR merged for issue %d\n", issue)

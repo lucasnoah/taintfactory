@@ -47,8 +47,9 @@ func (r *ExecRunner) RunGit(dir string, args ...string) (string, error) {
 
 // Client provides GitHub operations.
 type Client struct {
-	cmd CmdRunner
-	git GitRunner
+	cmd  CmdRunner
+	git  GitRunner
+	repo string // optional "owner/repo" to scope all gh calls (--repo flag)
 }
 
 // NewClient creates a GitHub client. If cmd also implements GitRunner,
@@ -64,6 +65,22 @@ func NewClient(cmd CmdRunner) *Client {
 // NewClientWithGit creates a GitHub client with a separate git runner.
 func NewClientWithGit(cmd CmdRunner, git GitRunner) *Client {
 	return &Client{cmd: cmd, git: git}
+}
+
+// WithRepo returns a copy of the client scoped to a specific repo ("owner/repo").
+// All gh commands will include --repo owner/repo.
+func (c *Client) WithRepo(repo string) *Client {
+	clone := *c
+	clone.repo = repo
+	return &clone
+}
+
+// repoArgs returns ["--repo", "owner/repo"] when a repo is set, else nil.
+func (c *Client) repoArgs() []string {
+	if c.repo == "" {
+		return nil
+	}
+	return []string{"--repo", c.repo}
 }
 
 // Issue represents a GitHub issue.
@@ -103,7 +120,8 @@ func (c *Client) GetIssue(number int) (*Issue, error) {
 		return nil, err
 	}
 
-	out, err := c.cmd.Run("issue", "view", fmt.Sprintf("%d", number), "--json", "number,title,body,state,labels,milestone")
+	args := append([]string{"issue", "view", fmt.Sprintf("%d", number), "--json", "number,title,body,state,labels,milestone"}, c.repoArgs()...)
+	out, err := c.cmd.Run(args...)
 	if err != nil {
 		return nil, fmt.Errorf("get issue %d: %w", number, err)
 	}

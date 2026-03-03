@@ -314,8 +314,8 @@ func (m *Manager) SendFromFile(name string, path string) error {
 }
 
 // SendFromCheckFailures generates a fix prompt from the latest failed checks.
-func (m *Manager) SendFromCheckFailures(name string, issue int, stage string) error {
-	failures, err := m.db.GetLatestFailedChecks(issue, stage)
+func (m *Manager) SendFromCheckFailures(name string, namespace string, issue int, stage string) error {
+	failures, err := m.db.GetLatestFailedChecks(namespace, issue, stage)
 	if err != nil {
 		return fmt.Errorf("get failed checks: %w", err)
 	}

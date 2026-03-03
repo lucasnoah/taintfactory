@@ -9,10 +9,22 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/lucasnoah/taintfactory/internal/config"
 	"github.com/lucasnoah/taintfactory/internal/db"
 	"github.com/lucasnoah/taintfactory/internal/github"
 	"github.com/spf13/cobra"
 )
+
+// repoToNamespace derives "owner/repo" from a pipeline repo URL.
+func repoToNamespace(repo string) string {
+	repo = strings.TrimPrefix(repo, "https://")
+	repo = strings.TrimPrefix(repo, "http://")
+	parts := strings.SplitN(repo, "/", 3)
+	if len(parts) == 3 {
+		return parts[1] + "/" + parts[2]
+	}
+	return repo
+}
 
 var queueCmd = &cobra.Command{
 	Use:   "queue",
@@ -32,6 +44,14 @@ var queueAddCmd = &cobra.Command{
 		resolvedConfigPath, err := resolveConfigPath(configFlag)
 		if err != nil {
 			return err
+		}
+
+		// Derive namespace from the pipeline config
+		var ns string
+		if resolvedConfigPath != "" {
+			if cfg, cfgErr := config.Load(resolvedConfigPath); cfgErr == nil {
+				ns = repoToNamespace(cfg.Pipeline.Repo)
+			}
 		}
 
 		// Parse --depends-on flag
@@ -94,7 +114,7 @@ var queueAddCmd = &cobra.Command{
 				itemIntent = derived
 			}
 
-			items = append(items, db.QueueAddItem{Issue: n, FeatureIntent: itemIntent, DependsOn: dependsOn, ConfigPath: resolvedConfigPath})
+			items = append(items, db.QueueAddItem{Namespace: ns, Issue: n, FeatureIntent: itemIntent, DependsOn: dependsOn, ConfigPath: resolvedConfigPath})
 		}
 
 		dbPath, err := db.DefaultDBPath()
@@ -145,7 +165,18 @@ var queueSetIntentCmd = &cobra.Command{
 			return err
 		}
 
-		if err := d.QueueSetIntent(issue, intent); err != nil {
+		// Look up namespace from queue list
+		var ns string
+		if items, err := d.QueueList(); err == nil {
+			for _, it := range items {
+				if it.Issue == issue {
+					ns = it.Namespace
+					break
+				}
+			}
+		}
+
+		if err := d.QueueSetIntent(ns, issue, intent); err != nil {
 			return err
 		}
 
@@ -238,7 +269,18 @@ var queueRemoveCmd = &cobra.Command{
 			return err
 		}
 
-		if err := d.QueueRemove(issue); err != nil {
+		// Look up namespace from queue list
+		var ns string
+		if items, err := d.QueueList(); err == nil {
+			for _, it := range items {
+				if it.Issue == issue {
+					ns = it.Namespace
+					break
+				}
+			}
+		}
+
+		if err := d.QueueRemove(ns, issue); err != nil {
 			return err
 		}
 
@@ -281,10 +323,10 @@ var queueClearCmd = &cobra.Command{
 }
 
 // resolveConfigPath converts a --config flag value to an absolute path and
-// validates the file exists. Returns ("", nil) when configFlag is empty.
+// validates the file exists. Returns an error if configFlag is empty.
 func resolveConfigPath(configFlag string) (string, error) {
 	if configFlag == "" {
-		return "", nil
+		return "", fmt.Errorf("--config is required: specify the path to the project's pipeline.yaml (e.g. --config /path/to/project/pipeline.yaml)")
 	}
 	abs, err := filepath.Abs(configFlag)
 	if err != nil {
@@ -299,7 +341,7 @@ func resolveConfigPath(configFlag string) (string, error) {
 func init() {
 	queueAddCmd.Flags().String("intent", "", "Feature intent: what value this brings to the end user")
 	queueAddCmd.Flags().String("depends-on", "", "Comma-separated issue numbers this must wait for (e.g. --depends-on 133,134 or --depends-on #133,#134)")
-	queueAddCmd.Flags().String("config", "", "Path to pipeline.yaml for this project (default: searches ./pipeline.yaml then ~/.factory/config.yaml)")
+	queueAddCmd.Flags().String("config", "", "Path to the project's pipeline.yaml (required)")
 	queueListCmd.Flags().String("format", "table", "Output format: table or json")
 	queueClearCmd.Flags().Bool("confirm", false, "Confirm clearing the entire queue")
 

@@ -223,7 +223,7 @@ func TestE2E_FullPipelineRun(t *testing.T) {
 	// ================================
 	t.Log("Step 7: Verify DB records")
 
-	events, err := env.database.GetPipelineHistory(42)
+	events, err := env.database.GetPipelineHistory("", 42)
 	if err != nil {
 		t.Fatalf("get pipeline history: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestE2E_FullPipelineRun(t *testing.T) {
 		t.Errorf("expected 1 'fix_round_start' event, got %d", eventTypes["fix_round_start"])
 	}
 
-	checkHistory, err := env.database.GetCheckHistory(42)
+	checkHistory, err := env.database.GetCheckHistory("", 42)
 	if err != nil {
 		t.Fatalf("get check history: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestE2E_Escalation(t *testing.T) {
 		t.Errorf("expected 'blocked', got %q", ps.Status)
 	}
 
-	events, _ := env.database.GetPipelineHistory(42)
+	events, _ := env.database.GetPipelineHistory("", 42)
 	if !hasEvent(events, "escalated") {
 		t.Error("expected escalation event in history")
 	}
@@ -580,7 +580,7 @@ func TestE2E_ManualRetryRecovery(t *testing.T) {
 		t.Errorf("expected completed, got %q", result.Action)
 	}
 
-	events, _ := env.database.GetPipelineHistory(42)
+	events, _ := env.database.GetPipelineHistory("", 42)
 	found := false
 	for _, e := range events {
 		if e.Event == "retry" && strings.Contains(e.Detail, "dependency fixed") {

@@ -22,6 +22,7 @@ type SessionEvent struct {
 // CheckRun represents a row in the check_runs table.
 type CheckRun struct {
 	ID         int
+	Namespace  string
 	Issue      int
 	Stage      string
 	Attempt    int
@@ -39,6 +40,7 @@ type CheckRun struct {
 // PipelineEvent represents a row in the pipeline_events table.
 type PipelineEvent struct {
 	ID        int
+	Namespace string
 	Issue     int
 	Event     string
 	Stage     string
@@ -188,11 +190,11 @@ func (d *DB) DetectHumanIntervention(sessionID string) (bool, error) {
 }
 
 // LogCheckRun inserts a check run record.
-func (d *DB) LogCheckRun(issue int, stage string, attempt int, fixRound int, checkName string, passed bool, autoFixed bool, exitCode int, durationMs int, summary string, findings string) error {
+func (d *DB) LogCheckRun(namespace string, issue int, stage string, attempt int, fixRound int, checkName string, passed bool, autoFixed bool, exitCode int, durationMs int, summary string, findings string) error {
 	_, err := d.conn.Exec(
-		`INSERT INTO check_runs (issue, stage, attempt, fix_round, check_name, passed, auto_fixed, exit_code, duration_ms, summary, findings)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		issue, stage, attempt, fixRound, checkName, passed, autoFixed, exitCode, durationMs, summary, findings,
+		`INSERT INTO check_runs (namespace, issue, stage, attempt, fix_round, check_name, passed, auto_fixed, exit_code, duration_ms, summary, findings)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		namespace, issue, stage, attempt, fixRound, checkName, passed, autoFixed, exitCode, durationMs, summary, findings,
 	)
 	if err != nil {
 		return fmt.Errorf("log check run: %w", err)
@@ -200,12 +202,12 @@ func (d *DB) LogCheckRun(issue int, stage string, attempt int, fixRound int, che
 	return nil
 }
 
-// GetCheckRuns returns check runs for an issue, stage, and fix round.
-func (d *DB) GetCheckRuns(issue int, stage string, fixRound int) ([]CheckRun, error) {
+// GetCheckRuns returns check runs for a namespace, issue, stage, and fix round.
+func (d *DB) GetCheckRuns(namespace string, issue int, stage string, fixRound int) ([]CheckRun, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, issue, stage, attempt, fix_round, check_name, passed, auto_fixed, exit_code, duration_ms, summary, findings, timestamp
-		 FROM check_runs WHERE issue = ? AND stage = ? AND fix_round = ? ORDER BY id`,
-		issue, stage, fixRound,
+		`SELECT id, namespace, issue, stage, attempt, fix_round, check_name, passed, auto_fixed, exit_code, duration_ms, summary, findings, timestamp
+		 FROM check_runs WHERE namespace = ? AND issue = ? AND stage = ? AND fix_round = ? ORDER BY id`,
+		namespace, issue, stage, fixRound,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get check runs: %w", err)
@@ -217,7 +219,7 @@ func (d *DB) GetCheckRuns(issue int, stage string, fixRound int) ([]CheckRun, er
 		var r CheckRun
 		var exitCode, durationMs sql.NullInt64
 		var summary, findings sql.NullString
-		if err := rows.Scan(&r.ID, &r.Issue, &r.Stage, &r.Attempt, &r.FixRound, &r.CheckName, &r.Passed, &r.AutoFixed, &exitCode, &durationMs, &summary, &findings, &r.Timestamp); err != nil {
+		if err := rows.Scan(&r.ID, &r.Namespace, &r.Issue, &r.Stage, &r.Attempt, &r.FixRound, &r.CheckName, &r.Passed, &r.AutoFixed, &exitCode, &durationMs, &summary, &findings, &r.Timestamp); err != nil {
 			return nil, fmt.Errorf("scan check run: %w", err)
 		}
 		if exitCode.Valid {
@@ -237,17 +239,17 @@ func (d *DB) GetCheckRuns(issue int, stage string, fixRound int) ([]CheckRun, er
 	return runs, rows.Err()
 }
 
-// GetLatestCheckRun returns the most recent check run for an issue and check name.
-func (d *DB) GetLatestCheckRun(issue int, checkName string) (*CheckRun, error) {
+// GetLatestCheckRun returns the most recent check run for a namespace, issue, and check name.
+func (d *DB) GetLatestCheckRun(namespace string, issue int, checkName string) (*CheckRun, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, issue, stage, attempt, fix_round, check_name, passed, auto_fixed, exit_code, duration_ms, summary, findings, timestamp
-		 FROM check_runs WHERE issue = ? AND check_name = ? ORDER BY id DESC LIMIT 1`,
-		issue, checkName,
+		`SELECT id, namespace, issue, stage, attempt, fix_round, check_name, passed, auto_fixed, exit_code, duration_ms, summary, findings, timestamp
+		 FROM check_runs WHERE namespace = ? AND issue = ? AND check_name = ? ORDER BY id DESC LIMIT 1`,
+		namespace, issue, checkName,
 	)
 	var r CheckRun
 	var exitCode, durationMs sql.NullInt64
 	var summary, findings sql.NullString
-	err := row.Scan(&r.ID, &r.Issue, &r.Stage, &r.Attempt, &r.FixRound, &r.CheckName, &r.Passed, &r.AutoFixed, &exitCode, &durationMs, &summary, &findings, &r.Timestamp)
+	err := row.Scan(&r.ID, &r.Namespace, &r.Issue, &r.Stage, &r.Attempt, &r.FixRound, &r.CheckName, &r.Passed, &r.AutoFixed, &exitCode, &durationMs, &summary, &findings, &r.Timestamp)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -270,10 +272,10 @@ func (d *DB) GetLatestCheckRun(issue int, checkName string) (*CheckRun, error) {
 }
 
 // LogPipelineEvent inserts a pipeline event.
-func (d *DB) LogPipelineEvent(issue int, event string, stage string, attempt int, detail string) error {
+func (d *DB) LogPipelineEvent(namespace string, issue int, event string, stage string, attempt int, detail string) error {
 	_, err := d.conn.Exec(
-		`INSERT INTO pipeline_events (issue, event, stage, attempt, detail) VALUES (?, ?, ?, ?, ?)`,
-		issue, event, stage, attempt, detail,
+		`INSERT INTO pipeline_events (namespace, issue, event, stage, attempt, detail) VALUES (?, ?, ?, ?, ?, ?)`,
+		namespace, issue, event, stage, attempt, detail,
 	)
 	if err != nil {
 		return fmt.Errorf("log pipeline event: %w", err)
@@ -281,12 +283,12 @@ func (d *DB) LogPipelineEvent(issue int, event string, stage string, attempt int
 	return nil
 }
 
-// GetPipelineHistory returns all pipeline events for an issue, ordered by timestamp descending.
-func (d *DB) GetPipelineHistory(issue int) ([]PipelineEvent, error) {
+// GetPipelineHistory returns all pipeline events for a namespace and issue, ordered by timestamp descending.
+func (d *DB) GetPipelineHistory(namespace string, issue int) ([]PipelineEvent, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, issue, event, stage, attempt, detail, timestamp
-		 FROM pipeline_events WHERE issue = ? ORDER BY timestamp DESC, id DESC`,
-		issue,
+		`SELECT id, namespace, issue, event, stage, attempt, detail, timestamp
+		 FROM pipeline_events WHERE namespace = ? AND issue = ? ORDER BY timestamp DESC, id DESC`,
+		namespace, issue,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get pipeline history: %w", err)
@@ -298,7 +300,7 @@ func (d *DB) GetPipelineHistory(issue int) ([]PipelineEvent, error) {
 		var e PipelineEvent
 		var stage, detail sql.NullString
 		var attempt sql.NullInt64
-		if err := rows.Scan(&e.ID, &e.Issue, &e.Event, &stage, &attempt, &detail, &e.Timestamp); err != nil {
+		if err := rows.Scan(&e.ID, &e.Namespace, &e.Issue, &e.Event, &stage, &attempt, &detail, &e.Timestamp); err != nil {
 			return nil, fmt.Errorf("scan pipeline event: %w", err)
 		}
 		if stage.Valid {
@@ -315,21 +317,21 @@ func (d *DB) GetPipelineHistory(issue int) ([]PipelineEvent, error) {
 	return events, rows.Err()
 }
 
-// GetLatestFailedChecks returns the most recent failed check runs for an issue and stage.
-func (d *DB) GetLatestFailedChecks(issue int, stage string) ([]CheckRun, error) {
+// GetLatestFailedChecks returns the most recent failed check runs for a namespace, issue, and stage.
+func (d *DB) GetLatestFailedChecks(namespace string, issue int, stage string) ([]CheckRun, error) {
 	rows, err := d.conn.Query(`
-		SELECT cr.id, cr.issue, cr.stage, cr.attempt, cr.fix_round, cr.check_name,
+		SELECT cr.id, cr.namespace, cr.issue, cr.stage, cr.attempt, cr.fix_round, cr.check_name,
 		       cr.passed, cr.auto_fixed, cr.exit_code, cr.duration_ms, cr.summary, cr.findings, cr.timestamp
 		FROM check_runs cr
 		INNER JOIN (
 			SELECT check_name, MAX(id) as max_id
 			FROM check_runs
-			WHERE issue = ? AND stage = ?
+			WHERE namespace = ? AND issue = ? AND stage = ?
 			GROUP BY check_name
 		) latest ON cr.id = latest.max_id
 		WHERE cr.passed = 0
 		ORDER BY cr.check_name`,
-		issue, stage,
+		namespace, issue, stage,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get latest failed checks: %w", err)
@@ -341,7 +343,7 @@ func (d *DB) GetLatestFailedChecks(issue int, stage string) ([]CheckRun, error) 
 		var r CheckRun
 		var exitCode, durationMs sql.NullInt64
 		var summary, findings sql.NullString
-		if err := rows.Scan(&r.ID, &r.Issue, &r.Stage, &r.Attempt, &r.FixRound, &r.CheckName, &r.Passed, &r.AutoFixed, &exitCode, &durationMs, &summary, &findings, &r.Timestamp); err != nil {
+		if err := rows.Scan(&r.ID, &r.Namespace, &r.Issue, &r.Stage, &r.Attempt, &r.FixRound, &r.CheckName, &r.Passed, &r.AutoFixed, &exitCode, &durationMs, &summary, &findings, &r.Timestamp); err != nil {
 			return nil, fmt.Errorf("scan failed check: %w", err)
 		}
 		if exitCode.Valid {
@@ -364,6 +366,7 @@ func (d *DB) GetLatestFailedChecks(issue int, stage string) ([]CheckRun, error) 
 // QueueItem represents a row in the issue_queue table.
 type QueueItem struct {
 	ID            int
+	Namespace     string
 	Issue         int
 	Status        string
 	Position      int
@@ -377,6 +380,7 @@ type QueueItem struct {
 
 // QueueAddItem holds an issue number and its feature intent for queue insertion.
 type QueueAddItem struct {
+	Namespace     string
 	Issue         int
 	FeatureIntent string
 	ConfigPath    string // abs path to pipeline.yaml; empty if not specified
@@ -400,7 +404,7 @@ func (d *DB) QueueAdd(items []QueueAddItem) error {
 		nextPos = int(maxPos.Int64) + 1
 	}
 
-	stmt, err := tx.Prepare("INSERT INTO issue_queue (issue, position, feature_intent, depends_on, config_path) VALUES (?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT INTO issue_queue (namespace, issue, position, feature_intent, depends_on, config_path) VALUES (?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return fmt.Errorf("prepare insert: %w", err)
 	}
@@ -415,7 +419,7 @@ func (d *DB) QueueAdd(items []QueueAddItem) error {
 			}
 			depsJSON = string(b)
 		}
-		if _, err := stmt.Exec(item.Issue, nextPos, item.FeatureIntent, depsJSON, item.ConfigPath); err != nil {
+		if _, err := stmt.Exec(item.Namespace, item.Issue, nextPos, item.FeatureIntent, depsJSON, item.ConfigPath); err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return fmt.Errorf("issue %d is already in the queue", item.Issue)
 			}
@@ -428,8 +432,8 @@ func (d *DB) QueueAdd(items []QueueAddItem) error {
 }
 
 // QueueSetIntent updates the feature intent for an existing queue item.
-func (d *DB) QueueSetIntent(issue int, intent string) error {
-	res, err := d.conn.Exec("UPDATE issue_queue SET feature_intent = ? WHERE issue = ?", intent, issue)
+func (d *DB) QueueSetIntent(namespace string, issue int, intent string) error {
+	res, err := d.conn.Exec("UPDATE issue_queue SET feature_intent = ? WHERE namespace = ? AND issue = ?", intent, namespace, issue)
 	if err != nil {
 		return fmt.Errorf("set intent: %w", err)
 	}
@@ -446,7 +450,7 @@ func (d *DB) QueueSetIntent(issue int, intent string) error {
 // QueueList returns all queue items ordered by position.
 func (d *DB) QueueList() ([]QueueItem, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, issue, status, position, feature_intent, depends_on, config_path, added_at, started_at, finished_at
+		`SELECT id, namespace, issue, status, position, feature_intent, depends_on, config_path, added_at, started_at, finished_at
 		 FROM issue_queue ORDER BY position`)
 	if err != nil {
 		return nil, fmt.Errorf("list queue: %w", err)
@@ -458,7 +462,7 @@ func (d *DB) QueueList() ([]QueueItem, error) {
 		var item QueueItem
 		var startedAt, finishedAt sql.NullString
 		var dependsOnJSON string
-		if err := rows.Scan(&item.ID, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &dependsOnJSON, &item.ConfigPath, &item.AddedAt, &startedAt, &finishedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Namespace, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &dependsOnJSON, &item.ConfigPath, &item.AddedAt, &startedAt, &finishedAt); err != nil {
 			return nil, fmt.Errorf("scan queue item: %w", err)
 		}
 		if startedAt.Valid {
@@ -482,21 +486,22 @@ func (d *DB) QueueList() ([]QueueItem, error) {
 // is treated as satisfied.
 func (d *DB) QueueNext() (*QueueItem, error) {
 	row := d.conn.QueryRow(`
-		SELECT q.id, q.issue, q.status, q.position, q.feature_intent, q.depends_on,
+		SELECT q.id, q.namespace, q.issue, q.status, q.position, q.feature_intent, q.depends_on,
 		       q.config_path, q.added_at, q.started_at, q.finished_at
 		FROM issue_queue q
 		WHERE q.status = 'pending'
 		AND NOT EXISTS (
 		    SELECT 1 FROM issue_queue dep
 		    JOIN json_each(q.depends_on) je ON CAST(je.value AS INTEGER) = dep.issue
-		    WHERE dep.status != 'completed'
+		    WHERE dep.namespace = q.namespace
+		      AND dep.status != 'completed'
 		)
 		ORDER BY q.position ASC LIMIT 1`)
 
 	var item QueueItem
 	var startedAt, finishedAt sql.NullString
 	var dependsOnJSON string
-	err := row.Scan(&item.ID, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &dependsOnJSON, &item.ConfigPath, &item.AddedAt, &startedAt, &finishedAt)
+	err := row.Scan(&item.ID, &item.Namespace, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &dependsOnJSON, &item.ConfigPath, &item.AddedAt, &startedAt, &finishedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -517,25 +522,25 @@ func (d *DB) QueueNext() (*QueueItem, error) {
 	return &item, nil
 }
 
-// QueueUpdateStatus updates the status of a queue item by issue number.
+// QueueUpdateStatus updates the status of a queue item by namespace and issue number.
 // Sets started_at when transitioning to "active", finished_at for "completed"/"failed".
-func (d *DB) QueueUpdateStatus(issue int, status string) error {
+func (d *DB) QueueUpdateStatus(namespace string, issue int, status string) error {
 	var res sql.Result
 	var err error
 
 	switch status {
 	case "active":
 		res, err = d.conn.Exec(
-			`UPDATE issue_queue SET status = ?, started_at = datetime('now') WHERE issue = ?`,
-			status, issue)
+			`UPDATE issue_queue SET status = ?, started_at = datetime('now') WHERE namespace = ? AND issue = ?`,
+			status, namespace, issue)
 	case "completed", "failed":
 		res, err = d.conn.Exec(
-			`UPDATE issue_queue SET status = ?, finished_at = datetime('now') WHERE issue = ?`,
-			status, issue)
+			`UPDATE issue_queue SET status = ?, finished_at = datetime('now') WHERE namespace = ? AND issue = ?`,
+			status, namespace, issue)
 	default:
 		res, err = d.conn.Exec(
-			`UPDATE issue_queue SET status = ? WHERE issue = ?`,
-			status, issue)
+			`UPDATE issue_queue SET status = ? WHERE namespace = ? AND issue = ?`,
+			status, namespace, issue)
 	}
 
 	if err != nil {
@@ -551,9 +556,9 @@ func (d *DB) QueueUpdateStatus(issue int, status string) error {
 	return nil
 }
 
-// QueueRemove deletes a queue item by issue number.
-func (d *DB) QueueRemove(issue int) error {
-	res, err := d.conn.Exec("DELETE FROM issue_queue WHERE issue = ?", issue)
+// QueueRemove deletes a queue item by namespace and issue number.
+func (d *DB) QueueRemove(namespace string, issue int) error {
+	res, err := d.conn.Exec("DELETE FROM issue_queue WHERE namespace = ? AND issue = ?", namespace, issue)
 	if err != nil {
 		return fmt.Errorf("remove from queue: %w", err)
 	}
@@ -567,21 +572,22 @@ func (d *DB) QueueRemove(issue int) error {
 	return nil
 }
 
-// QueueDependents returns all pending or active queue items whose depends_on
-// array contains the given issue number. Used to find downstream issues that
-// need contract validation after an upstream issue merges.
-func (d *DB) QueueDependents(issue int) ([]QueueItem, error) {
+// QueueDependents returns all pending or active queue items in the same namespace
+// whose depends_on array contains the given issue number. Used to find downstream
+// issues that need contract validation after an upstream issue merges.
+func (d *DB) QueueDependents(namespace string, issue int) ([]QueueItem, error) {
 	rows, err := d.conn.Query(`
-		SELECT id, issue, status, position, feature_intent, depends_on,
-		       added_at, started_at, finished_at
+		SELECT id, namespace, issue, status, position, feature_intent, depends_on,
+		       config_path, added_at, started_at, finished_at
 		FROM issue_queue
-		WHERE status IN ('pending', 'active')
+		WHERE namespace = ?
+		AND status IN ('pending', 'active')
 		AND EXISTS (
 		    SELECT 1 FROM json_each(depends_on) je
 		    WHERE CAST(je.value AS INTEGER) = ?
 		)
 		ORDER BY position`,
-		issue,
+		namespace, issue,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list dependents: %w", err)
@@ -593,7 +599,7 @@ func (d *DB) QueueDependents(issue int) ([]QueueItem, error) {
 		var item QueueItem
 		var startedAt, finishedAt sql.NullString
 		var dependsOnJSON string
-		if err := rows.Scan(&item.ID, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &dependsOnJSON, &item.AddedAt, &startedAt, &finishedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Namespace, &item.Issue, &item.Status, &item.Position, &item.FeatureIntent, &dependsOnJSON, &item.ConfigPath, &item.AddedAt, &startedAt, &finishedAt); err != nil {
 			return nil, fmt.Errorf("scan queue item: %w", err)
 		}
 		if startedAt.Valid {
@@ -692,12 +698,12 @@ func (d *DB) GetQueueItem(issue int) (*QueueItem, error) {
 	return &item, nil
 }
 
-// GetCheckHistory returns all check runs for an issue, ordered by id descending.
-func (d *DB) GetCheckHistory(issue int) ([]CheckRun, error) {
+// GetCheckHistory returns all check runs for a namespace and issue, ordered by id descending.
+func (d *DB) GetCheckHistory(namespace string, issue int) ([]CheckRun, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, issue, stage, attempt, fix_round, check_name, passed, auto_fixed, exit_code, duration_ms, summary, findings, timestamp
-		 FROM check_runs WHERE issue = ? ORDER BY id DESC`,
-		issue,
+		`SELECT id, namespace, issue, stage, attempt, fix_round, check_name, passed, auto_fixed, exit_code, duration_ms, summary, findings, timestamp
+		 FROM check_runs WHERE namespace = ? AND issue = ? ORDER BY id DESC`,
+		namespace, issue,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get check history: %w", err)
@@ -709,7 +715,7 @@ func (d *DB) GetCheckHistory(issue int) ([]CheckRun, error) {
 		var r CheckRun
 		var exitCode, durationMs sql.NullInt64
 		var summary, findings sql.NullString
-		if err := rows.Scan(&r.ID, &r.Issue, &r.Stage, &r.Attempt, &r.FixRound, &r.CheckName, &r.Passed, &r.AutoFixed, &exitCode, &durationMs, &summary, &findings, &r.Timestamp); err != nil {
+		if err := rows.Scan(&r.ID, &r.Namespace, &r.Issue, &r.Stage, &r.Attempt, &r.FixRound, &r.CheckName, &r.Passed, &r.AutoFixed, &exitCode, &durationMs, &summary, &findings, &r.Timestamp); err != nil {
 			return nil, fmt.Errorf("scan check history: %w", err)
 		}
 		if exitCode.Valid {

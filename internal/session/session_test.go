@@ -103,7 +103,7 @@ func TestCreate_HappyPath(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Verify tmux calls: new-session, cd, unset CLAUDECODE, claude command
+	// Verify tmux calls: new-session, cd, unset CLAUDECODE, (optionally export oauth), claude command
 	if len(tmux.calls) < 4 {
 		t.Fatalf("expected at least 4 tmux calls, got %d: %v", len(tmux.calls), tmux.calls)
 	}
@@ -116,12 +116,14 @@ func TestCreate_HappyPath(t *testing.T) {
 	if !strings.Contains(tmux.calls[2], "unset CLAUDECODE") {
 		t.Errorf("call[2] = %q, want unset CLAUDECODE", tmux.calls[2])
 	}
-	if !strings.Contains(tmux.calls[3], "claude") {
-		t.Errorf("call[3] = %q, want claude command", tmux.calls[3])
+	// The last call is always the claude command (may be preceded by oauth token export)
+	lastCall := tmux.calls[len(tmux.calls)-1]
+	if !strings.Contains(lastCall, "claude") {
+		t.Errorf("last call = %q, want claude command", lastCall)
 	}
 	// Non-interactive should include --print
-	if !strings.Contains(tmux.calls[3], "--print") {
-		t.Errorf("call[3] = %q, want --print flag for non-interactive", tmux.calls[3])
+	if !strings.Contains(lastCall, "--print") {
+		t.Errorf("last call = %q, want --print flag for non-interactive", lastCall)
 	}
 
 	// Verify DB event
@@ -179,9 +181,15 @@ func TestCreate_NoWorkdir(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Should have new-session + unset CLAUDECODE + claude command (no cd)
-	if len(tmux.calls) != 3 {
-		t.Fatalf("expected 3 tmux calls (no cd), got %d: %v", len(tmux.calls), tmux.calls)
+	// Should have new-session + unset CLAUDECODE + (optionally oauth export) + claude command (no cd)
+	if len(tmux.calls) < 3 {
+		t.Fatalf("expected at least 3 tmux calls (no cd), got %d: %v", len(tmux.calls), tmux.calls)
+	}
+	// Verify no cd call was made
+	for _, c := range tmux.calls {
+		if strings.Contains(c, "send-keys") && strings.Contains(c, " cd ") {
+			t.Errorf("unexpected cd call in no-workdir test: %q", c)
+		}
 	}
 }
 
@@ -555,10 +563,10 @@ func TestSendFromCheckFailures(t *testing.T) {
 	d.LogSessionEvent("test-fix", 10, "impl", "started", nil, "")
 
 	// Insert failed check runs
-	d.LogCheckRun(10, "impl", 1, 0, "lint", false, false, 1, 500, "3 errors found", "src/auth.go:12: unused var")
-	d.LogCheckRun(10, "impl", 1, 0, "test", false, false, 1, 2000, "2 tests failed", "TestLogin FAIL")
+	d.LogCheckRun("", 10, "impl", 1, 0, "lint", false, false, 1, 500, "3 errors found", "src/auth.go:12: unused var")
+	d.LogCheckRun("", 10, "impl", 1, 0, "test", false, false, 1, 2000, "2 tests failed", "TestLogin FAIL")
 
-	err := mgr.SendFromCheckFailures("test-fix", 10, "impl")
+	err := mgr.SendFromCheckFailures("test-fix", "", 10, "impl")
 	if err != nil {
 		t.Fatalf("SendFromCheckFailures: %v", err)
 	}
@@ -588,7 +596,7 @@ func TestSendFromCheckFailures_NoneFound(t *testing.T) {
 	d := testDB(t)
 	mgr := NewManager(tmux, d, nil)
 
-	err := mgr.SendFromCheckFailures("test-nofail", 99, "impl")
+	err := mgr.SendFromCheckFailures("test-nofail", "", 99, "impl")
 	if err == nil {
 		t.Fatal("expected error when no failures found")
 	}

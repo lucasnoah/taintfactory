@@ -219,18 +219,18 @@ func TestGetAllActiveSessions(t *testing.T) {
 func TestLogCheckRun_GetCheckRuns(t *testing.T) {
 	d := testDB(t)
 
-	if err := d.LogCheckRun(1, "code", 1, 0, "lint", true, false, 0, 1500, "all passed", ""); err != nil {
+	if err := d.LogCheckRun("", 1, "code", 1, 0, "lint", true, false, 0, 1500, "all passed", ""); err != nil {
 		t.Fatalf("log check run: %v", err)
 	}
-	if err := d.LogCheckRun(1, "code", 1, 0, "test", false, false, 1, 5000, "3 failed", "test_foo.go:12"); err != nil {
+	if err := d.LogCheckRun("", 1, "code", 1, 0, "test", false, false, 1, 5000, "3 failed", "test_foo.go:12"); err != nil {
 		t.Fatalf("log check run: %v", err)
 	}
 	// Different fix round
-	if err := d.LogCheckRun(1, "code", 1, 1, "test", true, true, 0, 4800, "all passed", ""); err != nil {
+	if err := d.LogCheckRun("", 1, "code", 1, 1, "test", true, true, 0, 4800, "all passed", ""); err != nil {
 		t.Fatalf("log check run: %v", err)
 	}
 
-	runs, err := d.GetCheckRuns(1, "code", 0)
+	runs, err := d.GetCheckRuns("", 1, "code", 0)
 	if err != nil {
 		t.Fatalf("get check runs: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestLogCheckRun_GetCheckRuns(t *testing.T) {
 	}
 
 	// Fix round 1
-	runs1, err := d.GetCheckRuns(1, "code", 1)
+	runs1, err := d.GetCheckRuns("", 1, "code", 1)
 	if err != nil {
 		t.Fatalf("get check runs round 1: %v", err)
 	}
@@ -266,14 +266,14 @@ func TestLogCheckRun_GetCheckRuns(t *testing.T) {
 func TestGetLatestCheckRun(t *testing.T) {
 	d := testDB(t)
 
-	if err := d.LogCheckRun(1, "code", 1, 0, "lint", false, false, 1, 1000, "failed", "err1"); err != nil {
+	if err := d.LogCheckRun("", 1, "code", 1, 0, "lint", false, false, 1, 1000, "failed", "err1"); err != nil {
 		t.Fatalf("log check run: %v", err)
 	}
-	if err := d.LogCheckRun(1, "code", 1, 1, "lint", true, true, 0, 900, "passed", ""); err != nil {
+	if err := d.LogCheckRun("", 1, "code", 1, 1, "lint", true, true, 0, 900, "passed", ""); err != nil {
 		t.Fatalf("log check run: %v", err)
 	}
 
-	run, err := d.GetLatestCheckRun(1, "lint")
+	run, err := d.GetLatestCheckRun("", 1, "lint")
 	if err != nil {
 		t.Fatalf("get latest: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestGetLatestCheckRun(t *testing.T) {
 	}
 
 	// Nonexistent check
-	run2, err := d.GetLatestCheckRun(1, "nonexistent")
+	run2, err := d.GetLatestCheckRun("", 1, "nonexistent")
 	if err != nil {
 		t.Fatalf("get latest nonexistent: %v", err)
 	}
@@ -300,17 +300,17 @@ func TestGetLatestCheckRun(t *testing.T) {
 func TestLogPipelineEvent_GetPipelineHistory(t *testing.T) {
 	d := testDB(t)
 
-	if err := d.LogPipelineEvent(1, "pipeline_started", "plan", 1, "starting pipeline"); err != nil {
+	if err := d.LogPipelineEvent("", 1, "pipeline_started", "plan", 1, "starting pipeline"); err != nil {
 		t.Fatalf("log pipeline event: %v", err)
 	}
-	if err := d.LogPipelineEvent(1, "stage_completed", "plan", 1, "plan done"); err != nil {
+	if err := d.LogPipelineEvent("", 1, "stage_completed", "plan", 1, "plan done"); err != nil {
 		t.Fatalf("log pipeline event: %v", err)
 	}
-	if err := d.LogPipelineEvent(2, "pipeline_started", "code", 1, "issue 2"); err != nil {
+	if err := d.LogPipelineEvent("", 2, "pipeline_started", "code", 1, "issue 2"); err != nil {
 		t.Fatalf("log pipeline event: %v", err)
 	}
 
-	history, err := d.GetPipelineHistory(1)
+	history, err := d.GetPipelineHistory("", 1)
 	if err != nil {
 		t.Fatalf("get history: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestLogPipelineEvent_GetPipelineHistory(t *testing.T) {
 	}
 
 	// Issue 2 should have its own history
-	history2, err := d.GetPipelineHistory(2)
+	history2, err := d.GetPipelineHistory("", 2)
 	if err != nil {
 		t.Fatalf("get history issue 2: %v", err)
 	}
@@ -452,11 +452,11 @@ func TestMultipleSessionsIsolation(t *testing.T) {
 	}
 
 	// Check runs for different issues shouldn't interfere
-	d.LogCheckRun(10, "plan", 1, 0, "lint", true, false, 0, 100, "", "")
-	d.LogCheckRun(20, "code", 1, 0, "test", false, false, 1, 200, "", "")
+	d.LogCheckRun("", 10, "plan", 1, 0, "lint", true, false, 0, 100, "", "")
+	d.LogCheckRun("", 20, "code", 1, 0, "test", false, false, 1, 200, "", "")
 
-	runs10, _ := d.GetCheckRuns(10, "plan", 0)
-	runs20, _ := d.GetCheckRuns(20, "code", 0)
+	runs10, _ := d.GetCheckRuns("", 10, "plan", 0)
+	runs20, _ := d.GetCheckRuns("", 20, "code", 0)
 	if len(runs10) != 1 || runs10[0].CheckName != "lint" {
 		t.Errorf("issue 10 check runs unexpected: %v", runs10)
 	}
@@ -465,11 +465,11 @@ func TestMultipleSessionsIsolation(t *testing.T) {
 	}
 
 	// Pipeline events for different issues
-	d.LogPipelineEvent(10, "started", "plan", 1, "")
-	d.LogPipelineEvent(20, "started", "code", 1, "")
+	d.LogPipelineEvent("", 10, "started", "plan", 1, "")
+	d.LogPipelineEvent("", 20, "started", "code", 1, "")
 
-	hist10, _ := d.GetPipelineHistory(10)
-	hist20, _ := d.GetPipelineHistory(20)
+	hist10, _ := d.GetPipelineHistory("", 10)
+	hist20, _ := d.GetPipelineHistory("", 20)
 	if len(hist10) != 1 {
 		t.Errorf("issue 10 pipeline events: got %d, want 1", len(hist10))
 	}
@@ -586,10 +586,10 @@ func TestQueueNext_SkipsNonPending(t *testing.T) {
 		t.Fatalf("queue add: %v", err)
 	}
 	// Mark first two as active/completed
-	if err := d.QueueUpdateStatus(10, "active"); err != nil {
+	if err := d.QueueUpdateStatus("", 10, "active"); err != nil {
 		t.Fatalf("update status: %v", err)
 	}
-	if err := d.QueueUpdateStatus(20, "completed"); err != nil {
+	if err := d.QueueUpdateStatus("", 20, "completed"); err != nil {
 		t.Fatalf("update status: %v", err)
 	}
 
@@ -613,7 +613,7 @@ func TestQueueUpdateStatus(t *testing.T) {
 	}
 
 	// Mark active
-	if err := d.QueueUpdateStatus(10, "active"); err != nil {
+	if err := d.QueueUpdateStatus("", 10, "active"); err != nil {
 		t.Fatalf("update to active: %v", err)
 	}
 	items, _ := d.QueueList()
@@ -625,7 +625,7 @@ func TestQueueUpdateStatus(t *testing.T) {
 	}
 
 	// Mark completed
-	if err := d.QueueUpdateStatus(10, "completed"); err != nil {
+	if err := d.QueueUpdateStatus("", 10, "completed"); err != nil {
 		t.Fatalf("update to completed: %v", err)
 	}
 	items, _ = d.QueueList()
@@ -640,7 +640,7 @@ func TestQueueUpdateStatus(t *testing.T) {
 func TestQueueUpdateStatus_NotFound(t *testing.T) {
 	d := testDB(t)
 
-	err := d.QueueUpdateStatus(999, "active")
+	err := d.QueueUpdateStatus("", 999, "active")
 	if err == nil {
 		t.Fatal("expected error for non-existent issue")
 	}
@@ -652,7 +652,7 @@ func TestQueueRemove(t *testing.T) {
 	if err := d.QueueAdd([]QueueAddItem{{Issue: 10, FeatureIntent: "test intent"}, {Issue: 20, FeatureIntent: "test intent"}}); err != nil {
 		t.Fatalf("queue add: %v", err)
 	}
-	if err := d.QueueRemove(10); err != nil {
+	if err := d.QueueRemove("", 10); err != nil {
 		t.Fatalf("queue remove: %v", err)
 	}
 	items, _ := d.QueueList()
@@ -667,7 +667,7 @@ func TestQueueRemove(t *testing.T) {
 func TestQueueRemove_NotFound(t *testing.T) {
 	d := testDB(t)
 
-	err := d.QueueRemove(999)
+	err := d.QueueRemove("", 999)
 	if err == nil {
 		t.Fatal("expected error for non-existent issue")
 	}
@@ -755,7 +755,7 @@ func TestQueueNext_DepCompleted(t *testing.T) {
 	if err := d.QueueAdd([]QueueAddItem{{Issue: 9, FeatureIntent: "first"}}); err != nil {
 		t.Fatalf("queue add 9: %v", err)
 	}
-	if err := d.QueueUpdateStatus(9, "completed"); err != nil {
+	if err := d.QueueUpdateStatus("", 9, "completed"); err != nil {
 		t.Fatalf("complete 9: %v", err)
 	}
 	if err := d.QueueAdd([]QueueAddItem{{Issue: 10, FeatureIntent: "second", DependsOn: []int{9}}}); err != nil {
@@ -803,22 +803,22 @@ func TestGetCheckHistory(t *testing.T) {
 	d := testDB(t)
 
 	// Log several check runs for the same issue
-	if err := d.LogCheckRun(42, "implement", 1, 0, "lint", true, false, 0, 100, "0 errors", "{}"); err != nil {
+	if err := d.LogCheckRun("", 42, "implement", 1, 0, "lint", true, false, 0, 100, "0 errors", "{}"); err != nil {
 		t.Fatalf("log lint: %v", err)
 	}
-	if err := d.LogCheckRun(42, "implement", 1, 0, "test", false, false, 1, 5000, "3 failures", "{\"failed\":3}"); err != nil {
+	if err := d.LogCheckRun("", 42, "implement", 1, 0, "test", false, false, 1, 5000, "3 failures", "{\"failed\":3}"); err != nil {
 		t.Fatalf("log test: %v", err)
 	}
-	if err := d.LogCheckRun(42, "implement", 1, 1, "test", true, false, 0, 4500, "all passed", "{}"); err != nil {
+	if err := d.LogCheckRun("", 42, "implement", 1, 1, "test", true, false, 0, 4500, "all passed", "{}"); err != nil {
 		t.Fatalf("log test fix: %v", err)
 	}
 	// Different issue
-	if err := d.LogCheckRun(99, "qa", 1, 0, "lint", true, false, 0, 50, "ok", "{}"); err != nil {
+	if err := d.LogCheckRun("", 99, "qa", 1, 0, "lint", true, false, 0, 50, "ok", "{}"); err != nil {
 		t.Fatalf("log other issue: %v", err)
 	}
 
 	// Get history for issue 42
-	runs, err := d.GetCheckHistory(42)
+	runs, err := d.GetCheckHistory("", 42)
 	if err != nil {
 		t.Fatalf("get check history: %v", err)
 	}
@@ -831,7 +831,7 @@ func TestGetCheckHistory(t *testing.T) {
 	}
 
 	// Get history for issue 99
-	runs99, err := d.GetCheckHistory(99)
+	runs99, err := d.GetCheckHistory("", 99)
 	if err != nil {
 		t.Fatalf("get check history: %v", err)
 	}
@@ -840,7 +840,7 @@ func TestGetCheckHistory(t *testing.T) {
 	}
 
 	// Get history for non-existent issue
-	runsEmpty, err := d.GetCheckHistory(999)
+	runsEmpty, err := d.GetCheckHistory("", 999)
 	if err != nil {
 		t.Fatalf("get check history: %v", err)
 	}

@@ -106,14 +106,16 @@ func (o *Orchestrator) worktreeFor(ps *pipeline.PipelineState) *worktree.Manager
 }
 
 // namespaceFromRepo derives "{org}/{repo}" from a pipeline repo URL.
-// e.g. "github.com/myorg/myapp" → "myorg/myapp"
+// Handles both "github.com/org/repo" and plain "org/repo" formats.
 func namespaceFromRepo(repo string) string {
 	repo = strings.TrimPrefix(repo, "https://")
 	repo = strings.TrimPrefix(repo, "http://")
-	parts := strings.SplitN(repo, "/", 2)
-	if len(parts) >= 2 {
-		return parts[1]
+	parts := strings.SplitN(repo, "/", 3)
+	if len(parts) == 3 {
+		// domain/owner/repo → owner/repo
+		return parts[1] + "/" + parts[2]
 	}
+	// Already owner/repo
 	return repo
 }
 
@@ -143,8 +145,12 @@ func (o *Orchestrator) Create(opts CreateOpts) (*pipeline.PipelineState, error) 
 		wt = o.wt.WithRepoDir(repoDir)
 	}
 
-	// Fetch issue metadata from GitHub
-	issue, err := o.gh.GetIssue(opts.Issue)
+	// Fetch issue metadata from GitHub, scoped to the correct repo when known.
+	gh := o.gh
+	if cfg.Pipeline.Repo != "" {
+		gh = o.gh.WithRepo(cfg.Pipeline.Repo)
+	}
+	issue, err := gh.GetIssue(opts.Issue)
 	if err != nil {
 		return nil, fmt.Errorf("fetch issue: %w", err)
 	}
@@ -207,7 +213,7 @@ func (o *Orchestrator) Create(opts CreateOpts) (*pipeline.PipelineState, error) 
 	pipelineDir := fmt.Sprintf("%s/%d", o.store.BaseDir(), opts.Issue)
 	_, _ = o.gh.CacheIssue(opts.Issue, pipelineDir)
 
-	_ = o.db.LogPipelineEvent(opts.Issue, "created", firstStage, 1, "")
+	_ = o.db.LogPipelineEvent(namespace, opts.Issue, "created", firstStage, 1, "")
 	return ps, nil
 }
 
@@ -296,7 +302,7 @@ func (o *Orchestrator) Advance(issue int) (*AdvanceResult, error) {
 		}); err != nil {
 			return nil, fmt.Errorf("update rate_limited status: %w", err)
 		}
-		_ = o.db.LogPipelineEvent(issue, "rate_limited", currentStage, currentAttempt, "")
+		_ = o.db.LogPipelineEvent(ps.Namespace, issue, "rate_limited", currentStage, currentAttempt, "")
 		return &AdvanceResult{
 			Issue:   issue,
 			Action:  "rate_limited",
@@ -343,18 +349,18 @@ func (o *Orchestrator) Advance(issue int) (*AdvanceResult, error) {
 		if stageCfg.Type == "merge" || currentStage == o.findMergeOnFailTarget(cfg) {
 			o.preparePostMerge(issue, ps)
 		}
-		return o.advanceToNextStage(issue, currentStage, stageCfg, runResult, cfg)
+		return o.advanceToNextStage(ps.Namespace, issue, currentStage, stageCfg, runResult, cfg)
 	}
 
 	// Stage failed — route via on_fail
-	return o.handleStageFailure(issue, currentStage, currentAttempt, stageCfg, runResult, cfg)
+	return o.handleStageFailure(ps.Namespace, issue, currentStage, currentAttempt, stageCfg, runResult, cfg)
 }
 
 // advanceToNextStage moves the pipeline to the next stage or completes it.
 // stageCfg is the config of the just-completed stage; it is used to skip
 // the on_fail fallback stage when a merge stage succeeds (the fallback is
 // only relevant on failure and should not run on the happy path).
-func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, stageCfg *config.Stage, runResult *stage.RunResult, cfg *config.PipelineConfig) (*AdvanceResult, error) {
+func (o *Orchestrator) advanceToNextStage(namespace string, issue int, currentStage string, stageCfg *config.Stage, runResult *stage.RunResult, cfg *config.PipelineConfig) (*AdvanceResult, error) {
 	nextStage := o.nextStageID(currentStage, cfg)
 
 	// When a merge stage succeeds, skip past its on_fail fallback stage (e.g.
@@ -396,8 +402,8 @@ func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, stageC
 			return nil, fmt.Errorf("update completed status: %w", err)
 		}
 		o.logf("pipeline #%d: completed!", issue)
-		_ = o.db.LogPipelineEvent(issue, "completed", currentStage, runResult.Attempt, "")
-		_ = o.db.QueueUpdateStatus(issue, "completed")
+		_ = o.db.LogPipelineEvent(namespace, issue, "completed", currentStage, runResult.Attempt, "")
+		_ = o.db.QueueUpdateStatus(namespace, issue, "completed")
 
 		return &AdvanceResult{
 			Issue:   issue,
@@ -419,7 +425,7 @@ func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, stageC
 	}); err != nil {
 		return nil, fmt.Errorf("advance to next stage: %w", err)
 	}
-	_ = o.db.LogPipelineEvent(issue, "stage_advanced", nextStage, 1, fmt.Sprintf("from=%s", currentStage))
+	_ = o.db.LogPipelineEvent(namespace, issue, "stage_advanced", nextStage, 1, fmt.Sprintf("from=%s", currentStage))
 
 	return &AdvanceResult{
 		Issue:     issue,
@@ -434,7 +440,7 @@ func (o *Orchestrator) advanceToNextStage(issue int, currentStage string, stageC
 
 // handleStageFailure routes the pipeline based on on_fail config.
 // Uses captured values from the start of Advance() to avoid stale-snapshot issues.
-func (o *Orchestrator) handleStageFailure(issue int, currentStage string, currentAttempt int, stageCfg *config.Stage, runResult *stage.RunResult, cfg *config.PipelineConfig) (*AdvanceResult, error) {
+func (o *Orchestrator) handleStageFailure(namespace string, issue int, currentStage string, currentAttempt int, stageCfg *config.Stage, runResult *stage.RunResult, cfg *config.PipelineConfig) (*AdvanceResult, error) {
 	target := resolveOnFail(stageCfg.OnFail)
 
 	if target == "escalate" {
@@ -443,7 +449,7 @@ func (o *Orchestrator) handleStageFailure(issue int, currentStage string, curren
 		}); err != nil {
 			return nil, fmt.Errorf("update blocked status: %w", err)
 		}
-		_ = o.db.LogPipelineEvent(issue, "escalated", currentStage, currentAttempt, "")
+		_ = o.db.LogPipelineEvent(namespace, issue, "escalated", currentStage, currentAttempt, "")
 
 		return &AdvanceResult{
 			Issue:   issue,
@@ -471,8 +477,8 @@ func (o *Orchestrator) handleStageFailure(issue int, currentStage string, curren
 			}); err != nil {
 				return nil, fmt.Errorf("update failed status: %w", err)
 			}
-			_ = o.db.LogPipelineEvent(issue, "max_attempts_reached", currentStage, currentAttempt, "")
-			_ = o.db.QueueUpdateStatus(issue, "failed")
+			_ = o.db.LogPipelineEvent(namespace, issue, "max_attempts_reached", currentStage, currentAttempt, "")
+			_ = o.db.QueueUpdateStatus(namespace, issue, "failed")
 
 			return &AdvanceResult{
 				Issue:   issue,
@@ -493,7 +499,7 @@ func (o *Orchestrator) handleStageFailure(issue int, currentStage string, curren
 		}); err != nil {
 			return nil, fmt.Errorf("increment attempt: %w", err)
 		}
-		_ = o.db.LogPipelineEvent(issue, "retry", currentStage, newAttempt, "auto")
+		_ = o.db.LogPipelineEvent(namespace, issue, "retry", currentStage, newAttempt, "auto")
 
 		return &AdvanceResult{
 			Issue:     issue,
@@ -515,7 +521,7 @@ func (o *Orchestrator) handleStageFailure(issue int, currentStage string, curren
 	}); err != nil {
 		return nil, fmt.Errorf("route to stage %q: %w", target, err)
 	}
-	_ = o.db.LogPipelineEvent(issue, "on_fail_routed", target, 1, fmt.Sprintf("from=%s", currentStage))
+	_ = o.db.LogPipelineEvent(namespace, issue, "on_fail_routed", target, 1, fmt.Sprintf("from=%s", currentStage))
 
 	return &AdvanceResult{
 		Issue:     issue,
@@ -560,7 +566,7 @@ func (o *Orchestrator) Retry(opts RetryOpts) error {
 	if opts.Reason != "" {
 		detail = fmt.Sprintf("manual: %s", opts.Reason)
 	}
-	_ = o.db.LogPipelineEvent(opts.Issue, "retry", ps.CurrentStage, newAttempt, detail)
+	_ = o.db.LogPipelineEvent(ps.Namespace, opts.Issue, "retry", ps.CurrentStage, newAttempt, detail)
 
 	return nil
 }
@@ -593,7 +599,7 @@ func (o *Orchestrator) Fail(opts FailOpts) error {
 	if opts.Reason != "" {
 		detail = opts.Reason
 	}
-	_ = o.db.LogPipelineEvent(opts.Issue, "failed", ps.CurrentStage, ps.CurrentAttempt, detail)
+	_ = o.db.LogPipelineEvent(ps.Namespace, opts.Issue, "failed", ps.CurrentStage, ps.CurrentAttempt, detail)
 
 	return nil
 }
@@ -628,7 +634,7 @@ func (o *Orchestrator) Abort(opts AbortOpts) error {
 	}); err != nil {
 		return fmt.Errorf("update pipeline: %w", err)
 	}
-	_ = o.db.LogPipelineEvent(opts.Issue, "aborted", ps.CurrentStage, ps.CurrentAttempt, "")
+	_ = o.db.LogPipelineEvent(ps.Namespace, opts.Issue, "aborted", ps.CurrentStage, ps.CurrentAttempt, "")
 
 	return nil
 }
@@ -966,10 +972,10 @@ func (o *Orchestrator) handleAdvance(ps *pipeline.PipelineState) CheckInAction {
 	advResult, err := o.Advance(ps.Issue)
 	if err != nil {
 		// Mark pipeline as blocked so it doesn't loop forever on errors
-		_ = o.store.Update(ps.Issue, func(ps *pipeline.PipelineState) {
-			ps.Status = "blocked"
+		_ = o.store.Update(ps.Issue, func(p *pipeline.PipelineState) {
+			p.Status = "blocked"
 		})
-		_ = o.db.LogPipelineEvent(ps.Issue, "escalated", ps.CurrentStage, ps.CurrentAttempt, fmt.Sprintf("check-in advance error: %v", err))
+		_ = o.db.LogPipelineEvent(ps.Namespace, ps.Issue, "escalated", ps.CurrentStage, ps.CurrentAttempt, fmt.Sprintf("check-in advance error: %v", err))
 		return CheckInAction{
 			Issue:   ps.Issue,
 			Action:  "escalate",
@@ -1016,7 +1022,7 @@ func (o *Orchestrator) processQueue() *CheckInAction {
 		}
 		if derived != "" {
 			item.FeatureIntent = derived
-			_ = o.db.QueueSetIntent(item.Issue, derived)
+			_ = o.db.QueueSetIntent(item.Namespace, item.Issue, derived)
 		}
 	}
 
@@ -1029,14 +1035,14 @@ func (o *Orchestrator) processQueue() *CheckInAction {
 		}
 	}
 
-	if err := o.db.QueueUpdateStatus(item.Issue, "active"); err != nil {
+	if err := o.db.QueueUpdateStatus(item.Namespace, item.Issue, "active"); err != nil {
 		return nil
 	}
 
 	o.logf("queue: creating pipeline for issue #%d", item.Issue)
 	_, err = o.Create(CreateOpts{Issue: item.Issue, FeatureIntent: item.FeatureIntent, ConfigPath: item.ConfigPath})
 	if err != nil {
-		_ = o.db.QueueUpdateStatus(item.Issue, "failed")
+		_ = o.db.QueueUpdateStatus(item.Namespace, item.Issue, "failed")
 		return &CheckInAction{
 			Issue:   item.Issue,
 			Action:  "fail",
@@ -1246,7 +1252,7 @@ func (o *Orchestrator) CleanupAll() ([]CleanupResult, error) {
 func (o *Orchestrator) preparePostMerge(issue int, ps *pipeline.PipelineState) {
 	repoRoot := filepath.Dir(filepath.Dir(ps.Worktree))
 
-	dependents, err := o.db.QueueDependents(issue)
+	dependents, err := o.db.QueueDependents(ps.Namespace, issue)
 	var depText string
 	if err == nil && len(dependents) > 0 {
 		var sb strings.Builder

@@ -143,7 +143,7 @@ var sessionSendCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("invalid --from-check-failures format (expected issue:stage): %w", err)
 			}
-			if err := mgr.SendFromCheckFailures(name, issue, stage); err != nil {
+			if err := mgr.SendFromCheckFailures(name, "", issue, stage); err != nil {
 				return err
 			}
 			fmt.Printf("Sent fix prompt for issue %d stage %q to session %q\n", issue, stage, name)

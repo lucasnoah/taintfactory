@@ -1431,7 +1431,7 @@ func TestCheckIn_QueueCompletedUpdatesStatus(t *testing.T) {
 	if err := env.database.QueueAdd([]db.QueueAddItem{{Issue: 42, FeatureIntent: "test intent"}}); err != nil {
 		t.Fatalf("queue add: %v", err)
 	}
-	if err := env.database.QueueUpdateStatus(42, "active"); err != nil {
+	if err := env.database.QueueUpdateStatus("", 42, "active"); err != nil {
 		t.Fatalf("update status: %v", err)
 	}
 

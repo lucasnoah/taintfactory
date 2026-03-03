@@ -28,12 +28,12 @@ func TestResolveConfigPath_FileNotFound(t *testing.T) {
 }
 
 func TestResolveConfigPath_Empty(t *testing.T) {
-	got, err := resolveConfigPath("")
-	if err != nil {
-		t.Fatalf("unexpected error for empty flag: %v", err)
+	_, err := resolveConfigPath("")
+	if err == nil {
+		t.Fatal("expected error for empty --config flag, got nil")
 	}
-	if got != "" {
-		t.Errorf("expected empty string, got %q", got)
+	if !strings.Contains(err.Error(), "--config") {
+		t.Errorf("expected error mentioning --config, got: %v", err)
 	}
 }
 

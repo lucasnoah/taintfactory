@@ -74,7 +74,7 @@ var checkRunCmd = &cobra.Command{
 
 			// Log to DB
 			if err := d.LogCheckRun(
-				issue, ps.CurrentStage, ps.CurrentAttempt, ps.CurrentFixRound,
+				ps.Namespace, issue, ps.CurrentStage, ps.CurrentAttempt, ps.CurrentFixRound,
 				name, result.Passed, result.AutoFixed, result.ExitCode,
 				result.DurationMs, result.Summary, result.Findings,
 			); err != nil {
@@ -172,7 +172,7 @@ var checkGateCmd = &cobra.Command{
 		for i, result := range results {
 			saveRawOutput(store, issue, stage, ps.CurrentAttempt, result.CheckName, result)
 			if err := d.LogCheckRun(
-				issue, stage, ps.CurrentAttempt, fixRound,
+				ps.Namespace, issue, stage, ps.CurrentAttempt, fixRound,
 				result.CheckName, result.Passed, result.AutoFixed, result.ExitCode,
 				result.DurationMs, result.Summary, result.Findings,
 			); err != nil {
@@ -192,7 +192,7 @@ var checkGateCmd = &cobra.Command{
 		if !gate.Passed {
 			event = "checks_failed"
 		}
-		_ = d.LogPipelineEvent(issue, event, stage, ps.CurrentAttempt, "")
+		_ = d.LogPipelineEvent(ps.Namespace, issue, event, stage, ps.CurrentAttempt, "")
 
 		// Output
 		if format == "json" {
@@ -247,7 +247,15 @@ var checkResultCmd = &cobra.Command{
 		}
 		defer cleanup()
 
-		run, err := d.GetLatestCheckRun(issue, checkName)
+		// Best-effort: load namespace from pipeline state; fall back to "" for legacy rows.
+		var ns string
+		if store, storeErr := pipeline.DefaultStore(); storeErr == nil {
+			if ps, psErr := store.Get(issue); psErr == nil {
+				ns = ps.Namespace
+			}
+		}
+
+		run, err := d.GetLatestCheckRun(ns, issue, checkName)
 		if err != nil {
 			return fmt.Errorf("get check result: %w", err)
 		}
@@ -299,7 +307,15 @@ var checkHistoryCmd = &cobra.Command{
 		}
 		defer cleanup()
 
-		runs, err := d.GetCheckHistory(issue)
+		// Best-effort: load namespace from pipeline state; fall back to "" for legacy rows.
+		var nsHist string
+		if store, storeErr := pipeline.DefaultStore(); storeErr == nil {
+			if ps, psErr := store.Get(issue); psErr == nil {
+				nsHist = ps.Namespace
+			}
+		}
+
+		runs, err := d.GetCheckHistory(nsHist, issue)
 		if err != nil {
 			return fmt.Errorf("get check history: %w", err)
 		}

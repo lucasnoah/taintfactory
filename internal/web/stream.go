@@ -13,7 +13,7 @@ import (
 // pane output for the active session on the given pipeline issue.
 // It polls tmux capture-pane every 2 seconds and sends the full pane content
 // as a single SSE message. When the session ends it sends a "done" event.
-func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request, issueStr string) {
+func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request, namespace, issueStr string) {
 	issue, err := strconv.Atoi(issueStr)
 	if err != nil {
 		http.Error(w, "invalid issue", http.StatusBadRequest)
@@ -46,7 +46,7 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request, iss
 		case <-tick.C:
 		}
 
-		ps, err := s.store.Get(issue)
+		ps, err := s.store.GetForNamespace(namespace, issue)
 		if err != nil {
 			sendDone("pipeline not found")
 			return

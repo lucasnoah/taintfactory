@@ -23,7 +23,7 @@
     <td class="muted">{{.Position}}</td>
     <td>
       {{if .HasPipeline}}
-        <a href="/pipeline/{{.Issue}}">#{{.Issue}}</a>
+        <a href="/pipeline/{{.Namespace}}/{{.Issue}}">#{{.Issue}}</a>
       {{else}}
         <strong>#{{.Issue}}</strong>
       {{end}}

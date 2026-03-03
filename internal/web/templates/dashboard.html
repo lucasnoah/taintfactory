@@ -29,7 +29,7 @@
       <tbody>
       {{range .Pipelines}}
       <tr>
-        <td><a href="/pipeline/{{.Issue}}">#{{.Issue}}</a></td>
+        <td><a href="/pipeline/{{.Namespace}}/{{.Issue}}">#{{.Issue}}</a></td>
         <td>
           {{if .SessionDot}}<span class="{{dotClass .SessionDot}}" style="margin-right:.35rem"></span>{{end}}
           {{.Title}}
@@ -55,7 +55,7 @@
       {{range .QueueItems}}
       <li>
         <span class="muted" style="font-size:.75rem;min-width:1.5rem">{{.Position}}</span>
-        {{if .HasPipeline}}<a href="/pipeline/{{.Issue}}">#{{.Issue}}</a>{{else}}<strong>#{{.Issue}}</strong>{{end}}
+        {{if .HasPipeline}}<a href="/pipeline/{{.Namespace}}/{{.Issue}}">#{{.Issue}}</a>{{else}}<strong>#{{.Issue}}</strong>{{end}}
         <span class="{{badgeClass .Status}}">{{.Status}}</span>
         {{if .DependsOnStr}}<span class="muted" style="font-size:.75rem">→ {{.DependsOnStr}}</span>{{end}}
       </li>
@@ -97,7 +97,7 @@
   {{range .RecentActivity}}
   <tr>
     <td class="muted">{{.TimeAgo}}</td>
-    <td><a href="/pipeline/{{.Issue}}">#{{.Issue}}</a></td>
+    <td><a href="/pipeline/{{.Namespace}}/{{.Issue}}">#{{.Issue}}</a></td>
     <td>{{.Event}}</td>
     <td class="muted">{{.Stage}}</td>
   </tr>

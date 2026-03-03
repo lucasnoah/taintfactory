@@ -220,19 +220,34 @@ func currentProject(r *http.Request) string {
 	return r.URL.Query().Get("project")
 }
 
-// repoToNamespace converts a repo URL like "github.com/org/repo" or
-// "https://github.com/org/repo" to a namespace string "org/repo".
+// repoToNamespace converts a repo URL like "github.com/org/repo",
+// "https://github.com/org/repo", or plain "org/repo" to a namespace string "org/repo".
 func repoToNamespace(repo string) string {
 	if repo == "" {
 		return ""
 	}
 	repo = strings.TrimPrefix(repo, "https://")
 	repo = strings.TrimPrefix(repo, "http://")
-	parts := strings.SplitN(repo, "/", 2)
-	if len(parts) >= 2 {
-		return parts[1]
+	parts := strings.SplitN(repo, "/", 3)
+	if len(parts) == 3 {
+		// domain/owner/repo → owner/repo
+		return parts[1] + "/" + parts[2]
 	}
+	// Already owner/repo
 	return repo
+}
+
+// effectiveNamespace returns the namespace for a pipeline state.
+// Uses ps.Namespace if set; otherwise derives it from the pipeline's config file.
+func (s *Server) effectiveNamespace(ps *pipeline.PipelineState) string {
+	if ps.Namespace != "" {
+		return ps.Namespace
+	}
+	cfg := s.configForPS(ps)
+	if cfg == nil {
+		return ""
+	}
+	return repoToNamespace(cfg.Pipeline.Repo)
 }
 
 // namespaceFromConfigPath derives the namespace for a config file path by
@@ -267,17 +282,18 @@ func (s *Server) sidebarData(currentProj string) SidebarData {
 
 	type entry struct{ active, total int }
 	counts := make(map[string]*entry)
-	for _, ps := range pipelines {
-		if ps.Namespace == "" {
+	for i := range pipelines {
+		ns := s.effectiveNamespace(&pipelines[i])
+		if ns == "" {
 			continue
 		}
-		e := counts[ps.Namespace]
+		e := counts[ns]
 		if e == nil {
 			e = &entry{}
-			counts[ps.Namespace] = e
+			counts[ns] = e
 		}
 		e.total++
-		if ps.Status == "in_progress" {
+		if pipelines[i].Status == "in_progress" {
 			e.active++
 		}
 	}
@@ -325,15 +341,28 @@ func (s *Server) Start() error {
 func (s *Server) routePipeline(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/pipeline/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	// URL structure: /pipeline/{owner}/{repo}/{issue}[/sub-route...]
+	// parts[0]=owner, parts[1]=repo, parts[2]=issue
+	if len(parts) < 3 {
+		http.NotFound(w, r)
+		return
+	}
+	ns := parts[0] + "/" + parts[1]
+	issueStr := parts[2]
+	suffix := parts[3:]
 	switch {
-	case len(parts) == 1:
-		s.handlePipelineDetail(w, r, parts[0])
-	case len(parts) == 3 && parts[1] == "session" && parts[2] == "stream":
-		s.handleSessionStream(w, r, parts[0])
-	case len(parts) == 5 && parts[1] == "stage" && parts[3] == "attempt":
-		s.handleAttemptDetail(w, r, parts[0], parts[2], parts[4])
-	case len(parts) == 6 && parts[1] == "stage" && parts[3] == "attempt" && parts[5] == "log":
-		s.handleAttemptLog(w, r, parts[0], parts[2], parts[4])
+	case len(suffix) == 0:
+		// /pipeline/{owner}/{repo}/{issue}
+		s.handlePipelineDetail(w, r, ns, issueStr)
+	case len(suffix) == 2 && suffix[0] == "session" && suffix[1] == "stream":
+		// /pipeline/{owner}/{repo}/{issue}/session/stream
+		s.handleSessionStream(w, r, ns, issueStr)
+	case len(suffix) == 4 && suffix[0] == "stage" && suffix[2] == "attempt":
+		// /pipeline/{owner}/{repo}/{issue}/stage/{stage}/attempt/{attempt}
+		s.handleAttemptDetail(w, r, ns, issueStr, suffix[1], suffix[3])
+	case len(suffix) == 5 && suffix[0] == "stage" && suffix[2] == "attempt" && suffix[4] == "log":
+		// /pipeline/{owner}/{repo}/{issue}/stage/{stage}/attempt/{attempt}/log
+		s.handleAttemptLog(w, r, ns, issueStr, suffix[1], suffix[3])
 	default:
 		http.NotFound(w, r)
 	}

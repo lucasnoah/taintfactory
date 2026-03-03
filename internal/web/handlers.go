@@ -43,6 +43,7 @@ type TriageRow struct {
 
 type PipelineRow struct {
 	Issue        int
+	Namespace    string
 	Title        string
 	Status       string
 	CurrentStage string
@@ -80,14 +81,16 @@ type QueueRowView struct {
 }
 
 type ActivityRow struct {
-	Issue   int
-	Event   string
-	Stage   string
-	TimeAgo string
+	Issue     int
+	Namespace string
+	Event     string
+	Stage     string
+	TimeAgo   string
 }
 
 type PipelineDetailData struct {
 	State         *pipeline.PipelineState
+	Namespace     string // effective namespace (owner/repo) for URL construction
 	StageOrder    []StageStatusItem
 	History       []StageHistoryView
 	Events        []db.PipelineEvent
@@ -130,6 +133,7 @@ type StageHistoryView struct {
 
 type AttemptDetailData struct {
 	Issue        int
+	Namespace    string // effective namespace (owner/repo) for URL construction
 	Stage        string
 	Attempt      int
 	Prompt       string
@@ -286,24 +290,25 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return pipelines[i].UpdatedAt > pipelines[j].UpdatedAt
 	})
 
-	// Build project summary cards before filtering (needs all namespaced pipelines).
+	// Build project summary cards before filtering (needs all pipelines).
 	var projectSummary []ProjectSummaryCard
 	if proj == "" {
 		nsCounts := make(map[string]*ProjectSummaryCard)
-		for _, p := range pipelines {
-			if p.Namespace == "" {
+		for i := range pipelines {
+			ns := s.effectiveNamespace(&pipelines[i])
+			if ns == "" {
 				continue
 			}
-			c := nsCounts[p.Namespace]
+			c := nsCounts[ns]
 			if c == nil {
-				c = &ProjectSummaryCard{Namespace: p.Namespace}
-				nsCounts[p.Namespace] = c
+				c = &ProjectSummaryCard{Namespace: ns}
+				nsCounts[ns] = c
 			}
 			c.TotalCount++
-			if p.Status == "in_progress" {
+			if pipelines[i].Status == "in_progress" {
 				c.ActiveCount++
 			}
-			if p.Status == "failed" {
+			if pipelines[i].Status == "failed" {
 				c.FailedCount++
 			}
 		}
@@ -318,9 +323,9 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	// Filter pipelines by project.
 	if proj != "" {
 		var filtered []pipeline.PipelineState
-		for _, p := range pipelines {
-			if p.Namespace == proj {
-				filtered = append(filtered, p)
+		for i := range pipelines {
+			if s.effectiveNamespace(&pipelines[i]) == proj {
+				filtered = append(filtered, pipelines[i])
 			}
 		}
 		pipelines = filtered
@@ -342,6 +347,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 		rows = append(rows, PipelineRow{
 			Issue:        p.Issue,
+			Namespace:    s.effectiveNamespace(&p),
 			Title:        p.Title,
 			Status:       p.Status,
 			CurrentStage: p.CurrentStage,
@@ -356,7 +362,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	for _, q := range queueItems {
 		ns := ""
 		if p, ok := pipelineByIssue[q.Issue]; ok {
-			ns = p.Namespace
+			ns = s.effectiveNamespace(p)
 		} else {
 			ns = s.namespaceFromConfigPath(q.ConfigPath)
 		}
@@ -383,10 +389,11 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	activityRows := make([]ActivityRow, 0, len(activity))
 	for _, e := range activity {
 		activityRows = append(activityRows, ActivityRow{
-			Issue:   e.Issue,
-			Event:   e.Event,
-			Stage:   e.Stage,
-			TimeAgo: relTime(e.Timestamp),
+			Issue:     e.Issue,
+			Namespace: e.Namespace,
+			Event:     e.Event,
+			Stage:     e.Stage,
+			TimeAgo:   relTime(e.Timestamp),
 		})
 	}
 
@@ -481,20 +488,20 @@ func (s *Server) handleTriageList(w http.ResponseWriter, r *http.Request) {
 
 // ---- Pipeline Detail ----
 
-func (s *Server) handlePipelineDetail(w http.ResponseWriter, r *http.Request, issueStr string) {
+func (s *Server) handlePipelineDetail(w http.ResponseWriter, r *http.Request, namespace, issueStr string) {
 	issue, err := strconv.Atoi(issueStr)
 	if err != nil {
 		http.Error(w, "invalid issue number", http.StatusBadRequest)
 		return
 	}
 
-	ps, err := s.store.Get(issue)
+	ps, err := s.store.GetForNamespace(namespace, issue)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 
-	events, _ := s.db.GetPipelineHistory(issue)
+	events, _ := s.db.GetPipelineHistory(s.effectiveNamespace(ps), issue)
 
 	var stageOrder []StageStatusItem
 	if cfg := s.configForPS(ps); cfg != nil {
@@ -623,21 +630,22 @@ func (s *Server) handlePipelineDetail(w http.ResponseWriter, r *http.Request, is
 	}
 
 	data := PipelineDetailData{
-		State:         ps,
-		StageOrder:    stageOrder,
-		History:       history,
-		Events:        events,
-		IsActive:      ps.Status == "in_progress",
-		SessionDot:    s.sessionDot(ps.CurrentSession),
-		TmuxCmd:          tmuxCmd,
-		HasLiveStream:    hasLiveStream,
-		UpdatedAgo:       relTime(ps.UpdatedAt),
-		IssueURL:         issueURL,
-		QueueStatus:      queueStatus,
-		Upstream:         upstream,
-		Downstream:       downstream,
+		State:             ps,
+		Namespace:         s.effectiveNamespace(ps),
+		StageOrder:        stageOrder,
+		History:           history,
+		Events:            events,
+		IsActive:          ps.Status == "in_progress",
+		SessionDot:        s.sessionDot(ps.CurrentSession),
+		TmuxCmd:           tmuxCmd,
+		HasLiveStream:     hasLiveStream,
+		UpdatedAgo:        relTime(ps.UpdatedAt),
+		IssueURL:          issueURL,
+		QueueStatus:       queueStatus,
+		Upstream:          upstream,
+		Downstream:        downstream,
 		ShouldAutoRefresh: ps.Status == "in_progress" && !hasLiveStream,
-		Sidebar:          s.sidebarData(ps.Namespace),
+		Sidebar:           s.sidebarData(s.effectiveNamespace(ps)),
 	}
 
 	if err := s.pipelineTmpl.ExecuteTemplate(w, "base", data); err != nil {
@@ -647,7 +655,7 @@ func (s *Server) handlePipelineDetail(w http.ResponseWriter, r *http.Request, is
 
 // ---- Attempt Detail ----
 
-func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request, issueStr, stage, attemptStr string) {
+func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request, namespace, issueStr, stage, attemptStr string) {
 	issue, err := strconv.Atoi(issueStr)
 	if err != nil {
 		http.Error(w, "invalid issue number", http.StatusBadRequest)
@@ -659,9 +667,14 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request, iss
 		return
 	}
 
+	// Resolve effective namespace from the pipeline state so stageAttemptDir works.
+	if ps, err := s.store.GetForNamespace(namespace, issue); err == nil {
+		namespace = s.effectiveNamespace(ps)
+	}
+
 	prompt, _ := s.store.GetPrompt(issue, stage, attempt)
 	logContent, _ := s.store.GetSessionLog(issue, stage, attempt)
-	checks, _ := s.checkRunsForAttempt(issue, stage, attempt)
+	attemptChecks, _ := s.checkRunsForAttempt(namespace, issue, stage, attempt)
 	summary, _ := s.store.GetStageSummary(issue, stage, attempt)
 	outcome, _ := s.store.GetStageOutcome(issue, stage, attempt)
 
@@ -674,21 +687,18 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request, iss
 		logTruncated = true
 	}
 
-	var attemptNS string
-	if ps, err := s.store.Get(issue); err == nil {
-		attemptNS = ps.Namespace
-	}
 	data := AttemptDetailData{
 		Issue:        issue,
+		Namespace:    namespace,
 		Stage:        stage,
 		Attempt:      attempt,
 		Prompt:       prompt,
 		Log:          strings.Join(logLines, "\n"),
 		LogTruncated: logTruncated,
-		Checks:       checks,
+		Checks:       attemptChecks,
 		Summary:      summary,
 		Outcome:      outcome,
-		Sidebar:      s.sidebarData(attemptNS),
+		Sidebar:      s.sidebarData(namespace),
 	}
 
 	if err := s.attemptTmpl.ExecuteTemplate(w, "base", data); err != nil {
@@ -698,7 +708,7 @@ func (s *Server) handleAttemptDetail(w http.ResponseWriter, r *http.Request, iss
 
 // ---- Attempt Log (raw text/plain) ----
 
-func (s *Server) handleAttemptLog(w http.ResponseWriter, r *http.Request, issueStr, stage, attemptStr string) {
+func (s *Server) handleAttemptLog(w http.ResponseWriter, r *http.Request, namespace, issueStr, stage, attemptStr string) {
 	issue, err := strconv.Atoi(issueStr)
 	if err != nil {
 		http.Error(w, "invalid issue number", http.StatusBadRequest)
@@ -743,7 +753,7 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	for _, q := range queueItems {
 		ns := ""
 		if p, ok := pipelineByIssue[q.Issue]; ok {
-			ns = p.Namespace
+			ns = s.effectiveNamespace(p)
 		} else {
 			ns = s.namespaceFromConfigPath(q.ConfigPath)
 		}
