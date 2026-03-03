@@ -25,6 +25,16 @@ func Load(path string) (*PipelineConfig, error) {
 	return &cfg, nil
 }
 
+// LoadFromBytes parses a pipeline configuration from raw YAML bytes.
+func LoadFromBytes(data []byte) (*PipelineConfig, error) {
+	var cfg PipelineConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing config YAML: %w", err)
+	}
+	applyDefaults(&cfg)
+	return &cfg, nil
+}
+
 // LoadDefault searches for a pipeline config in standard locations and loads the
 // first one found. Search order: ./pipeline.yaml, ~/.factory/config.yaml
 func LoadDefault() (*PipelineConfig, error) {

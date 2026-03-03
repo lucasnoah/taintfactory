@@ -17,6 +17,18 @@ type Pipeline struct {
 	Checks            map[string]Check  `yaml:"checks"`
 	Stages            []Stage           `yaml:"stages"`
 	Vars              map[string]string `yaml:"vars"`
+	Notifications     NotificationsConfig `yaml:"notifications"`
+}
+
+// DiscordConfig holds Discord webhook notification settings.
+type DiscordConfig struct {
+	WebhookURL     string `yaml:"webhook_url"`
+	ThreadPerIssue bool   `yaml:"thread_per_issue"`
+}
+
+// NotificationsConfig holds per-project notification settings.
+type NotificationsConfig struct {
+	Discord DiscordConfig `yaml:"discord"`
 }
 
 // StageDefaults holds default values applied to stages that don't specify their own.

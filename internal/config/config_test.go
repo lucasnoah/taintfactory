@@ -480,6 +480,46 @@ pipeline:
 	}
 }
 
+func TestNotificationsConfig(t *testing.T) {
+	yaml := `
+pipeline:
+  name: test
+  repo: github.com/test/test
+  notifications:
+    discord:
+      webhook_url: "https://discord.com/api/webhooks/123/abc"
+      thread_per_issue: true
+`
+	cfg, err := LoadFromBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Pipeline.Notifications.Discord.WebhookURL != "https://discord.com/api/webhooks/123/abc" {
+		t.Errorf("expected webhook URL, got %q", cfg.Pipeline.Notifications.Discord.WebhookURL)
+	}
+	if !cfg.Pipeline.Notifications.Discord.ThreadPerIssue {
+		t.Error("expected ThreadPerIssue to be true")
+	}
+}
+
+func TestNotificationsConfig_Empty(t *testing.T) {
+	yaml := `
+pipeline:
+  name: test
+  repo: github.com/test/test
+`
+	cfg, err := LoadFromBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Pipeline.Notifications.Discord.WebhookURL != "" {
+		t.Error("expected empty webhook URL when not configured")
+	}
+	if cfg.Pipeline.Notifications.Discord.ThreadPerIssue {
+		t.Error("expected ThreadPerIssue to default false")
+	}
+}
+
 func TestLoadInvalidYAML(t *testing.T) {
 	path := writeTestConfig(t, "not: [valid: yaml: !!!")
 	_, err := Load(path)
