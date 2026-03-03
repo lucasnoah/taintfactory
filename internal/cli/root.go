@@ -43,4 +43,5 @@ func init() {
 	rootCmd.AddCommand(queueCmd)
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(triageCmd)
+	rootCmd.AddCommand(discordCmd)
 }
