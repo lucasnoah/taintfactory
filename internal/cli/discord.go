@@ -130,9 +130,14 @@ func handleDiscordEvent(d *db.DB, store *pipeline.Store, evt db.PipelineEvent) e
 }
 
 func buildDiscordStagePayload(store *pipeline.Store, ps *pipeline.PipelineState, evt db.PipelineEvent) discord.WebhookPayload {
+	// For stage_advanced: evt.Stage is the NEXT stage; completed stage is in
+	// evt.Detail as "from=<stage>". Extract the completed stage from there.
 	completedStage := evt.Stage
+	if after, ok := strings.CutPrefix(evt.Detail, "from="); ok {
+		completedStage = after
+	}
 
-	// Find the history entry for this stage.
+	// Find the history entry for the completed stage.
 	var entry pipeline.StageHistoryEntry
 	for _, h := range ps.StageHistory {
 		if h.Stage == completedStage {

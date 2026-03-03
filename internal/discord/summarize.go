@@ -2,6 +2,7 @@ package discord
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -46,7 +47,18 @@ func GenerateSummary(prompt string) SummaryResult {
 		return SummaryResult{}
 	}
 
-	out, err := exec.Command("claude", "--print", prompt).Output()
+	cmd := exec.Command("claude", "--print", prompt)
+	// Strip CLAUDECODE so nested claude invocations are allowed.
+	env := os.Environ()
+	filtered := make([]string, 0, len(env))
+	for _, e := range env {
+		if !strings.HasPrefix(e, "CLAUDECODE=") {
+			filtered = append(filtered, e)
+		}
+	}
+	cmd.Env = filtered
+
+	out, err := cmd.Output()
 	if err != nil {
 		return SummaryResult{Summary: "(summary unavailable)"}
 	}
