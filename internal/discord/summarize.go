@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"unicode"
 )
 
 // BuildSummaryPrompt returns the claude --print prompt for a given stage type.
@@ -81,8 +82,24 @@ func parseSummaryOutput(output string) SummaryResult {
 }
 
 func truncate(s string, max int) string {
+	s = sanitizeLog(s)
 	if len(s) <= max {
 		return s
 	}
 	return "..." + s[len(s)-max:]
+}
+
+// sanitizeLog strips terminal control codes and null bytes from captured pane output.
+// tmux session logs can end with sequences like \x14\x00 (OSC/cursor codes) that
+// corrupt exec.Command arguments when passed as-is (null bytes terminate argv strings).
+func sanitizeLog(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == 0 {
+			return -1 // drop null bytes
+		}
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return -1 // drop other control chars, keep newlines/tabs
+		}
+		return r
+	}, s)
 }
