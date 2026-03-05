@@ -28,11 +28,11 @@ var eventLogCmd = &cobra.Command{
 			exitCode = &v
 		}
 
-		dbPath, err := db.DefaultDBPath()
+		connStr, err := db.DefaultConnStr()
 		if err != nil {
 			return err
 		}
-		d, err := db.Open(dbPath)
+		d, err := db.Open(connStr)
 		if err != nil {
 			return err
 		}

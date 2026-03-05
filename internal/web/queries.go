@@ -11,7 +11,7 @@ import (
 func (s *Server) recentActivity(limit int) ([]db.PipelineEvent, error) {
 	rows, err := s.db.Conn().Query(
 		`SELECT id, namespace, issue, event, stage, attempt, detail, timestamp
-		 FROM pipeline_events ORDER BY id DESC LIMIT ?`,
+		 FROM pipeline_events ORDER BY id DESC LIMIT $1`,
 		limit,
 	)
 	if err != nil {
@@ -47,7 +47,7 @@ func (s *Server) checkRunsForAttempt(namespace string, issue int, stage string, 
 		`SELECT id, namespace, issue, stage, attempt, fix_round, check_name, passed, auto_fixed,
 		        exit_code, duration_ms, summary, findings, timestamp
 		 FROM check_runs
-		 WHERE namespace = ? AND issue = ? AND stage = ? AND attempt = ?
+		 WHERE namespace = $1 AND issue = $2 AND stage = $3 AND attempt = $4
 		 ORDER BY fix_round, id`,
 		namespace, issue, stage, attempt,
 	)

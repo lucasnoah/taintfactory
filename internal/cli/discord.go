@@ -29,11 +29,11 @@ var discordRunCmd = &cobra.Command{
 func runDiscordPoller(cmd *cobra.Command, args []string) error {
 	interval, _ := cmd.Flags().GetDuration("interval")
 
-	dbPath, err := db.DefaultDBPath()
+	connStr, err := db.DefaultConnStr()
 	if err != nil {
 		return err
 	}
-	d, err := db.Open(dbPath)
+	d, err := db.Open(connStr)
 	if err != nil {
 		return err
 	}
@@ -44,8 +44,7 @@ func runDiscordPoller(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	home, _ := os.UserHomeDir()
-	cursor, err := discord.LoadCursor(filepath.Join(home, ".factory", "discord_cursor.json"))
+	cursor, err := discord.LoadCursor(filepath.Join(config.DataDir(), "discord_cursor.json"))
 	if err != nil {
 		return fmt.Errorf("load cursor: %w", err)
 	}
@@ -236,11 +235,11 @@ func discordStageChain(ps *pipeline.PipelineState) string {
 // check-in so notifications are sent on the same cadence as pipeline advances.
 // Errors are non-fatal — a failed notification should not block the orchestrator.
 func discordPollTick() error {
-	dbPath, err := db.DefaultDBPath()
+	connStr, err := db.DefaultConnStr()
 	if err != nil {
 		return err
 	}
-	d, err := db.Open(dbPath)
+	d, err := db.Open(connStr)
 	if err != nil {
 		return err
 	}
@@ -251,8 +250,7 @@ func discordPollTick() error {
 		return err
 	}
 
-	home, _ := os.UserHomeDir()
-	cursor, err := discord.LoadCursor(filepath.Join(home, ".factory", "discord_cursor.json"))
+	cursor, err := discord.LoadCursor(filepath.Join(config.DataDir(), "discord_cursor.json"))
 	if err != nil {
 		return err
 	}

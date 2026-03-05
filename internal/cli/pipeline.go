@@ -369,11 +369,11 @@ func newOrchestrator() (*orchestrator.Orchestrator, func(), error) {
 		return nil, nil, fmt.Errorf("load config: %w", err)
 	}
 
-	dbPath, err := db.DefaultDBPath()
+	connStr, err := db.DefaultConnStr()
 	if err != nil {
 		return nil, nil, err
 	}
-	database, err := db.Open(dbPath)
+	database, err := db.Open(connStr)
 	if err != nil {
 		return nil, nil, err
 	}

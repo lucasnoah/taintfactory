@@ -369,11 +369,11 @@ func init() {
 
 // openDB opens and migrates the DB, returning it with a cleanup func.
 func openDB() (*db.DB, func(), error) {
-	dbPath, err := db.DefaultDBPath()
+	connStr, err := db.DefaultConnStr()
 	if err != nil {
 		return nil, nil, err
 	}
-	d, err := db.Open(dbPath)
+	d, err := db.Open(connStr)
 	if err != nil {
 		return nil, nil, err
 	}

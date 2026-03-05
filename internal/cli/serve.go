@@ -25,11 +25,11 @@ interval, combining the web UI and the automation loop in a single process.`,
 		withOrch, _ := cmd.Flags().GetBool("with-orchestrator")
 		orchInterval, _ := cmd.Flags().GetInt("orchestrator-interval")
 
-		dbPath, err := db.DefaultDBPath()
+		connStr, err := db.DefaultConnStr()
 		if err != nil {
-			return fmt.Errorf("db path: %w", err)
+			return fmt.Errorf("db connection: %w", err)
 		}
-		database, err := db.Open(dbPath)
+		database, err := db.Open(connStr)
 		if err != nil {
 			return fmt.Errorf("open db: %w", err)
 		}

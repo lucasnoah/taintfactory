@@ -16,11 +16,11 @@ var dbMigrateCmd = &cobra.Command{
 	Use:   "migrate",
 	Short: "Apply database schema migrations",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		dbPath, err := db.DefaultDBPath()
+		connStr, err := db.DefaultConnStr()
 		if err != nil {
 			return err
 		}
-		d, err := db.Open(dbPath)
+		d, err := db.Open(connStr)
 		if err != nil {
 			return err
 		}
@@ -42,11 +42,11 @@ var dbResetCmd = &cobra.Command{
 			fmt.Println("This will destroy all data. Pass --confirm to proceed.")
 			return nil
 		}
-		dbPath, err := db.DefaultDBPath()
+		connStr, err := db.DefaultConnStr()
 		if err != nil {
 			return err
 		}
-		d, err := db.Open(dbPath)
+		d, err := db.Open(connStr)
 		if err != nil {
 			return err
 		}

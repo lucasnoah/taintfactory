@@ -18,11 +18,11 @@ var analyticsCmd = &cobra.Command{
 }
 
 func openAnalyticsDB() (*db.DB, error) {
-	dbPath, err := db.DefaultDBPath()
+	connStr, err := db.DefaultConnStr()
 	if err != nil {
 		return nil, err
 	}
-	d, err := db.Open(dbPath)
+	d, err := db.Open(connStr)
 	if err != nil {
 		return nil, err
 	}

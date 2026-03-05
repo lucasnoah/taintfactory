@@ -52,7 +52,7 @@ type PipelineEvent struct {
 // LogSessionEvent inserts a session event.
 func (d *DB) LogSessionEvent(sessionID string, issue int, stage string, event string, exitCode *int, metadata string) error {
 	_, err := d.conn.Exec(
-		`INSERT INTO session_events (session_id, issue, stage, event, exit_code, metadata) VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO session_events (session_id, issue, stage, event, exit_code, metadata) VALUES ($1, $2, $3, $4, $5, $6)`,
 		sessionID, issue, stage, event, exitCode, metadata,
 	)
 	if err != nil {
@@ -65,7 +65,7 @@ func (d *DB) LogSessionEvent(sessionID string, issue int, stage string, event st
 func (d *DB) GetSessionState(sessionID string) (*SessionEvent, error) {
 	row := d.conn.QueryRow(
 		`SELECT id, session_id, issue, stage, event, exit_code, timestamp, metadata
-		 FROM session_events WHERE session_id = ? ORDER BY timestamp DESC, id DESC LIMIT 1`,
+		 FROM session_events WHERE session_id = $1 ORDER BY timestamp DESC, id DESC LIMIT 1`,
 		sessionID,
 	)
 	var e SessionEvent
@@ -93,7 +93,7 @@ func (d *DB) GetSessionStartedAt(sessionID string) (string, error) {
 	var timestamp string
 	err := d.conn.QueryRow(
 		`SELECT timestamp FROM session_events
-		 WHERE session_id = ? AND event = 'started'
+		 WHERE session_id = $1 AND event = 'started'
 		 ORDER BY id ASC LIMIT 1`,
 		sessionID,
 	).Scan(&timestamp)
@@ -107,12 +107,13 @@ func (d *DB) GetSessionStartedAt(sessionID string) (string, error) {
 }
 
 // HasRecentSteer returns true if a steer event was logged for the session within the given duration.
+// The within parameter should be a Postgres interval string like '-10 minutes'.
 func (d *DB) HasRecentSteer(sessionID string, within string) (bool, error) {
 	var count int
 	err := d.conn.QueryRow(
 		`SELECT COUNT(*) FROM session_events
-		 WHERE session_id = ? AND event = 'steer'
-		 AND timestamp >= datetime('now', ?)`,
+		 WHERE session_id = $1 AND event = 'steer'
+		 AND timestamp >= NOW() + $2::interval`,
 		sessionID, within,
 	).Scan(&count)
 	if err != nil {
@@ -164,7 +165,7 @@ func (d *DB) DetectHumanIntervention(sessionID string) (bool, error) {
 	var activeTimestamp string
 	err := d.conn.QueryRow(
 		`SELECT timestamp FROM session_events
-		 WHERE session_id = ? AND event = 'active'
+		 WHERE session_id = $1 AND event = 'active'
 		 ORDER BY timestamp DESC, id DESC LIMIT 1`,
 		sessionID,
 	).Scan(&activeTimestamp)
@@ -178,9 +179,9 @@ func (d *DB) DetectHumanIntervention(sessionID string) (bool, error) {
 	var count int
 	err = d.conn.QueryRow(
 		`SELECT COUNT(*) FROM session_events
-		 WHERE session_id = ? AND event = 'factory_send'
-		 AND timestamp BETWEEN datetime(?, '-5 seconds') AND ?`,
-		sessionID, activeTimestamp, activeTimestamp,
+		 WHERE session_id = $1 AND event = 'factory_send'
+		 AND timestamp BETWEEN $2::timestamptz - interval '5 seconds' AND $2::timestamptz`,
+		sessionID, activeTimestamp,
 	).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("check factory_send: %w", err)
@@ -193,7 +194,7 @@ func (d *DB) DetectHumanIntervention(sessionID string) (bool, error) {
 func (d *DB) LogCheckRun(namespace string, issue int, stage string, attempt int, fixRound int, checkName string, passed bool, autoFixed bool, exitCode int, durationMs int, summary string, findings string) error {
 	_, err := d.conn.Exec(
 		`INSERT INTO check_runs (namespace, issue, stage, attempt, fix_round, check_name, passed, auto_fixed, exit_code, duration_ms, summary, findings)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 		namespace, issue, stage, attempt, fixRound, checkName, passed, autoFixed, exitCode, durationMs, summary, findings,
 	)
 	if err != nil {
@@ -206,7 +207,7 @@ func (d *DB) LogCheckRun(namespace string, issue int, stage string, attempt int,
 func (d *DB) GetCheckRuns(namespace string, issue int, stage string, fixRound int) ([]CheckRun, error) {
 	rows, err := d.conn.Query(
 		`SELECT id, namespace, issue, stage, attempt, fix_round, check_name, passed, auto_fixed, exit_code, duration_ms, summary, findings, timestamp
-		 FROM check_runs WHERE namespace = ? AND issue = ? AND stage = ? AND fix_round = ? ORDER BY id`,
+		 FROM check_runs WHERE namespace = $1 AND issue = $2 AND stage = $3 AND fix_round = $4 ORDER BY id`,
 		namespace, issue, stage, fixRound,
 	)
 	if err != nil {
@@ -243,7 +244,7 @@ func (d *DB) GetCheckRuns(namespace string, issue int, stage string, fixRound in
 func (d *DB) GetLatestCheckRun(namespace string, issue int, checkName string) (*CheckRun, error) {
 	row := d.conn.QueryRow(
 		`SELECT id, namespace, issue, stage, attempt, fix_round, check_name, passed, auto_fixed, exit_code, duration_ms, summary, findings, timestamp
-		 FROM check_runs WHERE namespace = ? AND issue = ? AND check_name = ? ORDER BY id DESC LIMIT 1`,
+		 FROM check_runs WHERE namespace = $1 AND issue = $2 AND check_name = $3 ORDER BY id DESC LIMIT 1`,
 		namespace, issue, checkName,
 	)
 	var r CheckRun
@@ -274,7 +275,7 @@ func (d *DB) GetLatestCheckRun(namespace string, issue int, checkName string) (*
 // LogPipelineEvent inserts a pipeline event.
 func (d *DB) LogPipelineEvent(namespace string, issue int, event string, stage string, attempt int, detail string) error {
 	_, err := d.conn.Exec(
-		`INSERT INTO pipeline_events (namespace, issue, event, stage, attempt, detail) VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO pipeline_events (namespace, issue, event, stage, attempt, detail) VALUES ($1, $2, $3, $4, $5, $6)`,
 		namespace, issue, event, stage, attempt, detail,
 	)
 	if err != nil {
@@ -287,7 +288,7 @@ func (d *DB) LogPipelineEvent(namespace string, issue int, event string, stage s
 func (d *DB) GetPipelineHistory(namespace string, issue int) ([]PipelineEvent, error) {
 	rows, err := d.conn.Query(
 		`SELECT id, namespace, issue, event, stage, attempt, detail, timestamp
-		 FROM pipeline_events WHERE namespace = ? AND issue = ? ORDER BY timestamp DESC, id DESC`,
+		 FROM pipeline_events WHERE namespace = $1 AND issue = $2 ORDER BY timestamp DESC, id DESC`,
 		namespace, issue,
 	)
 	if err != nil {
@@ -326,10 +327,10 @@ func (d *DB) GetLatestFailedChecks(namespace string, issue int, stage string) ([
 		INNER JOIN (
 			SELECT check_name, MAX(id) as max_id
 			FROM check_runs
-			WHERE namespace = ? AND issue = ? AND stage = ?
+			WHERE namespace = $1 AND issue = $2 AND stage = $3
 			GROUP BY check_name
 		) latest ON cr.id = latest.max_id
-		WHERE cr.passed = 0
+		WHERE cr.passed = false
 		ORDER BY cr.check_name`,
 		namespace, issue, stage,
 	)
@@ -404,12 +405,6 @@ func (d *DB) QueueAdd(items []QueueAddItem) error {
 		nextPos = int(maxPos.Int64) + 1
 	}
 
-	stmt, err := tx.Prepare("INSERT INTO issue_queue (namespace, issue, position, feature_intent, depends_on, config_path) VALUES (?, ?, ?, ?, ?, ?)")
-	if err != nil {
-		return fmt.Errorf("prepare insert: %w", err)
-	}
-	defer stmt.Close()
-
 	for _, item := range items {
 		depsJSON := "[]"
 		if len(item.DependsOn) > 0 {
@@ -419,8 +414,11 @@ func (d *DB) QueueAdd(items []QueueAddItem) error {
 			}
 			depsJSON = string(b)
 		}
-		if _, err := stmt.Exec(item.Namespace, item.Issue, nextPos, item.FeatureIntent, depsJSON, item.ConfigPath); err != nil {
-			if strings.Contains(err.Error(), "UNIQUE") {
+		if _, err := tx.Exec(
+			`INSERT INTO issue_queue (namespace, issue, position, feature_intent, depends_on, config_path) VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
+			item.Namespace, item.Issue, nextPos, item.FeatureIntent, depsJSON, item.ConfigPath,
+		); err != nil {
+			if strings.Contains(err.Error(), "duplicate key") {
 				return fmt.Errorf("issue %d is already in the queue", item.Issue)
 			}
 			return fmt.Errorf("insert issue %d: %w", item.Issue, err)
@@ -433,7 +431,7 @@ func (d *DB) QueueAdd(items []QueueAddItem) error {
 
 // QueueSetIntent updates the feature intent for an existing queue item.
 func (d *DB) QueueSetIntent(namespace string, issue int, intent string) error {
-	res, err := d.conn.Exec("UPDATE issue_queue SET feature_intent = ? WHERE namespace = ? AND issue = ?", intent, namespace, issue)
+	res, err := d.conn.Exec("UPDATE issue_queue SET feature_intent = $1 WHERE namespace = $2 AND issue = $3", intent, namespace, issue)
 	if err != nil {
 		return fmt.Errorf("set intent: %w", err)
 	}
@@ -492,7 +490,7 @@ func (d *DB) QueueNext() (*QueueItem, error) {
 		WHERE q.status = 'pending'
 		AND NOT EXISTS (
 		    SELECT 1 FROM issue_queue dep
-		    JOIN json_each(q.depends_on) je ON CAST(je.value AS INTEGER) = dep.issue
+		    JOIN jsonb_array_elements_text(q.depends_on) je(value) ON je.value::int = dep.issue
 		    WHERE dep.namespace = q.namespace
 		      AND dep.status != 'completed'
 		)
@@ -531,15 +529,15 @@ func (d *DB) QueueUpdateStatus(namespace string, issue int, status string) error
 	switch status {
 	case "active":
 		res, err = d.conn.Exec(
-			`UPDATE issue_queue SET status = ?, started_at = datetime('now') WHERE namespace = ? AND issue = ?`,
+			`UPDATE issue_queue SET status = $1, started_at = NOW() WHERE namespace = $2 AND issue = $3`,
 			status, namespace, issue)
 	case "completed", "failed":
 		res, err = d.conn.Exec(
-			`UPDATE issue_queue SET status = ?, finished_at = datetime('now') WHERE namespace = ? AND issue = ?`,
+			`UPDATE issue_queue SET status = $1, finished_at = NOW() WHERE namespace = $2 AND issue = $3`,
 			status, namespace, issue)
 	default:
 		res, err = d.conn.Exec(
-			`UPDATE issue_queue SET status = ? WHERE namespace = ? AND issue = ?`,
+			`UPDATE issue_queue SET status = $1 WHERE namespace = $2 AND issue = $3`,
 			status, namespace, issue)
 	}
 
@@ -558,7 +556,7 @@ func (d *DB) QueueUpdateStatus(namespace string, issue int, status string) error
 
 // QueueRemove deletes a queue item by namespace and issue number.
 func (d *DB) QueueRemove(namespace string, issue int) error {
-	res, err := d.conn.Exec("DELETE FROM issue_queue WHERE namespace = ? AND issue = ?", namespace, issue)
+	res, err := d.conn.Exec("DELETE FROM issue_queue WHERE namespace = $1 AND issue = $2", namespace, issue)
 	if err != nil {
 		return fmt.Errorf("remove from queue: %w", err)
 	}
@@ -580,11 +578,11 @@ func (d *DB) QueueDependents(namespace string, issue int) ([]QueueItem, error) {
 		SELECT id, namespace, issue, status, position, feature_intent, depends_on,
 		       config_path, added_at, started_at, finished_at
 		FROM issue_queue
-		WHERE namespace = ?
+		WHERE namespace = $1
 		AND status IN ('pending', 'active')
 		AND EXISTS (
-		    SELECT 1 FROM json_each(depends_on) je
-		    WHERE CAST(je.value AS INTEGER) = ?
+		    SELECT 1 FROM jsonb_array_elements_text(depends_on) je(value)
+		    WHERE je.value::int = $2
 		)
 		ORDER BY position`,
 		namespace, issue,
@@ -637,7 +635,7 @@ func (d *DB) QueueClear() (int, error) {
 func (d *DB) GetPipelineEventsSince(lastID int, limit int) ([]PipelineEvent, error) {
 	rows, err := d.conn.Query(
 		`SELECT id, issue, event, stage, attempt, detail, timestamp
-		 FROM pipeline_events WHERE id > ? ORDER BY id ASC LIMIT ?`,
+		 FROM pipeline_events WHERE id > $1 ORDER BY id ASC LIMIT $2`,
 		lastID, limit,
 	)
 	if err != nil {
@@ -671,7 +669,7 @@ func (d *DB) GetPipelineEventsSince(lastID int, limit int) ([]PipelineEvent, err
 func (d *DB) GetQueueItem(issue int) (*QueueItem, error) {
 	row := d.conn.QueryRow(
 		`SELECT id, issue, status, position, feature_intent, depends_on, config_path, added_at, started_at, finished_at
-		 FROM issue_queue WHERE issue = ?`,
+		 FROM issue_queue WHERE issue = $1`,
 		issue,
 	)
 	var item QueueItem
@@ -702,7 +700,7 @@ func (d *DB) GetQueueItem(issue int) (*QueueItem, error) {
 func (d *DB) GetCheckHistory(namespace string, issue int) ([]CheckRun, error) {
 	rows, err := d.conn.Query(
 		`SELECT id, namespace, issue, stage, attempt, fix_round, check_name, passed, auto_fixed, exit_code, duration_ms, summary, findings, timestamp
-		 FROM check_runs WHERE namespace = ? AND issue = ? ORDER BY id DESC`,
+		 FROM check_runs WHERE namespace = $1 AND issue = $2 ORDER BY id DESC`,
 		namespace, issue,
 	)
 	if err != nil {

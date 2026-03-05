@@ -117,11 +117,11 @@ var queueAddCmd = &cobra.Command{
 			items = append(items, db.QueueAddItem{Namespace: ns, Issue: n, FeatureIntent: itemIntent, DependsOn: dependsOn, ConfigPath: resolvedConfigPath})
 		}
 
-		dbPath, err := db.DefaultDBPath()
+		connStr, err := db.DefaultConnStr()
 		if err != nil {
 			return err
 		}
-		d, err := db.Open(dbPath)
+		d, err := db.Open(connStr)
 		if err != nil {
 			return err
 		}
@@ -151,11 +151,11 @@ var queueSetIntentCmd = &cobra.Command{
 		}
 		intent := args[1]
 
-		dbPath, err := db.DefaultDBPath()
+		connStr, err := db.DefaultConnStr()
 		if err != nil {
 			return err
 		}
-		d, err := db.Open(dbPath)
+		d, err := db.Open(connStr)
 		if err != nil {
 			return err
 		}
@@ -191,11 +191,11 @@ var queueListCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		format, _ := cmd.Flags().GetString("format")
 
-		dbPath, err := db.DefaultDBPath()
+		connStr, err := db.DefaultConnStr()
 		if err != nil {
 			return err
 		}
-		d, err := db.Open(dbPath)
+		d, err := db.Open(connStr)
 		if err != nil {
 			return err
 		}
@@ -255,11 +255,11 @@ var queueRemoveCmd = &cobra.Command{
 			return fmt.Errorf("invalid issue number %q: must be a positive integer", args[0])
 		}
 
-		dbPath, err := db.DefaultDBPath()
+		connStr, err := db.DefaultConnStr()
 		if err != nil {
 			return err
 		}
-		d, err := db.Open(dbPath)
+		d, err := db.Open(connStr)
 		if err != nil {
 			return err
 		}
@@ -298,11 +298,11 @@ var queueClearCmd = &cobra.Command{
 			return fmt.Errorf("use --confirm to clear the entire queue")
 		}
 
-		dbPath, err := db.DefaultDBPath()
+		connStr, err := db.DefaultConnStr()
 		if err != nil {
 			return err
 		}
-		d, err := db.Open(dbPath)
+		d, err := db.Open(connStr)
 		if err != nil {
 			return err
 		}
