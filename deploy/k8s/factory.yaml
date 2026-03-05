@@ -26,9 +26,16 @@ spec:
       labels:
         app: factory
     spec:
+      initContainers:
+        - name: fix-perms
+          image: busybox:1.36
+          command: ["sh", "-c", "chown -R 1000:1000 /data"]
+          volumeMounts:
+            - name: factory-data
+              mountPath: /data
       containers:
         - name: factory
-          image: registry.digitalocean.com/YOUR_REGISTRY/taintfactory:latest
+          image: registry.digitalocean.com/personalcluster/taintfactory:latest
           ports:
             - containerPort: 17432
           env:

@@ -22,8 +22,12 @@ if [ -n "${FACTORY_REPOS:-}" ]; then
   done
 fi
 
-# Start factory with orchestrator
-exec factory serve \
-  --port "${FACTORY_PORT:-17432}" \
-  --with-orchestrator \
-  --orchestrator-interval "${ORCHESTRATOR_INTERVAL:-120}"
+# Build serve command
+SERVE_ARGS="--port ${FACTORY_SERVE_PORT:-17432}"
+
+if [ "${FACTORY_WITH_ORCHESTRATOR:-false}" = "true" ]; then
+  SERVE_ARGS="$SERVE_ARGS --with-orchestrator --orchestrator-interval ${ORCHESTRATOR_INTERVAL:-120}"
+fi
+
+# Start factory
+exec factory serve $SERVE_ARGS

@@ -7,15 +7,10 @@ metadata:
     nginx.ingress.kubernetes.io/auth-type: basic
     nginx.ingress.kubernetes.io/auth-secret: factory-basic-auth
     nginx.ingress.kubernetes.io/auth-realm: "TaintFactory"
-    cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   ingressClassName: nginx
-  tls:
-    - hosts:
-        - factory.yourdomain.com
-      secretName: factory-tls
   rules:
-    - host: factory.yourdomain.com
+    - host: taintfactory.itslucastime.com
       http:
         paths:
           - path: /
