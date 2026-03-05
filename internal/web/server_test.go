@@ -1,12 +1,33 @@
 package web
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/lucasnoah/taintfactory/internal/pipeline"
 )
+
+func TestHealthz(t *testing.T) {
+	s := NewServer(nil, nil, 0, "")
+	mux := s.buildMux()
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("content-type = %q, want application/json", ct)
+	}
+	if body := rec.Body.String(); body != `{"status":"ok"}` {
+		t.Errorf("body = %q, want %q", body, `{"status":"ok"}`)
+	}
+}
 
 // ---- sidebarData tests ----
 
