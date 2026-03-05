@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/lucasnoah/taintfactory/internal/config"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -15,13 +16,10 @@ type DB struct {
 	path string
 }
 
-// DefaultDBPath returns ~/.factory/factory.db, creating the directory if needed.
+// DefaultDBPath returns the default database path, creating the directory if needed.
+// Respects FACTORY_DATA_DIR env var (default: ~/.factory).
 func DefaultDBPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("get home directory: %w", err)
-	}
-	dir := filepath.Join(home, ".factory")
+	dir := config.DataDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create directory %s: %w", dir, err)
 	}

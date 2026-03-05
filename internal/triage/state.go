@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lucasnoah/taintfactory/internal/config"
 	"github.com/lucasnoah/taintfactory/internal/pipeline"
 )
 
@@ -56,13 +57,10 @@ func (s *Store) BaseDir() string {
 	return s.baseDir
 }
 
-// DefaultTriageDir returns the base directory for triage state (~/.factory/triage).
+// DefaultTriageDir returns the base directory for triage state ({datadir}/triage).
+// Respects FACTORY_DATA_DIR env var (default: ~/.factory).
 func DefaultTriageDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("home dir: %w", err)
-	}
-	return filepath.Join(home, ".factory", "triage"), nil
+	return filepath.Join(config.DataDir(), "triage"), nil
 }
 
 // DefaultStore returns a Store at ~/.factory/triage/{repoSlug}, creating the directory if needed.

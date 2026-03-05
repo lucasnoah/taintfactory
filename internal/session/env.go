@@ -5,19 +5,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/lucasnoah/taintfactory/internal/config"
 )
 
 // loadOAuthToken tries to read CLAUDE_CODE_OAUTH_TOKEN from the environment
-// first, then falls back to ~/.factory/.env.
+// first, then falls back to {datadir}/.env.
+// Respects FACTORY_DATA_DIR env var (default: ~/.factory).
 func loadOAuthToken() string {
 	if v := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"); v != "" {
 		return v
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return readEnvFileVar(filepath.Join(home, ".factory", ".env"), "CLAUDE_CODE_OAUTH_TOKEN")
+	return readEnvFileVar(filepath.Join(config.DataDir(), ".env"), "CLAUDE_CODE_OAUTH_TOKEN")
 }
 
 // readEnvFileVar reads the value of a specific key from a .env file.
