@@ -7,24 +7,26 @@ You define a pipeline with stages (implement, review, QA), checks (lint, test), 
 ## How It Works
 
 ```
-Cron (every ~5min)
-  └─▶ factory orchestrator check-in
+Cron (every ~2min)
+  └──> factory orchestrator check-in
         ├─ Sequential: process only the frontmost active pipeline per tick
         │    (if it's blocked or in_progress, the factory pauses — nothing else runs)
         ├─ If no active pipelines, pop the next unblocked item from the queue
         │    (dep-aware: items with unresolved depends_on are skipped)
-        └─ factory pipeline advance [issue]
-              ├─ Render and save prompt for current stage
-              ├─ Spawn Claude Code session in tmux
-              ├─ Wait for session to go idle
-              ├─ Run check gate (lint, test, etc.)
-              │    ├─ PASS ──▶ record outcome, move to next stage
-              │    └─ FAIL ──▶ send fix prompt, retry (up to max_fix_rounds)
-              │         └─ still failing ──▶ on_fail: jump to earlier stage
-              └─ Repeat until merge or blocked
+        ├─ factory pipeline advance [issue]
+        │    ├─ Render and save prompt for current stage
+        │    ├─ Spawn Claude Code session in tmux
+        │    ├─ Wait for session to go idle
+        │    ├─ Run check gate (lint, test, etc.)
+        │    │    ├─ PASS ──> record outcome, move to next stage
+        │    │    └─ FAIL ──> send fix prompt, retry (up to max_fix_rounds)
+        │    │         └─ still failing ──> on_fail: jump to earlier stage
+        │    └─ Repeat until merge or blocked
+        ├─ Advance any in-flight triage pipelines
+        └─ Poll Discord notifications (non-fatal)
 ```
 
-Claude Code sessions run in tmux. Hooks inside each session call `factory event log` to record state transitions (started → active → idle → exited) into SQLite. The orchestrator reads this state to know when a session has finished and whether to advance, steer, or wait.
+Claude Code sessions run in tmux. Hooks inside each session call `factory event log` to record state transitions (started -> active -> idle -> exited) into SQLite. The orchestrator reads this state to know when a session has finished and whether to advance, steer, or wait.
 
 ### Failure recovery
 
@@ -52,19 +54,19 @@ State is stored in two layers that serve different purposes:
 
 ```
 ~/.factory/pipelines/42/
-  pipeline.json                        ← current stage, status, full history
+  pipeline.json                        <- current stage, status, full history
   stages/
     implement/
       attempt-1/
-        prompt.md                      ← exact prompt sent to Claude
-        session.log                    ← full tmux scrollback captured on session end
-        outcome.json                   ← success/fail, summary, files changed
-        summary.json                   ← fix rounds, durations, auto-fix counts
+        prompt.md                      <- exact prompt sent to Claude
+        session.log                    <- full tmux scrollback captured on session end
+        outcome.json                   <- success/fail, summary, files changed
+        summary.json                   <- fix rounds, durations, auto-fix counts
         checks/
-          lint/                        ← raw lint output
-          post-gate-0/                 ← gate result after agent run
-          post-gate-1/                 ← gate result after fix round 1
-      attempt-2/                       ← after on_fail retry, history intact
+          lint/                        <- raw lint output
+          post-gate-0/                 <- gate result after agent run
+          post-gate-1/                 <- gate result after fix round 1
+      attempt-2/                       <- after on_fail retry, history intact
         ...
 ```
 
@@ -80,7 +82,7 @@ After the session ends, the log is always at:
 ~/.factory/pipelines/{issue}/stages/{stage}/attempt-{n}/session.log
 ```
 
-**SQLite event log** — `~/.factory/factory.db` records a time-series of everything that happens at the system level: session state transitions (started → active → idle → exited), individual check run results with exit codes and durations, and pipeline events (checks passed, PR created, merged). This is what the orchestrator queries to make decisions and what `factory analytics` queries for performance metrics. It's append-only — nothing is updated in place.
+**SQLite event log** — `~/.factory/factory.db` records a time-series of everything that happens at the system level: session state transitions (started -> active -> idle -> exited), individual check run results with exit codes and durations, and pipeline events (checks passed, PR created, merged). This is what the orchestrator queries to make decisions and what `factory analytics` queries for performance metrics. It's append-only — nothing is updated in place.
 
 ## Installation
 
@@ -94,7 +96,7 @@ make install   # installs to $GOPATH/bin/factory
 
 ## Pipeline Configuration
 
-Pipelines are defined in `~/.factory/pipeline.yaml`. Each pipeline describes the repo, the checks available, and the ordered stages to run. Here's a real example from a Go API + Next.js project:
+Pipelines are defined in `~/.factory/pipeline.yaml` (or per-repo in the project root). Each pipeline describes the repo, the checks available, and the ordered stages to run. Here's a real example from a Go API + Next.js project:
 
 ```yaml
 pipeline:
@@ -125,6 +127,11 @@ pipeline:
       - Go API: `make dev-api` (port 8080)
       - Next.js: `cd web && npm run dev` (port 3000)
       - All tests: `make test`
+
+  notifications:
+    discord:
+      webhook_url: "https://discord.com/api/webhooks/XXXXXXX/YYYYYYY"
+      thread_per_issue: true    # optional, creates a thread per issue
 
   checks:
     lint-go:
@@ -210,6 +217,8 @@ pipeline:
 | `defaults.flags` | Default `claude` flags (e.g. `--dangerously-skip-permissions`) |
 | `defaults.model` | Default Claude model |
 | `vars` | Template variables injected into prompts |
+| `notifications.discord.webhook_url` | Discord webhook URL for stage notifications |
+| `notifications.discord.thread_per_issue` | Create a Discord thread per issue |
 | `checks` | Named checks with `command`, `parser`, `timeout`, optional `auto_fix`/`fix_command` |
 | `stages[].id` | Stage identifier |
 | `stages[].type` | `agent`, `checks_only`, or `merge` |
@@ -219,8 +228,114 @@ pipeline:
 | `stages[].on_fail` | Stage ID to jump to on check failure, or `"escalate"` to mark the pipeline blocked |
 | `stages[].context_mode` | What context to inject: `full`, `code_only`, `findings_only`, `minimal` |
 | `stages[].merge_strategy` | `squash`, `merge`, or `rebase` for merge stages |
+| `stages[].browser_check` | Enable browser test detection for QA stages |
 
 **Check parsers:** `generic`, `eslint`, `typescript`, `vitest`, `prettier`, `npm-audit`
+
+## Triage
+
+taintfactory includes a separate triage system that classifies GitHub issues before they enter the main pipeline. Triage pipelines are defined in `triage.yaml` at the repo root and run as a multi-stage classification flow — each stage can route to different next stages based on its outcome.
+
+### Triage configuration
+
+```yaml
+triage:
+  name: my-project
+  repo: owner/repo
+
+stages:
+  - id: stale_context
+    timeout: "10m"
+    outcomes:
+      stale: done               # stop here if stale
+      clean: already_implemented # route to next stage
+
+  - id: already_implemented
+    timeout: "10m"
+    outcomes:
+      yes: done
+      no: scope_check
+
+  - id: scope_check
+    mode: print                 # synchronous, no tmux session
+    model: claude-sonnet-4-6
+    label: "needs-scope-review" # applied on "yes" outcome
+    outcomes:
+      yes: done
+      no: next_classifier
+```
+
+### Stage modes
+
+**Default (interactive):** Spawns a Claude Code tmux session, waits for it to go idle, parses the outcome. Used for stages that need tool access (codebase search, GitHub comments, closing issues).
+
+**Print mode (`mode: print`):** Runs `claude --print` synchronously — no tmux session, no boot wait. The runner captures stdout and parses it as JSON (`{"outcome":"yes","summary":"..."}`). Used for stateless classification tasks where the overhead of a full session isn't justified.
+
+Print-mode stages chain within a single `check-in` call — if the next stage is also print-mode, it runs immediately without waiting for the next orchestrator tick.
+
+### Triage CLI
+
+```bash
+factory triage run 42        # enqueue and start triage for issue #42
+factory triage status 42     # show current stage and history
+factory triage list          # list all triage pipelines
+```
+
+Triage state is stored at `~/.factory/triage/{repo-slug}/issues/{issue}/state.json` with outcome files per stage.
+
+## Discord Notifications
+
+When configured, taintfactory posts rich Discord embeds after each pipeline stage completes. Agent stages get Claude-generated summaries of what was done; static stages (verify, merge) get brief status messages.
+
+### Setup
+
+Add a `notifications.discord` block to your `pipeline.yaml`:
+
+```yaml
+notifications:
+  discord:
+    webhook_url: "https://discord.com/api/webhooks/YOUR/WEBHOOK"
+```
+
+Notifications are sent automatically during `factory orchestrator check-in`. You can also run the poller standalone:
+
+```bash
+factory discord run                    # poll every 15s (default)
+factory discord run --interval 30s     # custom interval
+```
+
+### What gets posted
+
+- **Stage completions** (`stage_advanced`): summary of what changed, duration, fix rounds
+- **Pipeline completions** (`completed`): total duration, full stage chain
+- **Failures** (`failed`, `escalated`): what went wrong
+
+Embeds are color-coded (green/red/yellow) and include stage position (e.g. "Stage 2/5"), duration, and fix round counts. Cursor state is persisted to `~/.factory/discord_cursor.json` to avoid re-posting after restarts.
+
+## Web UI
+
+taintfactory ships with a browser dashboard for monitoring pipelines, queue state, and triage.
+
+```bash
+factory serve                          # start on port 17432
+factory serve --port 8080              # custom port
+factory serve --with-orchestrator      # run orchestrator loop + web UI in one process
+factory serve --orchestrator-interval 60  # custom check-in interval (seconds)
+```
+
+### Pages
+
+| Route | Description |
+|---|---|
+| `/` | Dashboard — active pipelines, queue, recent activity, triage status |
+| `/pipeline/{owner}/{repo}/{issue}` | Pipeline detail — stage history, dependency graph, live tmux status |
+| `/queue` | Queue management — positions, dependencies, status |
+| `/config` | Pipeline configuration viewer |
+| `/triage` | Triage list |
+| `/triage/{slug}/{issue}` | Triage detail — stage history, outcomes |
+| `/healthz` | Health check endpoint |
+
+The dashboard supports multi-project filtering via a sidebar and `?project=owner/repo` query parameter.
 
 ## Prompt Templates
 
@@ -234,16 +349,16 @@ For a stage with `prompt_template: "templates/implement.md"`, the loader checks 
 2. `~/.factory/templates/implement.md` — user-level override
 3. Built-in compiled template — fallback if neither exists
 
-If `prompt_template` is omitted from a stage config, the stage ID is used as the filename (e.g. stage `implement` → `implement.md`).
+If `prompt_template` is omitted from a stage config, the stage ID is used as the filename (e.g. stage `implement` -> `implement.md`).
 
 ### Template syntax
 
 Templates use `{{variable}}` for substitution and `{{#if variable}}...{{/if}}` for conditional blocks:
 
 ```
-{{issue_title}}              → replaced with the variable value
+{{issue_title}}              -> replaced with the variable value
 {{#if check_failures}}
-...                          → block included only if check_failures is non-empty
+...                          -> block included only if check_failures is non-empty
 {{/if}}
 ```
 
@@ -332,8 +447,8 @@ If no dependent issues are found, the stage completes immediately.
 To use it, add `contract-check` as the last stage in your pipeline (after `agent-merge`). The orchestrator routes merge-stage successes directly to it, skipping `agent-merge` on the happy path:
 
 ```
-merge succeeds → [skip agent-merge] → contract-check → pipeline complete
-merge fails    → agent-merge        → contract-check → pipeline complete
+merge succeeds -> [skip agent-merge] -> contract-check -> pipeline complete
+merge fails    -> agent-merge        -> contract-check -> pipeline complete
 ```
 
 The `needs-plan-review` label must exist in your GitHub repo. Create it once:
@@ -450,7 +565,7 @@ factory queue list
 # 2    #134   pending  Remove Python infra               [waits: #133]   ...
 ```
 
-**Sequential processing:** the orchestrator runs one pipeline at a time. Issue #133 must fully complete (implement → review → qa → merge) before #134 is dequeued. If the active pipeline is blocked or stalled, the factory pauses rather than starting the next item. Dependencies are evaluated when an item is about to be dequeued — if a dep issue is not in the queue or is already completed, it is treated as satisfied.
+**Sequential processing:** the orchestrator runs one pipeline at a time. Issue #133 must fully complete (implement -> review -> qa -> merge) before #134 is dequeued. If the active pipeline is blocked or stalled, the factory pauses rather than starting the next item. Dependencies are evaluated when an item is about to be dequeued — if a dep issue is not in the queue or is already completed, it is treated as satisfied.
 
 **2. Create the pipeline:**
 ```bash
@@ -477,11 +592,18 @@ export CLAUDE_CODE_OAUTH_TOKEN=<your-token>
 while true; do factory orchestrator check-in; sleep 10; done
 ```
 
+Or use the web server with an integrated orchestrator loop:
+```bash
+factory serve --with-orchestrator --orchestrator-interval 120
+```
+
 The loop will:
-- Advance the frontmost in-flight pipeline stage by stage (implement → review → qa → verify → merge)
+- Advance the frontmost in-flight pipeline stage by stage (implement -> review -> qa -> verify -> merge)
 - Pick up the next queued issue automatically when the active pipeline completes (respecting `--depends-on` order)
 - Process only one pipeline at a time — if the active pipeline is blocked, everything pauses
-- Sleep 10 seconds between each stage transition (each `check-in` is blocking — it runs the full stage before returning)
+- Advance any in-flight triage pipelines
+- Post Discord notifications for completed stages
+- Sleep between each stage transition
 
 **OAuth token:** The factory reads `CLAUDE_CODE_OAUTH_TOKEN` from the environment when creating Claude sessions. You can also store it in `~/.factory/.env`:
 ```
@@ -500,6 +622,7 @@ factory status                    # all in-flight pipelines
 factory pipeline status 42        # detailed view of issue #42
 factory check history 42          # check results per stage
 factory analytics stage-duration  # performance metrics
+factory serve                     # browser dashboard at http://localhost:17432
 ```
 
 **5. Attach to a running session:**
@@ -574,10 +697,35 @@ check-in                 Run the full decision loop for all pipelines
 status                   Show orchestrator-friendly pipeline status
 ```
 
+### `factory triage`
+```
+run [issue]              Enqueue and start a triage pipeline
+status [issue]           Show current stage and history
+list                     List all triage pipelines
+```
+
+### `factory discord`
+```
+run [--interval 15s]     Poll pipeline events and post Discord notifications
+```
+
+### `factory serve`
+```
+[--port 17432]                   Start the web UI
+[--with-orchestrator]            Run orchestrator loop alongside web server
+[--orchestrator-interval 120]    Check-in interval in seconds
+```
+
 ### `factory pr`
 ```
 create [issue]           Create a PR for the issue
 merge [issue]            Merge the PR
+```
+
+### `factory qa`
+```
+detect-browser [issue]   Detect if an issue requires browser testing
+                         [--stage <id>] [--format json|text]
 ```
 
 ### `factory analytics`
@@ -608,6 +756,9 @@ factory version
 | `~/.factory/pipeline.yaml` | Your pipeline configuration |
 | `~/.factory/pipelines/{issue}/pipeline.json` | Per-issue pipeline state |
 | `~/.factory/pipelines/{issue}/checks/` | Check output per stage/round |
+| `~/.factory/discord_cursor.json` | Discord notification cursor (last processed event ID) |
+| `~/.factory/triage/{repo-slug}/issues/{issue}/` | Triage state and outcome files |
+| `{repo}/triage.yaml` | Triage pipeline configuration |
 | `{repo}/worktrees/issue-{n}/` | Git worktree for each issue |
 
 ## Development
@@ -624,4 +775,4 @@ Tests use in-memory SQLite and a mock tmux runner — no external dependencies n
 
 ## Status
 
-Under active development.
+Under active development. Planned features include GitHub label-based auto-enqueue, deploy pipelines, multi-repo database autoconfiguration, and Kubernetes deployment.
