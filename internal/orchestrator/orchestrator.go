@@ -1129,7 +1129,11 @@ func (o *Orchestrator) setupEnv(cfg *config.PipelineConfig) []string {
 		extra[k] = v
 	}
 	if cfg.Pipeline.Database != nil {
-		extra["DATABASE_URL"] = cfg.Pipeline.Database.URLForHost(config.DBHost())
+		host := config.DBHost()
+		extra["DATABASE_URL"] = cfg.Pipeline.Database.URLForHost(host)
+		if cfg.Pipeline.Database.TestName != "" {
+			extra["TEST_DATABASE_URL"] = cfg.Pipeline.Database.TestURLForHost(host)
+		}
 	}
 	// Append extra vars (sorted for determinism)
 	keys := make([]string, 0, len(extra))
@@ -1165,6 +1169,42 @@ func (o *Orchestrator) runSetupWith(worktreePath string, cfg *config.PipelineCon
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("migrate %q failed: %s: %w", cfg.Pipeline.Database.Migrate, strings.TrimSpace(string(out)), err)
+		}
+
+		// Provision and migrate test database if test_name is configured
+		if cfg.Pipeline.Database.TestName != "" {
+			o.logf("setup: provisioning test database %q", cfg.Pipeline.Database.TestName)
+			createSQL := fmt.Sprintf(
+				`CREATE DATABASE "%s" OWNER "%s"`,
+				cfg.Pipeline.Database.TestName, cfg.Pipeline.Database.User,
+			)
+			createCmd := exec.Command("sh", "-c",
+				fmt.Sprintf(`psql "${DATABASE_URL}" -c '%s' 2>/dev/null || true`, createSQL),
+			)
+			createCmd.Dir = worktreePath
+			createCmd.Env = env
+			_, _ = createCmd.CombinedOutput() // ignore errors (already exists)
+
+			// Run migrations on the test database using TEST_DATABASE_URL
+			host := config.DBHost()
+			testURL := cfg.Pipeline.Database.TestURLForHost(host)
+			migrateCmd := cfg.Pipeline.Database.Migrate
+			// Replace DATABASE_URL reference with test URL in migrate command
+			testMigrate := strings.Replace(migrateCmd, "${DATABASE_URL}", testURL, 1)
+			testMigrate = strings.Replace(testMigrate, "$(DATABASE_URL)", testURL, 1)
+			// If the migrate command uses make, override DATABASE_URL env var instead
+			testEnv := make([]string, len(env))
+			copy(testEnv, env)
+			testEnv = append(testEnv, "DATABASE_URL="+testURL)
+
+			o.logf("setup: migrating test database %q", cfg.Pipeline.Database.TestName)
+			tmCmd := exec.Command("sh", "-c", migrateCmd)
+			tmCmd.Dir = worktreePath
+			tmCmd.Env = testEnv
+			out, err := tmCmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("test db migrate failed: %s: %w", strings.TrimSpace(string(out)), err)
+			}
 		}
 	}
 	return nil

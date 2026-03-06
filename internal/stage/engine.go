@@ -656,7 +656,11 @@ func buildEnvMap(cfg *config.PipelineConfig) map[string]string {
 		env[k] = v
 	}
 	if cfg.Pipeline.Database != nil {
-		env["DATABASE_URL"] = cfg.Pipeline.Database.URLForHost(config.DBHost())
+		host := config.DBHost()
+		env["DATABASE_URL"] = cfg.Pipeline.Database.URLForHost(host)
+		if cfg.Pipeline.Database.TestName != "" {
+			env["TEST_DATABASE_URL"] = cfg.Pipeline.Database.TestURLForHost(host)
+		}
 	}
 	if len(env) == 0 {
 		return nil

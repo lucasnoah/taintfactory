@@ -14,9 +14,16 @@ type PipelineConfig struct {
 // DatabaseConfig declares per-repo PostgreSQL database needs.
 type DatabaseConfig struct {
 	Name     string `yaml:"name"`
+	TestName string `yaml:"test_name"`
 	User     string `yaml:"user"`
 	Password string `yaml:"password"`
 	Migrate  string `yaml:"migrate"`
+}
+
+// TestURLForHost returns a PostgreSQL connection string for the test database.
+func (d *DatabaseConfig) TestURLForHost(host string) string {
+	return fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=disable",
+		d.User, url.PathEscape(d.Password), host, d.TestName)
 }
 
 // URLForHost returns a PostgreSQL connection string targeting the given host.
