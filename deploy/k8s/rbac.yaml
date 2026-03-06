@@ -6,7 +6,7 @@ kind: ClusterRole
 metadata:
   name: factory-deployer
 rules:
-  # Helm needs broad access to manage releases
+  # Core + apps + batch + networking resources for Helm releases
   - apiGroups: ["", "apps", "batch", "networking.k8s.io"]
     resources:
       - pods
@@ -16,19 +16,29 @@ rules:
       - statefulsets
       - replicasets
       - jobs
+      - cronjobs
       - configmaps
       - secrets
       - ingresses
       - persistentvolumeclaims
+      - events
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Helm release tracking
-  - apiGroups: [""]
-    resources: ["secrets"]
+  # Autoscaling (HorizontalPodAutoscaler)
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # CloudNativePG (Cluster, ScheduledBackup)
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters", "scheduledbackups", "backups", "poolers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Sealed Secrets
+  - apiGroups: ["bitnami.com"]
+    resources: ["sealedsecrets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Namespace access
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
