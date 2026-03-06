@@ -45,4 +45,5 @@ func init() {
 	rootCmd.AddCommand(triageCmd)
 	rootCmd.AddCommand(discordCmd)
 	rootCmd.AddCommand(repoCmd)
+	rootCmd.AddCommand(deployCmd)
 }

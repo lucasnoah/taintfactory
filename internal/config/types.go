@@ -7,7 +7,14 @@ import (
 
 // PipelineConfig is the top-level configuration structure parsed from pipeline YAML.
 type PipelineConfig struct {
-	Pipeline Pipeline `yaml:"pipeline"`
+	Pipeline Pipeline        `yaml:"pipeline"`
+	Deploy   *DeployPipeline `yaml:"deploy"`
+}
+
+// DeployPipeline defines the deploy pipeline configuration.
+type DeployPipeline struct {
+	Name   string  `yaml:"name"`
+	Stages []Stage `yaml:"stages"`
 }
 
 // DatabaseConfig declares per-repo PostgreSQL database needs.

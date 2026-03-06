@@ -86,3 +86,30 @@ pipeline:
         - test
         - prettier
         - audit
+
+# Deploy pipeline (optional): stages run sequentially when
+# `factory deploy create <sha>` is invoked.
+deploy:
+  name: deploy-pipeline
+  stages:
+    - id: deploy
+      type: agent
+      prompt_template: "templates/deploy.md"
+      on_fail: rollback
+      vars:
+        environment: production
+
+    - id: smoke-test
+      type: agent
+      prompt_template: "templates/smoke-test.md"
+      on_fail: rollback
+
+    - id: debug
+      type: agent
+      prompt_template: "templates/debug.md"
+      model: opus
+      on_fail: rollback
+
+    - id: rollback
+      type: agent
+      prompt_template: "templates/rollback.md"

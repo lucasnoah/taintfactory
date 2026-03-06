@@ -881,3 +881,95 @@ func (d *DB) RepoGetByNamespace(namespace string) (*RepoRecord, error) {
 	}
 	return &r, nil
 }
+
+// ---------------------------------------------------------------------------
+// Deploy queries
+// ---------------------------------------------------------------------------
+
+// DeployRecord represents a row in the deploys table.
+type DeployRecord struct {
+	ID           int
+	Namespace    string
+	CommitSHA    string
+	Status       string
+	PreviousSHA  string
+	CurrentStage string
+	StageHistory string
+	CreatedAt    string
+	UpdatedAt    string
+}
+
+// DeployInsert inserts a new deploy record.
+func (d *DB) DeployInsert(namespace, commitSHA, previousSHA, currentStage string) error {
+	_, err := d.conn.Exec(
+		`INSERT INTO deploys (namespace, commit_sha, previous_sha, current_stage)
+		 VALUES ($1, $2, $3, $4)`,
+		namespace, commitSHA, previousSHA, currentStage,
+	)
+	if err != nil {
+		return fmt.Errorf("insert deploy: %w", err)
+	}
+	return nil
+}
+
+// DeployUpdateStatus updates the status, current_stage, and stage_history of a deploy.
+func (d *DB) DeployUpdateStatus(commitSHA, status, currentStage, stageHistoryJSON string) error {
+	_, err := d.conn.Exec(
+		`UPDATE deploys SET status = $1, current_stage = $2, stage_history = $3, updated_at = NOW()
+		 WHERE commit_sha = $4`,
+		status, currentStage, stageHistoryJSON, commitSHA,
+	)
+	if err != nil {
+		return fmt.Errorf("update deploy status: %w", err)
+	}
+	return nil
+}
+
+// DeployList returns recent deploys, newest first.
+func (d *DB) DeployList(limit int) ([]DeployRecord, error) {
+	rows, err := d.conn.Query(
+		`SELECT id, namespace, commit_sha, status, previous_sha, current_stage, stage_history, created_at, updated_at
+		 FROM deploys ORDER BY created_at DESC LIMIT $1`, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list deploys: %w", err)
+	}
+	defer rows.Close()
+
+	var deploys []DeployRecord
+	for rows.Next() {
+		var r DeployRecord
+		if err := rows.Scan(&r.ID, &r.Namespace, &r.CommitSHA, &r.Status, &r.PreviousSHA, &r.CurrentStage, &r.StageHistory, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan deploy: %w", err)
+		}
+		deploys = append(deploys, r)
+	}
+	return deploys, rows.Err()
+}
+
+// DeployGetLatestCompleted returns the most recently completed deploy for a namespace.
+func (d *DB) DeployGetLatestCompleted(namespace string) (*DeployRecord, error) {
+	var r DeployRecord
+	err := d.conn.QueryRow(
+		`SELECT id, namespace, commit_sha, status, previous_sha, current_stage, stage_history, created_at, updated_at
+		 FROM deploys WHERE namespace = $1 AND status = 'completed'
+		 ORDER BY created_at DESC LIMIT 1`, namespace,
+	).Scan(&r.ID, &r.Namespace, &r.CommitSHA, &r.Status, &r.PreviousSHA, &r.CurrentStage, &r.StageHistory, &r.CreatedAt, &r.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get latest completed deploy: %w", err)
+	}
+	return &r, nil
+}
+
+// LogDeployEvent inserts an append-only deploy lifecycle event.
+func (d *DB) LogDeployEvent(commitSHA, namespace, event, stage string, attempt int, detail string) error {
+	_, err := d.conn.Exec(
+		`INSERT INTO deploy_events (commit_sha, namespace, event, stage, attempt, detail)
+		 VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, 0), NULLIF($6, ''))`,
+		commitSHA, namespace, event, stage, attempt, detail,
+	)
+	if err != nil {
+		return fmt.Errorf("log deploy event: %w", err)
+	}
+	return nil
+}

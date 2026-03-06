@@ -57,6 +57,25 @@ func LoadDefault() (*PipelineConfig, error) {
 	return nil, fmt.Errorf("no pipeline config found (searched: %v)", candidates)
 }
 
+// ResolvedConfigPath returns the path to the pipeline config that LoadDefault would load,
+// or "" if none is found. Useful for recording which config was used.
+func ResolvedConfigPath() string {
+	candidates := []string{"pipeline.yaml"}
+	candidates = append(candidates, filepath.Join(DataDir(), "config.yaml"))
+	home, err := os.UserHomeDir()
+	if err == nil {
+		candidates = append(candidates, filepath.Join(home, ".factory", "config.yaml"))
+	}
+	for _, path := range candidates {
+		if abs, err := filepath.Abs(path); err == nil {
+			if _, err := os.Stat(abs); err == nil {
+				return abs
+			}
+		}
+	}
+	return ""
+}
+
 // applyDefaults merges pipeline-level defaults into stages that don't set their own values,
 // and resolves default_checks for stages that don't specify checks_after or skip_checks.
 func applyDefaults(cfg *PipelineConfig) {
@@ -79,6 +98,19 @@ func applyDefaults(cfg *PipelineConfig) {
 		// get the pipeline's default_checks.
 		if len(s.ChecksAfter) == 0 && !s.SkipChecks && s.Type != "checks_only" {
 			s.ChecksAfter = p.DefaultChecks
+		}
+	}
+
+	// Apply defaults to deploy stages
+	if cfg.Deploy != nil {
+		for i := range cfg.Deploy.Stages {
+			s := &cfg.Deploy.Stages[i]
+			if s.Model == "" && p.Defaults.Model != "" {
+				s.Model = p.Defaults.Model
+			}
+			if s.Flags == "" && p.Defaults.Flags != "" {
+				s.Flags = p.Defaults.Flags
+			}
 		}
 	}
 }

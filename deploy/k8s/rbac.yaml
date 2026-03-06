@@ -1,0 +1,44 @@
+# RBAC for factory pod to manage deploys across namespaces.
+# The factory default service account gets cluster-wide access to
+# resources needed by deploy pipeline stages (helm upgrade, kubectl, migrations).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: factory-deployer
+rules:
+  # Helm needs broad access to manage releases
+  - apiGroups: ["", "apps", "batch", "networking.k8s.io"]
+    resources:
+      - pods
+      - pods/log
+      - services
+      - deployments
+      - statefulsets
+      - replicasets
+      - jobs
+      - configmaps
+      - secrets
+      - ingresses
+      - persistentvolumeclaims
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Helm release tracking
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Namespace access
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: factory-deployer
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: taintfactory
+roleRef:
+  kind: ClusterRole
+  name: factory-deployer
+  apiGroup: rbac.authorization.k8s.io

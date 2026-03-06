@@ -411,6 +411,13 @@ func newOrchestrator() (*orchestrator.Orchestrator, func(), error) {
 	orch.SetClaudeFn(github.DefaultClaudeFn)
 	orch.SetProgress(os.Stderr)
 
+	// Wire deploy store if deploy section is configured
+	if cfg.Deploy != nil {
+		if deployStore, err := pipeline.DefaultDeployStore(); err == nil {
+			orch.SetDeployStore(deployStore)
+		}
+	}
+
 	// Attach triage runner if triage.yaml exists in the repo root
 	if triageCfg, err := triage.LoadDefault(repoDir); err == nil {
 		slug := repoSlug(triageCfg.Triage.Repo)
