@@ -12,6 +12,7 @@ import (
 type TmuxRunner interface {
 	NewSession(name string) error
 	SendKeys(session string, keys string) error
+	SendRaw(session string, key string) error
 	SendBuffer(session string, content string) error
 	KillSession(name string) error
 	CapturePane(name string) (string, error)
@@ -33,7 +34,18 @@ func (e *ExecTmux) NewSession(name string) error {
 }
 
 func (e *ExecTmux) SendKeys(session string, keys string) error {
-	return exec.Command("tmux", "send-keys", "-t", session, keys, "Enter").Run()
+	// Use -l to send text literally (prevents tmux from interpreting
+	// characters as key names), then send Enter separately.
+	if err := exec.Command("tmux", "send-keys", "-t", session, "-l", keys).Run(); err != nil {
+		return err
+	}
+	return exec.Command("tmux", "send-keys", "-t", session, "Enter").Run()
+}
+
+// SendRaw sends a tmux key name (e.g. "Enter", "Down") without the -l flag,
+// so tmux interprets it as a key name rather than literal text.
+func (e *ExecTmux) SendRaw(session string, key string) error {
+	return exec.Command("tmux", "send-keys", "-t", session, key).Run()
 }
 
 // SendBuffer writes content to a temp file, loads it into a tmux buffer,

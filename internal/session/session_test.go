@@ -35,6 +35,11 @@ func (m *mockTmux) SendKeys(session string, keys string) error {
 	return nil
 }
 
+func (m *mockTmux) SendRaw(session string, key string) error {
+	m.calls = append(m.calls, fmt.Sprintf("send-raw %s %s", session, key))
+	return nil
+}
+
 func (m *mockTmux) SendBuffer(session string, content string) error {
 	m.calls = append(m.calls, fmt.Sprintf("send-buffer %s %q", session, content))
 	return nil

@@ -12,11 +12,12 @@ import (
 // loadOAuthToken tries to read CLAUDE_CODE_OAUTH_TOKEN from the environment
 // first, then falls back to {datadir}/.env.
 // Respects FACTORY_DATA_DIR env var (default: ~/.factory).
+// The value is trimmed because k8s secrets often inject trailing newlines.
 func loadOAuthToken() string {
-	if v := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")); v != "" {
 		return v
 	}
-	return readEnvFileVar(filepath.Join(config.DataDir(), ".env"), "CLAUDE_CODE_OAUTH_TOKEN")
+	return strings.TrimSpace(readEnvFileVar(filepath.Join(config.DataDir(), ".env"), "CLAUDE_CODE_OAUTH_TOKEN"))
 }
 
 // readEnvFileVar reads the value of a specific key from a .env file.
