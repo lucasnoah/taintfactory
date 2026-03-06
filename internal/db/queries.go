@@ -732,3 +732,138 @@ func (d *DB) GetCheckHistory(namespace string, issue int) ([]CheckRun, error) {
 	}
 	return runs, rows.Err()
 }
+
+// ---------------------------------------------------------------------------
+// Repo registry queries
+// ---------------------------------------------------------------------------
+
+// RepoRecord represents a registered repository.
+type RepoRecord struct {
+	ID           int
+	Namespace    string
+	RepoURL      string
+	LocalPath    string
+	ConfigPath   string
+	PollLabel    string
+	PollInterval int
+	Active       bool
+	AddedAt      string
+}
+
+// RepoUpdateOpts holds optional fields for updating a repo. Nil means "don't change".
+type RepoUpdateOpts struct {
+	PollLabel    *string
+	PollInterval *int
+	Active       *bool
+}
+
+// RepoAdd inserts a new repo into the registry.
+func (d *DB) RepoAdd(r RepoRecord) error {
+	_, err := d.conn.Exec(
+		`INSERT INTO repos (namespace, repo_url, local_path, config_path, poll_label, poll_interval, active)
+		 VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7)`,
+		r.Namespace, r.RepoURL, r.LocalPath, r.ConfigPath, r.PollLabel, r.PollInterval, r.Active,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			return fmt.Errorf("repo %q already registered", r.Namespace)
+		}
+		return fmt.Errorf("insert repo: %w", err)
+	}
+	return nil
+}
+
+// RepoList returns all registered repos.
+func (d *DB) RepoList() ([]RepoRecord, error) {
+	rows, err := d.conn.Query(
+		`SELECT id, namespace, repo_url, local_path, config_path, COALESCE(poll_label, ''), poll_interval, active, added_at
+		 FROM repos ORDER BY namespace`)
+	if err != nil {
+		return nil, fmt.Errorf("list repos: %w", err)
+	}
+	defer rows.Close()
+
+	var repos []RepoRecord
+	for rows.Next() {
+		var r RepoRecord
+		if err := rows.Scan(&r.ID, &r.Namespace, &r.RepoURL, &r.LocalPath, &r.ConfigPath, &r.PollLabel, &r.PollInterval, &r.Active, &r.AddedAt); err != nil {
+			return nil, fmt.Errorf("scan repo: %w", err)
+		}
+		repos = append(repos, r)
+	}
+	return repos, rows.Err()
+}
+
+// RepoRemove deletes a repo by namespace.
+func (d *DB) RepoRemove(namespace string) error {
+	result, err := d.conn.Exec(`DELETE FROM repos WHERE namespace = $1`, namespace)
+	if err != nil {
+		return fmt.Errorf("delete repo: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("repo %q not found", namespace)
+	}
+	return nil
+}
+
+// RepoUpdate updates optional fields on a repo.
+func (d *DB) RepoUpdate(namespace string, opts RepoUpdateOpts) error {
+	sets := []string{}
+	args := []interface{}{}
+	i := 1
+
+	if opts.PollLabel != nil {
+		sets = append(sets, fmt.Sprintf("poll_label = NULLIF($%d, '')", i))
+		args = append(args, *opts.PollLabel)
+		i++
+	}
+	if opts.PollInterval != nil {
+		sets = append(sets, fmt.Sprintf("poll_interval = $%d", i))
+		args = append(args, *opts.PollInterval)
+		i++
+	}
+	if opts.Active != nil {
+		sets = append(sets, fmt.Sprintf("active = $%d", i))
+		args = append(args, *opts.Active)
+		i++
+	}
+
+	if len(sets) == 0 {
+		return nil
+	}
+
+	query := fmt.Sprintf("UPDATE repos SET %s WHERE namespace = $%d", strings.Join(sets, ", "), i)
+	args = append(args, namespace)
+
+	result, err := d.conn.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("update repo: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("repo %q not found", namespace)
+	}
+	return nil
+}
+
+// RepoGetPollable returns repos that are active and have a poll_label set.
+func (d *DB) RepoGetPollable() ([]RepoRecord, error) {
+	rows, err := d.conn.Query(
+		`SELECT id, namespace, repo_url, local_path, config_path, poll_label, poll_interval, active, added_at
+		 FROM repos WHERE active = true AND poll_label IS NOT NULL ORDER BY namespace`)
+	if err != nil {
+		return nil, fmt.Errorf("get pollable repos: %w", err)
+	}
+	defer rows.Close()
+
+	var repos []RepoRecord
+	for rows.Next() {
+		var r RepoRecord
+		if err := rows.Scan(&r.ID, &r.Namespace, &r.RepoURL, &r.LocalPath, &r.ConfigPath, &r.PollLabel, &r.PollInterval, &r.Active, &r.AddedAt); err != nil {
+			return nil, fmt.Errorf("scan repo: %w", err)
+		}
+		repos = append(repos, r)
+	}
+	return repos, rows.Err()
+}

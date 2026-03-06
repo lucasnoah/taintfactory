@@ -19,6 +19,11 @@ import (
 	"github.com/lucasnoah/taintfactory/internal/worktree"
 )
 
+// labelPoller is the subset of github.Client used by the label poller.
+type labelPoller interface {
+	ListLabeledIssues(label string) ([]github.IssueSummary, error)
+}
+
 // Orchestrator composes pipeline lifecycle operations.
 type Orchestrator struct {
 	store        *pipeline.Store
@@ -32,6 +37,9 @@ type Orchestrator struct {
 	claudeFn     github.LLMFunc
 	progress     io.Writer       // live progress output; nil = silent
 	triageRunner *triage.Runner  // optional; nil if no triage.yaml
+	ghForRepo    func(repoURL string) labelPoller // factory for repo-scoped GitHub clients
+	pollTick     int
+	pollInterval int // in number of check-ins; 0 = disabled
 }
 
 // NewOrchestrator creates an Orchestrator.
@@ -45,16 +53,27 @@ func NewOrchestrator(
 	builder *appctx.Builder,
 	cfg *config.PipelineConfig,
 ) *Orchestrator {
-	return &Orchestrator{
-		store:    store,
-		db:       database,
-		gh:       gh,
-		wt:       wt,
-		sessions: sessions,
-		engine:   engine,
-		builder:  builder,
-		cfg:      cfg,
+	o := &Orchestrator{
+		store:        store,
+		db:           database,
+		gh:           gh,
+		wt:           wt,
+		sessions:     sessions,
+		engine:       engine,
+		builder:      builder,
+		cfg:          cfg,
+		pollInterval: 12, // 12 * 10s check-in = ~2 minutes
 	}
+	o.ghForRepo = func(repoURL string) labelPoller {
+		client := github.NewClient(&github.ExecRunner{})
+		repo := strings.TrimPrefix(repoURL, "https://")
+		repo = strings.TrimPrefix(repo, "github.com/")
+		if repo != "" {
+			client = client.WithRepo(repo)
+		}
+		return client
+	}
+	return o
 }
 
 // SetClaudeFn configures the LLM function used for intent derivation.
@@ -782,6 +801,17 @@ func (o *Orchestrator) CheckIn() (*CheckInResult, error) {
 		}
 	}
 
+	// Poll GitHub for new labeled issues on a slower cadence.
+	o.pollTick++
+	if o.pollInterval > 0 && o.pollTick >= o.pollInterval {
+		o.pollTick = 0
+		if n, err := o.pollLabeledIssues(); err != nil {
+			o.logf("label poll error: %v", err)
+		} else if n > 0 {
+			o.logf("label poll: enqueued %d new issues", n)
+		}
+	}
+
 	return result, nil
 }
 
@@ -1361,4 +1391,76 @@ func formatCheckStateSummary(state map[string]string) string {
 		result += fmt.Sprintf("%s: %s\n", name, status)
 	}
 	return result
+}
+
+// pollLabeledIssues checks registered repos for new issues with their configured
+// poll_label and enqueues them. Returns the number of issues enqueued.
+func (o *Orchestrator) pollLabeledIssues() (int, error) {
+	repos, err := o.db.RepoGetPollable()
+	if err != nil {
+		return 0, fmt.Errorf("get pollable repos: %w", err)
+	}
+	if len(repos) == 0 {
+		return 0, nil
+	}
+
+	// Build set of already-known issues from queue.
+	queueItems, err := o.db.QueueList()
+	if err != nil {
+		return 0, fmt.Errorf("list queue: %w", err)
+	}
+	known := make(map[string]bool) // "namespace:issue"
+	for _, q := range queueItems {
+		known[fmt.Sprintf("%s:%d", q.Namespace, q.Issue)] = true
+	}
+
+	enqueued := 0
+	for _, repo := range repos {
+		gh := o.ghForRepo(repo.RepoURL)
+		issues, err := gh.ListLabeledIssues(repo.PollLabel)
+		if err != nil {
+			o.logf("poll %s: %v", repo.Namespace, err)
+			continue
+		}
+
+		for _, iss := range issues {
+			key := fmt.Sprintf("%s:%d", repo.Namespace, iss.Number)
+			if known[key] {
+				continue
+			}
+
+			// Check if pipeline already exists on disk.
+			if _, err := o.store.GetForNamespace(repo.Namespace, iss.Number); err == nil {
+				known[key] = true
+				continue
+			}
+
+			// Derive feature intent via LLM.
+			intent := ""
+			if o.claudeFn != nil {
+				full := &github.Issue{Number: iss.Number, Title: iss.Title, Body: iss.Body}
+				if derived, err := github.DeriveFeatureIntent(full, o.claudeFn); err != nil {
+					o.logf("derive intent for #%d: %v", iss.Number, err)
+				} else {
+					intent = derived
+				}
+			}
+
+			if err := o.db.QueueAdd([]db.QueueAddItem{{
+				Namespace:     repo.Namespace,
+				Issue:         iss.Number,
+				FeatureIntent: intent,
+				ConfigPath:    repo.ConfigPath,
+			}}); err != nil {
+				o.logf("enqueue #%d: %v", iss.Number, err)
+				continue
+			}
+
+			o.logf("polled and enqueued #%d (%s) from %s", iss.Number, iss.Title, repo.Namespace)
+			known[key] = true
+			enqueued++
+		}
+	}
+
+	return enqueued, nil
 }

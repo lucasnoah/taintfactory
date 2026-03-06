@@ -44,4 +44,5 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(triageCmd)
 	rootCmd.AddCommand(discordCmd)
+	rootCmd.AddCommand(repoCmd)
 }

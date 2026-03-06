@@ -150,6 +150,11 @@ type QueueData struct {
 	Sidebar SidebarData
 }
 
+type ReposPageData struct {
+	Repos   []db.RepoRecord
+	Sidebar SidebarData
+}
+
 type ConfigData struct {
 	Repos   []RepoConfigView
 	Sidebar SidebarData
@@ -779,6 +784,23 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 
 	data := QueueData{Items: rows, Sidebar: sidebar}
 	if err := s.queueTmpl.ExecuteTemplate(w, "base", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// ---- Repos ----
+
+func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
+	sidebar := s.sidebarData("")
+
+	repos, err := s.db.RepoList()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	data := ReposPageData{Repos: repos, Sidebar: sidebar}
+	if err := s.reposTmpl.ExecuteTemplate(w, "base", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }

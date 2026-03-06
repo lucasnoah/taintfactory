@@ -94,6 +94,13 @@ type Issue struct {
 	AcceptanceCriteria string     `json:"acceptance_criteria,omitempty"`
 }
 
+// IssueSummary is a lightweight issue representation returned by list queries.
+type IssueSummary struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	Body   string `json:"body"`
+}
+
 // Label represents a GitHub label.
 type Label struct {
 	Name string `json:"name"`
@@ -133,6 +140,29 @@ func (c *Client) GetIssue(number int) (*Issue, error) {
 
 	issue.AcceptanceCriteria = extractAcceptanceCriteria(issue.Body)
 	return &issue, nil
+}
+
+// ListLabeledIssues returns open issues with the given label.
+// Requires the client to be scoped to a repo via WithRepo().
+func (c *Client) ListLabeledIssues(label string) ([]IssueSummary, error) {
+	args := append([]string{
+		"issue", "list",
+		"--label", label,
+		"--state", "open",
+		"--json", "number,title,body",
+		"--limit", "100",
+	}, c.repoArgs()...)
+
+	out, err := c.cmd.Run(args...)
+	if err != nil {
+		return nil, fmt.Errorf("list labeled issues: %w", err)
+	}
+
+	var issues []IssueSummary
+	if err := json.Unmarshal([]byte(out), &issues); err != nil {
+		return nil, fmt.Errorf("parse issues JSON: %w", err)
+	}
+	return issues, nil
 }
 
 // CacheIssue fetches an issue and writes it to the pipeline's issue.json.
