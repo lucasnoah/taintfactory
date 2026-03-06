@@ -88,6 +88,9 @@ spec:
           volumeMounts:
             - name: factory-data
               mountPath: /data
+            - name: registry-creds
+              mountPath: /var/run/secrets/registry
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /healthz
@@ -118,6 +121,9 @@ spec:
         - name: pipeline-config
           configMap:
             name: factory-pipeline-config
+        - name: registry-creds
+          secret:
+            secretName: registry-personalcluster
   volumeClaimTemplates:
     - metadata:
         name: factory-data

@@ -18,7 +18,15 @@ fi
   [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && echo "export CLAUDE_CODE_OAUTH_TOKEN='${CLAUDE_CODE_OAUTH_TOKEN}'"
   [ -n "${GITHUB_TOKEN:-}" ] && echo "export GITHUB_TOKEN='${GITHUB_TOKEN}'"
   [ -n "${DOCKER_HOST:-}" ] && echo "export DOCKER_HOST='${DOCKER_HOST}'"
+  [ -n "${DATABASE_URL:-}" ] && echo "export DATABASE_URL='${DATABASE_URL}'"
 } > "$HOME/.bashrc"
+
+# Configure Docker registry auth if credentials are mounted
+if [ -f /var/run/secrets/registry/.dockerconfigjson ]; then
+  mkdir -p "$HOME/.docker"
+  cp /var/run/secrets/registry/.dockerconfigjson "$HOME/.docker/config.json"
+  echo "Docker registry credentials configured"
+fi
 
 # Persist Claude's config on the PVC so interactive auth survives pod restarts.
 # After first deploy, run `claude setup-token` in the pod to complete OAuth.
@@ -44,6 +52,7 @@ fi
 mkdir -p "$DATA_DIR/pipelines"
 mkdir -p "$DATA_DIR/triage"
 mkdir -p "$DATA_DIR/repos"
+mkdir -p "$DATA_DIR/deploys"
 
 # Clone/update the primary repo (required for orchestrator)
 if [ -n "${FACTORY_PRIMARY_REPO:-}" ]; then
