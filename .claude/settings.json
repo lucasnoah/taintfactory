@@ -1,0 +1,27 @@
+{
+  "enabledPlugins": {},
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/capture-decision.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Review the conversation transcript for this turn. Determine if the user made a significant engineering decision in response to an AskUserQuestion.\n\nSignificant decisions include: technology or library selections, architectural pattern choices, API design decisions, data model choices, UX layout or workflow decisions, naming conventions, configuration choices, or deployment strategy decisions.\n\nDo NOT flag: clarifying questions about existing code, simple yes/no confirmations of proposed changes, exploration or navigation queries, process meta-questions (like 'should we continue?'), or questions about what to work on next.\n\nYou MUST respond with ONLY a raw JSON object. No markdown, no code blocks, no explanation text. Just the JSON.\n\nIf a significant decision was made, respond exactly:\n{\"ok\": false, \"reason\": \"DECISION_DETECTED: <concise one-line summary>\"}\n\nIf no significant decision was made, respond exactly:\n{\"ok\": true}"
+          }
+        ]
+      }
+    ]
+  }
+}

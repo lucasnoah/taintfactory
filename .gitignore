@@ -26,5 +26,11 @@ pipelines/*/stages/*/gifs/
 # Git worktrees
 .worktrees/
 
+# Compiled binary
+factory
+
+# Claude Code worktree metadata
+.claude/worktrees/
+
 # K8s secrets (never commit)
 deploy/k8s/secrets.yaml
