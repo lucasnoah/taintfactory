@@ -117,6 +117,15 @@ func (o *Orchestrator) configFor(ps *pipeline.PipelineState) (*config.PipelineCo
 	return config.Load(ps.ConfigPath)
 }
 
+// ghFor returns a GitHub client scoped to the pipeline's repo.
+// If ps.Namespace is set, returns a client with --repo; otherwise returns o.gh.
+func (o *Orchestrator) ghFor(ps *pipeline.PipelineState) *github.Client {
+	if ps.Namespace == "" {
+		return o.gh
+	}
+	return o.gh.WithRepo(ps.Namespace)
+}
+
 // worktreeFor returns a worktree.Manager scoped to the pipeline's repo.
 // If ps.RepoDir is set, derives a new manager (sharing the same git runner) for that dir;
 // otherwise returns o.wt.
@@ -1130,6 +1139,9 @@ func (o *Orchestrator) runMerge(issue int, ps *pipeline.PipelineState, stageCfg 
 	start := time.Now()
 	o.logf("pipeline #%d: running merge stage", issue)
 
+	// Use repo-scoped gh client so PR commands target the correct repo.
+	gh := o.ghFor(ps)
+
 	result := &stage.RunResult{
 		Issue:           issue,
 		Stage:           stageCfg.ID,
@@ -1143,7 +1155,7 @@ func (o *Orchestrator) runMerge(issue int, ps *pipeline.PipelineState, stageCfg 
 	// This handles the common case where other PRs merged after this branch
 	// was cut, causing a "both added" or content conflict at gh pr merge time.
 	o.logf("rebasing %s onto origin/main", ps.Branch)
-	conflicted, rebaseErr := o.gh.RebaseOntoMain(ps.Worktree)
+	conflicted, rebaseErr := gh.RebaseOntoMain(ps.Worktree)
 	if rebaseErr != nil {
 		o.logf("rebase failed: %v", rebaseErr)
 		result.Outcome = "fail"
@@ -1159,7 +1171,7 @@ func (o *Orchestrator) runMerge(issue int, ps *pipeline.PipelineState, stageCfg 
 
 	// Push branch (force-with-lease to handle any history rewrite from the rebase)
 	o.logf("pushing branch %s from %s", ps.Branch, ps.Worktree)
-	if err := o.gh.ForcePushBranch(ps.Worktree, ps.Branch); err != nil {
+	if err := gh.ForcePushBranch(ps.Worktree, ps.Branch); err != nil {
 		o.logf("push failed: %v", err)
 		result.Outcome = "fail"
 		result.TotalDuration = time.Since(start)
@@ -1167,7 +1179,7 @@ func (o *Orchestrator) runMerge(issue int, ps *pipeline.PipelineState, stageCfg 
 	}
 
 	// Check for existing PR before creating a new one (idempotent retry)
-	existing, err := o.gh.FindPRByBranch(ps.Branch)
+	existing, err := gh.FindPRByBranch(ps.Branch)
 	if err != nil {
 		o.logf("find existing PR failed: %v", err)
 		result.Outcome = "fail"
@@ -1182,7 +1194,7 @@ func (o *Orchestrator) runMerge(issue int, ps *pipeline.PipelineState, stageCfg 
 		prTitle := fmt.Sprintf("#%d: %s", issue, ps.Title)
 		prBody := fmt.Sprintf("Closes #%d\n\nAutomated merge via pipeline.", issue)
 		o.logf("creating PR: %s", prTitle)
-		_, err = o.gh.CreatePR(github.PRCreateOpts{
+		_, err = gh.CreatePR(github.PRCreateOpts{
 			Title:  prTitle,
 			Body:   prBody,
 			Branch: ps.Branch,
@@ -1209,7 +1221,7 @@ func (o *Orchestrator) runMerge(issue int, ps *pipeline.PipelineState, stageCfg 
 		strategy = "squash"
 	}
 	o.logf("merging PR on branch %s with strategy %s", ps.Branch, strategy)
-	if err := o.gh.MergePR(ps.Branch, strategy); err != nil {
+	if err := gh.MergePR(ps.Branch, strategy); err != nil {
 		o.logf("merge PR failed: %v", err)
 		result.Outcome = "fail"
 		result.TotalDuration = time.Since(start)

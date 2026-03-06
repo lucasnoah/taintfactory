@@ -222,6 +222,7 @@ func (c *Client) CreatePR(opts PRCreateOpts) (*PRCreateResult, error) {
 	if opts.Base != "" {
 		args = append(args, "--base", opts.Base)
 	}
+	args = append(args, c.repoArgs()...)
 
 	out, err := c.cmd.Run(args...)
 	if err != nil {
@@ -234,7 +235,8 @@ func (c *Client) CreatePR(opts PRCreateOpts) (*PRCreateResult, error) {
 // FindPRByBranch checks if a PR already exists for a given branch.
 // Returns the PR result if found, nil if none exist.
 func (c *Client) FindPRByBranch(branch string) (*PRCreateResult, error) {
-	out, err := c.cmd.Run("pr", "list", "--head", branch, "--json", "url", "--limit", "1")
+	args := append([]string{"pr", "list", "--head", branch, "--json", "url", "--limit", "1"}, c.repoArgs()...)
+	out, err := c.cmd.Run(args...)
 	if err != nil {
 		return nil, fmt.Errorf("find PR by branch: %w", err)
 	}
@@ -267,7 +269,7 @@ func (c *Client) MergePR(branch string, strategy string) error {
 		return fmt.Errorf("invalid merge strategy %q: must be squash, merge, or rebase", strategy)
 	}
 
-	args := []string{"pr", "merge", branch, "--" + strategy, "--delete-branch"}
+	args := append([]string{"pr", "merge", branch, "--" + strategy, "--delete-branch"}, c.repoArgs()...)
 	_, err := c.cmd.Run(args...)
 	if err != nil {
 		return fmt.Errorf("merge PR: %w", err)

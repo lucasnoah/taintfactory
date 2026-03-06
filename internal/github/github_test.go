@@ -552,3 +552,39 @@ func TestValidateIssueNumber(t *testing.T) {
 		t.Error("expected error for -1")
 	}
 }
+
+func TestPRCommands_WithRepo(t *testing.T) {
+	// Verify that CreatePR, FindPRByBranch, and MergePR pass --repo when scoped.
+	t.Run("CreatePR", func(t *testing.T) {
+		mock := &mockCmd{results: []mockResult{{output: "https://github.com/org/repo/pull/1"}}}
+		client := NewClient(mock).WithRepo("lucasnoah/wptl")
+		_, err := client.CreatePR(PRCreateOpts{Title: "t", Body: "b", Branch: "feature/1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := strings.Join(mock.calls[0], " ")
+		if !strings.Contains(args, "--repo lucasnoah/wptl") {
+			t.Errorf("expected --repo flag, got: %s", args)
+		}
+	})
+
+	t.Run("FindPRByBranch", func(t *testing.T) {
+		mock := &mockCmd{results: []mockResult{{output: "[]"}}}
+		client := NewClient(mock).WithRepo("lucasnoah/wptl")
+		_, _ = client.FindPRByBranch("feature/1")
+		args := strings.Join(mock.calls[0], " ")
+		if !strings.Contains(args, "--repo lucasnoah/wptl") {
+			t.Errorf("expected --repo flag, got: %s", args)
+		}
+	})
+
+	t.Run("MergePR", func(t *testing.T) {
+		mock := &mockCmd{results: []mockResult{{output: ""}}}
+		client := NewClient(mock).WithRepo("lucasnoah/wptl")
+		_ = client.MergePR("feature/1", "squash")
+		args := strings.Join(mock.calls[0], " ")
+		if !strings.Contains(args, "--repo lucasnoah/wptl") {
+			t.Errorf("expected --repo flag, got: %s", args)
+		}
+	})
+}
