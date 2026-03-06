@@ -57,6 +57,7 @@ type Server struct {
 	attemptTmpl   *template.Template
 	queueTmpl     *template.Template
 	configTmpl    *template.Template
+	reposTmpl     *template.Template
 
 	// Triage support
 	triageDir      string
@@ -81,6 +82,7 @@ func NewServer(store *pipeline.Store, database *db.DB, port int, triageDir strin
 		attemptTmpl:    mustParseTmpl("base.html", "attempt.html"),
 		queueTmpl:      mustParseTmpl("base.html", "queue.html"),
 		configTmpl:     mustParseTmpl("base.html", "config.html"),
+		reposTmpl:      mustParseTmpl("base.html", "repos.html"),
 		triageTmpl:     mustParseTmpl("base.html", "triage.html"),
 		triageListTmpl: mustParseTmpl("base.html", "triage-list.html"),
 	}
@@ -332,6 +334,7 @@ func (s *Server) buildMux() *http.ServeMux {
 		}
 	})
 	mux.HandleFunc("/queue", s.handleQueue)
+	mux.HandleFunc("/repos", s.handleRepos)
 	mux.HandleFunc("/config", s.handleConfig)
 	return mux
 }

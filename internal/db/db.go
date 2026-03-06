@@ -114,6 +114,19 @@ CREATE TABLE IF NOT EXISTS issue_queue (
 );
 CREATE INDEX IF NOT EXISTS idx_queue_status_position ON issue_queue(status, position);
 CREATE INDEX IF NOT EXISTS idx_queue_ns_issue ON issue_queue(namespace, issue);
+
+CREATE TABLE IF NOT EXISTS repos (
+    id             SERIAL PRIMARY KEY,
+    namespace      TEXT UNIQUE NOT NULL,
+    repo_url       TEXT NOT NULL,
+    local_path     TEXT NOT NULL,
+    config_path    TEXT NOT NULL,
+    poll_label     TEXT,
+    poll_interval  INTEGER NOT NULL DEFAULT 120,
+    active         BOOLEAN NOT NULL DEFAULT true,
+    added_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_repos_active ON repos(active);
 `
 
 // Migrate applies the database schema.

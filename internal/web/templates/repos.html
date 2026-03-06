@@ -1,0 +1,34 @@
+{{define "title"}}Repos{{end}}
+{{define "refresh"}}<meta http-equiv="refresh" content="30">{{end}}
+{{define "content"}}
+<h1 style="font-size:1.2rem;font-weight:700;margin-bottom:1.25rem">Registered Repos</h1>
+
+{{if .Repos}}
+<table>
+  <thead>
+    <tr>
+      <th>Namespace</th>
+      <th>Repo URL</th>
+      <th>Poll Label</th>
+      <th>Interval</th>
+      <th>Active</th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Repos}}
+  <tr>
+    <td><code>{{.Namespace}}</code></td>
+    <td><a href="{{.RepoURL}}" target="_blank">{{.RepoURL}}</a></td>
+    <td>{{if .PollLabel}}<span class="badge badge-ns">{{.PollLabel}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+    <td class="muted">{{.PollInterval}}s</td>
+    <td>
+      {{if .Active}}<span class="badge badge-completed">active</span>{{else}}<span class="badge badge-pending">inactive</span>{{end}}
+    </td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="muted">No repos registered. Use <code>factory repo add</code> to register one.</p>
+{{end}}
+{{end}}
