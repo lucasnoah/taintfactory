@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"text/tabwriter"
@@ -37,6 +38,10 @@ var deployCreateCmd = &cobra.Command{
 			return fmt.Errorf("load config: %w", err)
 		}
 
+		// Resolve repo dir and config path for orchestrator
+		repoDir, _ := os.Getwd()
+		configPath := config.ResolvedConfigPath()
+
 		if cfg.Deploy == nil {
 			return fmt.Errorf("no deploy: section found in pipeline config")
 		}
@@ -68,6 +73,8 @@ var deployCreateCmd = &cobra.Command{
 			Namespace:   namespace,
 			FirstStage:  firstStage,
 			PreviousSHA: previousSHA,
+			ConfigPath:  configPath,
+			RepoDir:     repoDir,
 		})
 		if err != nil {
 			return err
