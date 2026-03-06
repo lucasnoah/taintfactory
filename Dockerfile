@@ -26,6 +26,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
 
+# Install golang-migrate (for repo database migrations)
+RUN ARCH=$(dpkg --print-architecture) && \
+    curl -fsSL "https://github.com/golang-migrate/migrate/releases/download/v4.18.2/migrate.linux-${ARCH}.tar.gz" \
+    | tar xz -C /usr/local/bin migrate && chmod +x /usr/local/bin/migrate
+
 # Install Claude CLI
 RUN npm install -g @anthropic-ai/claude-code
 
