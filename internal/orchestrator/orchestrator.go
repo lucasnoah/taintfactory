@@ -5,6 +5,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -1423,18 +1424,37 @@ func (o *Orchestrator) pollLabeledIssues() (int, error) {
 			continue
 		}
 
+		// Sort by issue number so lower-numbered issues get earlier queue
+		// positions and are processed first within the same project.
+		sort.Slice(issues, func(i, j int) bool {
+			return issues[i].Number < issues[j].Number
+		})
+
+		// Filter to only new issues, preserving sorted order.
+		var newIssues []github.IssueSummary
 		for _, iss := range issues {
 			key := fmt.Sprintf("%s:%d", repo.Namespace, iss.Number)
 			if known[key] {
 				continue
 			}
-
-			// Check if pipeline already exists on disk.
 			if _, err := o.store.GetForNamespace(repo.Namespace, iss.Number); err == nil {
 				known[key] = true
 				continue
 			}
+			newIssues = append(newIssues, iss)
+		}
 
+		// Find the highest-numbered issue already in the queue for this
+		// namespace — new issues will chain off it.
+		var lastKnownIssue int
+		for _, q := range queueItems {
+			if q.Namespace == repo.Namespace && q.Issue > lastKnownIssue {
+				lastKnownIssue = q.Issue
+			}
+		}
+
+		prevIssue := lastKnownIssue
+		for _, iss := range newIssues {
 			// Derive feature intent via LLM.
 			intent := ""
 			if o.claudeFn != nil {
@@ -1446,18 +1466,27 @@ func (o *Orchestrator) pollLabeledIssues() (int, error) {
 				}
 			}
 
+			// Chain dependency: each issue depends on the previous one
+			// so they execute in numerical order.
+			var deps []int
+			if prevIssue > 0 {
+				deps = []int{prevIssue}
+			}
+
 			if err := o.db.QueueAdd([]db.QueueAddItem{{
 				Namespace:     repo.Namespace,
 				Issue:         iss.Number,
 				FeatureIntent: intent,
+				DependsOn:     deps,
 				ConfigPath:    repo.ConfigPath,
 			}}); err != nil {
 				o.logf("enqueue #%d: %v", iss.Number, err)
 				continue
 			}
 
-			o.logf("polled and enqueued #%d (%s) from %s", iss.Number, iss.Title, repo.Namespace)
-			known[key] = true
+			o.logf("polled and enqueued #%d (%s) from %s [depends on #%d]", iss.Number, iss.Title, repo.Namespace, prevIssue)
+			known[fmt.Sprintf("%s:%d", repo.Namespace, iss.Number)] = true
+			prevIssue = iss.Number
 			enqueued++
 		}
 	}
