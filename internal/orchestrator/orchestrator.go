@@ -1057,13 +1057,10 @@ func (o *Orchestrator) processQueue() *CheckInAction {
 		}
 	}
 
-	// Reject issues without a feature intent even after derivation attempt
+	// Proceed even without a feature intent — it's useful metadata but not
+	// required to run a pipeline. Blocking here causes an infinite retry loop.
 	if item.FeatureIntent == "" {
-		return &CheckInAction{
-			Issue:   item.Issue,
-			Action:  "skip",
-			Message: "queue: issue missing feature_intent — use `factory queue set-intent` or ensure the issue has clear user-facing intent",
-		}
+		o.logf("queue: no feature intent for #%d, proceeding anyway", item.Issue)
 	}
 
 	if err := o.db.QueueUpdateStatus(item.Namespace, item.Issue, "active"); err != nil {
