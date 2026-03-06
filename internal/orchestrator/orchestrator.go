@@ -1120,15 +1120,51 @@ func (o *Orchestrator) processQueue() *CheckInAction {
 	}
 }
 
+// setupEnv builds the environment for setup and migrate commands.
+// It merges os.Environ() with pipeline env vars and auto DATABASE_URL.
+func (o *Orchestrator) setupEnv(cfg *config.PipelineConfig) []string {
+	env := os.Environ()
+	extra := make(map[string]string)
+	for k, v := range cfg.Pipeline.Env {
+		extra[k] = v
+	}
+	if cfg.Pipeline.Database != nil {
+		extra["DATABASE_URL"] = cfg.Pipeline.Database.URL()
+	}
+	// Append extra vars (sorted for determinism)
+	keys := make([]string, 0, len(extra))
+	for k := range extra {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		env = append(env, fmt.Sprintf("%s=%s", k, extra[k]))
+	}
+	return env
+}
+
 // runSetupWith runs the pipeline.setup commands from cfg inside the worktree directory.
 func (o *Orchestrator) runSetupWith(worktreePath string, cfg *config.PipelineConfig) error {
+	env := o.setupEnv(cfg)
 	for _, cmdStr := range cfg.Pipeline.Setup {
 		o.logf("setup: running %q in %s", cmdStr, worktreePath)
 		cmd := exec.Command("sh", "-c", cmdStr)
 		cmd.Dir = worktreePath
+		cmd.Env = env
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("command %q failed: %s: %w", cmdStr, strings.TrimSpace(string(out)), err)
+		}
+	}
+	// Run database migration if configured
+	if cfg.Pipeline.Database != nil && cfg.Pipeline.Database.Migrate != "" {
+		o.logf("setup: running database migration %q", cfg.Pipeline.Database.Migrate)
+		cmd := exec.Command("sh", "-c", cfg.Pipeline.Database.Migrate)
+		cmd.Dir = worktreePath
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("migrate %q failed: %s: %w", cfg.Pipeline.Database.Migrate, strings.TrimSpace(string(out)), err)
 		}
 	}
 	return nil

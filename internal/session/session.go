@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ type CreateOpts struct {
 	Issue       int
 	Stage       string
 	Interactive bool
+	Env         map[string]string // extra environment variables to export in tmux
 }
 
 // SessionInfo represents a session in the list output.
@@ -111,6 +113,21 @@ func (m *Manager) Create(opts CreateOpts) error {
 	// Unset CLAUDECODE to allow nested Claude Code sessions in tmux
 	if err := m.tmux.SendKeys(opts.Name, "unset CLAUDECODE"); err != nil {
 		return fmt.Errorf("unset CLAUDECODE: %w", err)
+	}
+
+	// Export environment variables in sorted order
+	if len(opts.Env) > 0 {
+		keys := make([]string, 0, len(opts.Env))
+		for k := range opts.Env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			cmd := fmt.Sprintf("export %s=%s", k, shellQuote(opts.Env[k]))
+			if err := m.tmux.SendKeys(opts.Name, cmd); err != nil {
+				return fmt.Errorf("export %s: %w", k, err)
+			}
+		}
 	}
 
 	// Launch Claude in interactive mode.

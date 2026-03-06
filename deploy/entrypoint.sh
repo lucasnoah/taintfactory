@@ -77,6 +77,12 @@ if [ -n "${FACTORY_REPOS:-}" ]; then
   done
 fi
 
+# Provision databases for repos with database config
+if [ -n "${DATABASE_URL:-}" ]; then
+  echo "Provisioning databases for registered repos..."
+  factory repo provision-db || echo "warning: database provisioning had errors (non-fatal)"
+fi
+
 # Build serve command
 SERVE_ARGS="--port ${FACTORY_SERVE_PORT:-17432}"
 
