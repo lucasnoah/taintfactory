@@ -862,6 +862,14 @@ func (o *Orchestrator) checkInPipeline(ps *pipeline.PipelineState) CheckInAction
 	if ps.CurrentSession != "" {
 		si, err := o.sessions.Status(ps.CurrentSession)
 		if err == nil {
+			// If tmux session is dead, the DB state is stale — treat as orphaned.
+			if !si.TmuxAlive {
+				o.logf("pipeline #%d: tmux session %q dead (DB state %q), clearing", ps.Issue, ps.CurrentSession, si.State)
+				_ = o.store.Update(ps.Issue, func(ps *pipeline.PipelineState) {
+					ps.CurrentSession = ""
+				})
+				return o.handleAdvance(ps)
+			}
 			switch si.State {
 			case "started", "active":
 				return o.handleActiveSession(ps)
@@ -923,13 +931,26 @@ func (o *Orchestrator) handleActiveSession(ps *pipeline.PipelineState) CheckInAc
 		}
 	}
 
-	startTime, err := time.Parse("2006-01-02 15:04:05", startedAt)
-	if err != nil {
+	// PostgreSQL TIMESTAMPTZ can be returned in various formats depending on driver.
+	var startTime time.Time
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05Z",
+		"2006-01-02 15:04:05-07",
+		"2006-01-02 15:04:05",
+	} {
+		if t, parseErr := time.Parse(layout, startedAt); parseErr == nil {
+			startTime = t
+			break
+		}
+	}
+	if startTime.IsZero() {
 		return CheckInAction{
 			Issue:   ps.Issue,
 			Action:  "skip",
 			Stage:   ps.CurrentStage,
-			Message: "active session, cannot parse start timestamp",
+			Message: fmt.Sprintf("active session, cannot parse start timestamp %q", startedAt),
 		}
 	}
 
