@@ -867,3 +867,17 @@ func (d *DB) RepoGetPollable() ([]RepoRecord, error) {
 	}
 	return repos, rows.Err()
 }
+
+// RepoGetByNamespace looks up a single repo by namespace.
+func (d *DB) RepoGetByNamespace(namespace string) (*RepoRecord, error) {
+	var r RepoRecord
+	err := d.conn.QueryRow(
+		`SELECT id, namespace, repo_url, local_path, config_path,
+		        COALESCE(poll_label, ''), poll_interval, active, added_at
+		 FROM repos WHERE namespace = $1`, namespace,
+	).Scan(&r.ID, &r.Namespace, &r.RepoURL, &r.LocalPath, &r.ConfigPath, &r.PollLabel, &r.PollInterval, &r.Active, &r.AddedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get repo %s: %w", namespace, err)
+	}
+	return &r, nil
+}

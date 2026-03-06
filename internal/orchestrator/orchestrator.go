@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -231,7 +232,7 @@ func (o *Orchestrator) Create(opts CreateOpts) (*pipeline.PipelineState, error) 
 
 	// Cache issue JSON to disk (directory now exists from store.Create)
 	pipelineDir := fmt.Sprintf("%s/%d", o.store.BaseDir(), opts.Issue)
-	_, _ = o.gh.CacheIssue(opts.Issue, pipelineDir)
+	_, _ = gh.CacheIssue(opts.Issue, pipelineDir)
 
 	_ = o.db.LogPipelineEvent(namespace, opts.Issue, "created", firstStage, 1, "")
 	return ps, nil
@@ -1032,33 +1033,36 @@ func (o *Orchestrator) processQueue() *CheckInAction {
 	}
 	o.logf("queue: processing issue #%d", item.Issue)
 
-	// Try to derive feature intent from GitHub metadata via LLM if not explicitly set
-	if item.FeatureIntent == "" && o.claudeFn != nil {
-		o.logf("queue: deriving feature intent for #%d via LLM...", item.Issue)
-		issue, err := o.gh.GetIssue(item.Issue)
-		if err != nil {
-			return &CheckInAction{
-				Issue:   item.Issue,
-				Action:  "skip",
-				Message: fmt.Sprintf("queue: failed to fetch issue #%d for intent derivation: %v", item.Issue, err),
-			}
-		}
-		derived, err := github.DeriveFeatureIntent(issue, o.claudeFn)
-		if err != nil {
-			return &CheckInAction{
-				Issue:   item.Issue,
-				Action:  "skip",
-				Message: fmt.Sprintf("queue: intent derivation failed for #%d: %v", item.Issue, err),
-			}
-		}
-		if derived != "" {
-			item.FeatureIntent = derived
-			_ = o.db.QueueSetIntent(item.Namespace, item.Issue, derived)
+	// Ensure the repo is cloned locally if registered in the DB.
+	if item.Namespace != "" {
+		if err := o.ensureRepoCloned(item.Namespace); err != nil {
+			o.logf("queue: repo clone for %s: %v", item.Namespace, err)
 		}
 	}
 
-	// Proceed even without a feature intent — it's useful metadata but not
-	// required to run a pipeline. Blocking here causes an infinite retry loop.
+	// Scope the gh client to the correct repo for this queue item.
+	gh := o.gh
+	if item.Namespace != "" {
+		gh = o.gh.WithRepo(item.Namespace)
+	}
+
+	// Try to derive feature intent from GitHub metadata via LLM if not explicitly set.
+	if item.FeatureIntent == "" && o.claudeFn != nil {
+		o.logf("queue: deriving feature intent for #%d via LLM...", item.Issue)
+		issue, err := gh.GetIssue(item.Issue)
+		if err != nil {
+			o.logf("queue: failed to fetch issue #%d for intent: %v", item.Issue, err)
+		} else {
+			derived, err := github.DeriveFeatureIntent(issue, o.claudeFn)
+			if err != nil {
+				o.logf("queue: intent derivation failed for #%d: %v", item.Issue, err)
+			} else if derived != "" {
+				item.FeatureIntent = derived
+				_ = o.db.QueueSetIntent(item.Namespace, item.Issue, derived)
+			}
+		}
+	}
+
 	if item.FeatureIntent == "" {
 		o.logf("queue: no feature intent for #%d, proceeding anyway", item.Issue)
 	}
@@ -1391,6 +1395,28 @@ func formatCheckStateSummary(state map[string]string) string {
 	return result
 }
 
+// ensureRepoCloned checks if a registered repo is cloned locally and clones it if not.
+func (o *Orchestrator) ensureRepoCloned(namespace string) error {
+	repo, err := o.db.RepoGetByNamespace(namespace)
+	if err != nil {
+		return fmt.Errorf("lookup repo %s: %w", namespace, err)
+	}
+
+	// Check if the repo is already cloned
+	gitDir := filepath.Join(repo.LocalPath, ".git")
+	if _, err := os.Stat(gitDir); err == nil {
+		return nil // already cloned
+	}
+
+	o.logf("cloning %s → %s", repo.RepoURL, repo.LocalPath)
+	cmd := exec.Command("git", "clone", repo.RepoURL, repo.LocalPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git clone %s: %s: %w", repo.RepoURL, strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
 // pollLabeledIssues checks registered repos for new issues with their configured
 // poll_label and enqueues them. Returns the number of issues enqueued.
 func (o *Orchestrator) pollLabeledIssues() (int, error) {
@@ -1442,22 +1468,10 @@ func (o *Orchestrator) pollLabeledIssues() (int, error) {
 		}
 
 		for _, iss := range newIssues {
-			// Derive feature intent via LLM.
-			intent := ""
-			if o.claudeFn != nil {
-				full := &github.Issue{Number: iss.Number, Title: iss.Title, Body: iss.Body}
-				if derived, err := github.DeriveFeatureIntent(full, o.claudeFn); err != nil {
-					o.logf("derive intent for #%d: %v", iss.Number, err)
-				} else {
-					intent = derived
-				}
-			}
-
 			if err := o.db.QueueAdd([]db.QueueAddItem{{
-				Namespace:     repo.Namespace,
-				Issue:         iss.Number,
-				FeatureIntent: intent,
-				ConfigPath:    repo.ConfigPath,
+				Namespace:  repo.Namespace,
+				Issue:      iss.Number,
+				ConfigPath: repo.ConfigPath,
 			}}); err != nil {
 				o.logf("enqueue #%d: %v", iss.Number, err)
 				continue
