@@ -19,6 +19,8 @@ fi
   [ -n "${GITHUB_TOKEN:-}" ] && echo "export GITHUB_TOKEN='${GITHUB_TOKEN}'"
   [ -n "${DOCKER_HOST:-}" ] && echo "export DOCKER_HOST='${DOCKER_HOST}'"
   [ -n "${DATABASE_URL:-}" ] && echo "export DATABASE_URL='${DATABASE_URL}'"
+  echo "export PATH='${PATH}'"
+  echo "export GOPATH='${GOPATH:-/go}'"
 } > "$HOME/.bashrc"
 
 # Configure Docker registry auth if credentials are mounted
