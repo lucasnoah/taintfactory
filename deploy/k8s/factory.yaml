@@ -29,10 +29,18 @@ spec:
       initContainers:
         - name: fix-perms
           image: busybox:1.36
-          command: ["sh", "-c", "chown -R 1000:1000 /data"]
+          command:
+            - sh
+            - -c
+            - |
+              chown -R 1000:1000 /data
+              cp /config/config.yaml /data/config.yaml
+              chown 1000:1000 /data/config.yaml
           volumeMounts:
             - name: factory-data
               mountPath: /data
+            - name: pipeline-config
+              mountPath: /config
       containers:
         - name: factory
           image: registry.digitalocean.com/personalcluster/taintfactory:latest
@@ -56,6 +64,10 @@ spec:
                 secretKeyRef:
                   name: factory-secrets
                   key: GITHUB_TOKEN
+            - name: FACTORY_PRIMARY_REPO
+              value: "git@github.com:mbrucker/deathcookies.git"
+            - name: FACTORY_WITH_ORCHESTRATOR
+              value: "true"
             - name: DOCKER_HOST
               value: tcp://localhost:2375
             - name: FACTORY_REPOS
@@ -92,6 +104,9 @@ spec:
       volumes:
         - name: docker-storage
           emptyDir: {}
+        - name: pipeline-config
+          configMap:
+            name: factory-pipeline-config
   volumeClaimTemplates:
     - metadata:
         name: factory-data

@@ -40,6 +40,9 @@ func LoadFromBytes(data []byte) (*PipelineConfig, error) {
 func LoadDefault() (*PipelineConfig, error) {
 	candidates := []string{"pipeline.yaml"}
 
+	// Check FACTORY_DATA_DIR (persists across container restarts)
+	candidates = append(candidates, filepath.Join(DataDir(), "config.yaml"))
+
 	home, err := os.UserHomeDir()
 	if err == nil {
 		candidates = append(candidates, filepath.Join(home, ".factory", "config.yaml"))

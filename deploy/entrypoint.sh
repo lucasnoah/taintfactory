@@ -1,17 +1,42 @@
 #!/bin/bash
 set -euo pipefail
 
-# Ensure data directories exist
-mkdir -p "${FACTORY_DATA_DIR:-/data}/pipelines"
-mkdir -p "${FACTORY_DATA_DIR:-/data}/triage"
+DATA_DIR="${FACTORY_DATA_DIR:-/data}"
 
-# Clone repos if not already present (configured via FACTORY_REPOS env var)
-# Format: comma-separated list of git URLs
+# Configure git credentials if GITHUB_TOKEN is set
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GITHUB_TOKEN}"; }; f'
+  git config --global user.email "factory@taintfactory"
+  git config --global user.name "TaintFactory"
+fi
+
+# Ensure data directories exist
+mkdir -p "$DATA_DIR/pipelines"
+mkdir -p "$DATA_DIR/triage"
+mkdir -p "$DATA_DIR/repos"
+
+# Clone/update the primary repo (required for orchestrator)
+if [ -n "${FACTORY_PRIMARY_REPO:-}" ]; then
+  REPO_NAME=$(basename "$FACTORY_PRIMARY_REPO" .git)
+  REPO_DIR="$DATA_DIR/repos/$REPO_NAME"
+  if [ ! -d "$REPO_DIR/.git" ]; then
+    echo "Cloning primary repo $FACTORY_PRIMARY_REPO → $REPO_DIR"
+    git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${FACTORY_PRIMARY_REPO#*github.com/}" "$REPO_DIR" 2>&1 || \
+    git clone "$FACTORY_PRIMARY_REPO" "$REPO_DIR" 2>&1
+  else
+    echo "Primary repo already cloned, pulling latest"
+    git -C "$REPO_DIR" pull --ff-only || true
+  fi
+  cd "$REPO_DIR"
+  echo "Working directory: $(pwd)"
+fi
+
+# Clone additional repos
 if [ -n "${FACTORY_REPOS:-}" ]; then
   IFS=',' read -ra REPOS <<< "$FACTORY_REPOS"
   for repo in "${REPOS[@]}"; do
     repo_name=$(basename "$repo" .git)
-    repo_dir="${FACTORY_DATA_DIR:-/data}/repos/${repo_name}"
+    repo_dir="$DATA_DIR/repos/${repo_name}"
     if [ ! -d "$repo_dir/.git" ]; then
       echo "Cloning $repo → $repo_dir"
       git clone "$repo" "$repo_dir"
@@ -26,7 +51,7 @@ fi
 SERVE_ARGS="--port ${FACTORY_SERVE_PORT:-17432}"
 
 if [ "${FACTORY_WITH_ORCHESTRATOR:-false}" = "true" ]; then
-  SERVE_ARGS="$SERVE_ARGS --with-orchestrator --orchestrator-interval ${ORCHESTRATOR_INTERVAL:-120}"
+  SERVE_ARGS="$SERVE_ARGS --with-orchestrator --orchestrator-interval ${ORCHESTRATOR_INTERVAL:-10}"
 fi
 
 # Start factory

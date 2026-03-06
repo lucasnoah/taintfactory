@@ -8,11 +8,11 @@ COPY . .
 RUN go build -ldflags "-X main.Version=$(git describe --tags --always --dirty 2>/dev/null || echo docker)" \
     -o /factory ./cmd/factory/
 
-# Runtime stage
-FROM debian:bookworm-slim
+# Runtime stage — needs Go + Node for pipeline check commands
+FROM golang:1.25-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    tmux git curl ca-certificates gnupg docker.io \
+    tmux git curl ca-certificates gnupg docker.io make \
     && rm -rf /var/lib/apt/lists/*
 
 # Install gh CLI
@@ -22,7 +22,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update && apt-get install -y gh && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js (for claude CLI)
+# Install Node.js (for claude CLI and frontend projects)
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
 
