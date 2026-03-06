@@ -3,8 +3,6 @@ package stage
 import (
 	"fmt"
 	"io"
-	"net/url"
-	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -658,7 +656,7 @@ func buildEnvMap(cfg *config.PipelineConfig) map[string]string {
 		env[k] = v
 	}
 	if cfg.Pipeline.Database != nil {
-		env["DATABASE_URL"] = cfg.Pipeline.Database.URLForHost(dbHost())
+		env["DATABASE_URL"] = cfg.Pipeline.Database.URLForHost(config.DBHost())
 	}
 	if len(env) == 0 {
 		return nil
@@ -666,17 +664,6 @@ func buildEnvMap(cfg *config.PipelineConfig) map[string]string {
 	return env
 }
 
-// dbHost extracts the host:port from the factory's DATABASE_URL env var.
-// Falls back to localhost:5432 if the env var is unset or unparseable.
-func dbHost() string {
-	raw := os.Getenv("DATABASE_URL")
-	if raw != "" {
-		if u, err := url.Parse(raw); err == nil && u.Host != "" {
-			return u.Host
-		}
-	}
-	return "localhost:5432"
-}
 
 // formatGateFailures formats gate failures into a deterministic readable string.
 func formatGateFailures(gate *checks.GateResult) string {

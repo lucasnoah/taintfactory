@@ -1129,7 +1129,7 @@ func (o *Orchestrator) setupEnv(cfg *config.PipelineConfig) []string {
 		extra[k] = v
 	}
 	if cfg.Pipeline.Database != nil {
-		extra["DATABASE_URL"] = cfg.Pipeline.Database.URL()
+		extra["DATABASE_URL"] = cfg.Pipeline.Database.URLForHost(config.DBHost())
 	}
 	// Append extra vars (sorted for determinism)
 	keys := make([]string, 0, len(extra))

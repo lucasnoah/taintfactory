@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"os"
 )
 
 // PipelineConfig is the top-level configuration structure parsed from pipeline YAML.
@@ -28,6 +29,18 @@ func (d *DatabaseConfig) URLForHost(host string) string {
 // URL returns a PostgreSQL connection string defaulting to localhost:5432.
 func (d *DatabaseConfig) URL() string {
 	return d.URLForHost("localhost:5432")
+}
+
+// DBHost extracts the host:port from the factory's DATABASE_URL env var.
+// Falls back to localhost:5432 if the env var is unset or unparseable.
+func DBHost() string {
+	raw := os.Getenv("DATABASE_URL")
+	if raw != "" {
+		if u, err := url.Parse(raw); err == nil && u.Host != "" {
+			return u.Host
+		}
+	}
+	return "localhost:5432"
 }
 
 // Pipeline defines the full pipeline: metadata, defaults, checks, and stages.
