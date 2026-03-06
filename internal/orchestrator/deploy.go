@@ -53,10 +53,24 @@ func (o *Orchestrator) advanceDeploy(ds *pipeline.DeployState) *DeployCheckInAct
 		si, err := o.sessions.Status(ds.CurrentSession)
 		if err == nil {
 			if !si.TmuxAlive {
-				o.logf("deploy %s: session %q dead, clearing", sha7, ds.CurrentSession)
+				// Session is dead — try to read output to determine outcome
+				outcome := o.determineDeployOutcome(ds, sha7)
+				o.logf("deploy %s: session %q dead, outcome=%s", sha7, ds.CurrentSession, outcome)
 				_ = o.deployStore.Update(sha, func(ds *pipeline.DeployState) {
 					ds.CurrentSession = ""
+					if outcome == "retry" {
+						ds.Status = "pending"
+					}
 				})
+				if outcome == "retry" {
+					return &DeployCheckInAction{
+						CommitSHA: sha,
+						Action:    "retry",
+						Stage:     ds.CurrentStage,
+						Message:   "session died, retrying stage",
+					}
+				}
+				// outcome is "success" or "fail" — fall through to advance/fail logic
 			} else {
 				switch si.State {
 				case "started", "active", "steer", "factory_send":
@@ -67,11 +81,23 @@ func (o *Orchestrator) advanceDeploy(ds *pipeline.DeployState) *DeployCheckInAct
 						Message:   "session active",
 					}
 				case "idle":
-					// Session finished — clear it and advance
-					o.logf("deploy %s: session %q idle, advancing", sha7, ds.CurrentSession)
+					// Session finished — check output for success/failure
+					outcome := o.determineDeployOutcome(ds, sha7)
+					o.logf("deploy %s: session %q idle, outcome=%s", sha7, ds.CurrentSession, outcome)
 					_ = o.deployStore.Update(sha, func(ds *pipeline.DeployState) {
 						ds.CurrentSession = ""
 					})
+					if outcome == "fail" {
+						ds, _ = o.deployStore.Get(sha)
+						cfg, cfgErr := o.deployConfig(ds)
+						if cfgErr != nil {
+							return &DeployCheckInAction{CommitSHA: sha, Action: "error", Message: cfgErr.Error()}
+						}
+						stageCfg := findDeployStage(ds.CurrentStage, cfg)
+						if stageCfg != nil {
+							return o.handleDeployFailure(ds, stageCfg, cfg)
+						}
+					}
 				case "exited":
 					o.logf("deploy %s: session %q exited", sha7, ds.CurrentSession)
 					_ = o.deployStore.Update(sha, func(ds *pipeline.DeployState) {
@@ -80,10 +106,18 @@ func (o *Orchestrator) advanceDeploy(ds *pipeline.DeployState) *DeployCheckInAct
 				}
 			}
 		} else {
-			// Session lookup failed — clear stale reference
+			// Session lookup failed (no tmux server) — retry the stage
+			o.logf("deploy %s: session lookup failed for %q: %v — retrying stage", sha7, ds.CurrentSession, err)
 			_ = o.deployStore.Update(sha, func(ds *pipeline.DeployState) {
 				ds.CurrentSession = ""
+				ds.Status = "pending"
 			})
+			return &DeployCheckInAction{
+				CommitSHA: sha,
+				Action:    "retry",
+				Stage:     ds.CurrentStage,
+				Message:   "session lookup failed, retrying stage",
+			}
 		}
 	}
 
@@ -336,6 +370,57 @@ func (o *Orchestrator) handleDeployFailure(ds *pipeline.DeployState, stageCfg *c
 // isRollbackStage checks if a stage is a rollback-type stage.
 func isRollbackStage(stageID string) bool {
 	return stageID == "rollback" || strings.Contains(stageID, "rollback")
+}
+
+// determineDeployOutcome reads the session output to decide if the stage succeeded or failed.
+// Returns "success", "fail", or "retry" (when outcome can't be determined).
+func (o *Orchestrator) determineDeployOutcome(ds *pipeline.DeployState, sha7 string) string {
+	output, err := o.sessions.Peek(ds.CurrentSession, 200)
+	if err != nil || output == "" {
+		// Can't read output (tmux server gone, etc.) — retry the stage
+		o.logf("deploy %s: cannot read session output, will retry", sha7)
+		return "retry"
+	}
+
+	lower := strings.ToLower(output)
+
+	// Check for clear failure signals
+	failSignals := []string{
+		"error:", "failed", "permission denied", "access denied",
+		"deployment stopped", "step failed", "fatal:",
+	}
+	for _, sig := range failSignals {
+		if strings.Contains(lower, sig) {
+			// Verify it's not just a log line that mentions error in passing
+			// by checking for success signals too
+			if strings.Contains(lower, "all steps completed") ||
+				strings.Contains(lower, "deployment is verified") {
+				return "success"
+			}
+			return "fail"
+		}
+	}
+
+	// Check for clear success signals
+	successSignals := []string{
+		"all steps completed", "deployment is verified", "deploy complete",
+		"successfully deployed", "verification passed",
+	}
+	for _, sig := range successSignals {
+		if strings.Contains(lower, sig) {
+			return "success"
+		}
+	}
+
+	// Ambiguous — check if the agent appears to have finished (idle spinner present)
+	// If we can't determine, retry is safest
+	if strings.Contains(output, "Brewed for") || strings.Contains(output, "Razzmatazzing") {
+		// Agent finished processing but no clear signal — treat as success
+		// (the agent would have reported errors explicitly)
+		return "success"
+	}
+
+	return "retry"
 }
 
 // runDeployStage creates a session, renders the prompt, and sends it.

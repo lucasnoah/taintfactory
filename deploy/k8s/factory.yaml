@@ -123,7 +123,7 @@ spec:
             name: factory-pipeline-config
         - name: registry-creds
           secret:
-            secretName: registry-personalcluster
+            secretName: personalcluster
   volumeClaimTemplates:
     - metadata:
         name: factory-data
