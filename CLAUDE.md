@@ -31,3 +31,13 @@ Commit ADR files alongside the code they relate to, not in separate commits.
 
 Do NOT create ADRs for: clarifying questions, simple confirmations, exploration,
 or process meta-questions.
+
+## Go Boundary File Convention
+
+Every Go package under `internal/` has a **boundary file** named `<package>.go` (e.g., `checks/checks.go`). This is the package's public API surface.
+
+- **Boundary file contains:** package doc comment, all exported type definitions (structs, interfaces, type aliases, constants, exported vars/errors), and constructor functions (`New*`).
+- **Boundary file does NOT contain:** method implementations, unexported types, or business logic.
+- **Naming rule:** the boundary file matches the package directory name — `session/session.go`, `pipeline/pipeline.go`, etc.
+- **Sub-packages** get their own boundary file.
+- **New packages** MUST create their boundary file before any implementation files.
