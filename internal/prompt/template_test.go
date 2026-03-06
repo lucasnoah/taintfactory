@@ -284,7 +284,7 @@ func TestInstallBuiltinTemplates(t *testing.T) {
 }
 
 func TestBuiltinTemplateNames(t *testing.T) {
-	expected := []string{"implement.md", "review.md", "qa.md", "fix-checks.md", "merge.md"}
+	expected := []string{"implement.md", "review.md", "qa.md", "fix-checks.md", "merge.md", "plan-review.md"}
 	for _, name := range expected {
 		if _, ok := builtinTemplates[name]; !ok {
 			t.Errorf("missing built-in template: %q", name)
