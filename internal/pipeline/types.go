@@ -56,6 +56,33 @@ type Finding struct {
 	Rule     string `json:"rule,omitempty"`
 }
 
+// DeployState is the persisted state for a deploy pipeline.
+type DeployState struct {
+	CommitSHA      string              `json:"commit_sha"`
+	Namespace      string              `json:"namespace,omitempty"`
+	CurrentStage   string              `json:"current_stage"`
+	CurrentAttempt int                 `json:"current_attempt"`
+	CurrentSession string              `json:"current_session"`
+	StageHistory   []StageHistoryEntry `json:"stage_history"`
+	FailureVisited []string            `json:"failure_visited,omitempty"`
+	Status         string              `json:"status"` // pending, in_progress, completed, failed, rolled_back
+	PreviousSHA    string              `json:"previous_sha"`
+	CreatedAt      string              `json:"created_at"`
+	UpdatedAt      string              `json:"updated_at"`
+	ConfigPath     string              `json:"config_path,omitempty"`
+	RepoDir        string              `json:"repo_dir,omitempty"`
+}
+
+// DeployCreateOpts holds options for creating a new deploy.
+type DeployCreateOpts struct {
+	CommitSHA   string
+	Namespace   string
+	FirstStage  string
+	PreviousSHA string
+	ConfigPath  string
+	RepoDir     string
+}
+
 // StageSummary is the final summary of a stage attempt including fix-loop stats.
 type StageSummary struct {
 	Stage           string            `json:"stage"`

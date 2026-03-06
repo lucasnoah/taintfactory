@@ -81,4 +81,17 @@ func applyDefaults(cfg *PipelineConfig) {
 			s.ChecksAfter = p.DefaultChecks
 		}
 	}
+
+	// Apply defaults to deploy stages
+	if cfg.Deploy != nil {
+		for i := range cfg.Deploy.Stages {
+			s := &cfg.Deploy.Stages[i]
+			if s.Model == "" && p.Defaults.Model != "" {
+				s.Model = p.Defaults.Model
+			}
+			if s.Flags == "" && p.Defaults.Flags != "" {
+				s.Flags = p.Defaults.Flags
+			}
+		}
+	}
 }

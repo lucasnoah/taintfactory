@@ -127,6 +127,32 @@ CREATE TABLE IF NOT EXISTS repos (
     added_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_repos_active ON repos(active);
+
+CREATE TABLE IF NOT EXISTS deploys (
+    id             SERIAL PRIMARY KEY,
+    namespace      TEXT NOT NULL DEFAULT '',
+    commit_sha     TEXT NOT NULL UNIQUE,
+    status         TEXT NOT NULL DEFAULT 'pending'
+                   CHECK(status IN ('pending','in_progress','completed','failed','rolled_back')),
+    previous_sha   TEXT NOT NULL DEFAULT '',
+    current_stage  TEXT NOT NULL DEFAULT '',
+    stage_history  JSONB NOT NULL DEFAULT '[]',
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_deploys_status ON deploys(status);
+
+CREATE TABLE IF NOT EXISTS deploy_events (
+    id          SERIAL PRIMARY KEY,
+    commit_sha  TEXT NOT NULL,
+    namespace   TEXT NOT NULL DEFAULT '',
+    event       TEXT NOT NULL,
+    stage       TEXT,
+    attempt     INTEGER,
+    detail      TEXT,
+    timestamp   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_deploy_events_sha ON deploy_events(commit_sha, timestamp DESC);
 `
 
 // Migrate applies the database schema.
@@ -142,7 +168,7 @@ func (d *DB) Migrate() error {
 
 // Reset drops all tables and re-applies the schema.
 func (d *DB) Reset() error {
-	tables := []string{"issue_queue", "pipeline_events", "check_runs", "session_events", "schema_version"}
+	tables := []string{"deploy_events", "deploys", "issue_queue", "pipeline_events", "check_runs", "session_events", "repos", "schema_version"}
 	for _, t := range tables {
 		if _, err := d.conn.Exec("DROP TABLE IF EXISTS " + t + " CASCADE"); err != nil {
 			return fmt.Errorf("drop table %s: %w", t, err)

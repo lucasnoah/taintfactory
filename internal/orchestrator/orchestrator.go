@@ -40,6 +40,7 @@ type Orchestrator struct {
 	progress     io.Writer       // live progress output; nil = silent
 	triageRunner *triage.Runner  // optional; nil if no triage.yaml
 	ghForRepo    func(repoURL string) labelPoller // factory for repo-scoped GitHub clients
+	deployStore  *pipeline.DeployStore            // deploy pipeline state store
 	pollTick     int
 	pollInterval int // in number of check-ins; 0 = disabled
 }
@@ -87,6 +88,11 @@ func (o *Orchestrator) SetClaudeFn(fn github.LLMFunc) {
 // SetProgress sets a writer for live progress output (e.g. os.Stderr).
 func (o *Orchestrator) SetProgress(w io.Writer) {
 	o.progress = w
+}
+
+// SetDeployStore configures the deploy pipeline store.
+func (o *Orchestrator) SetDeployStore(ds *pipeline.DeployStore) {
+	o.deployStore = ds
 }
 
 // SetTriageRunner configures an optional triage runner to advance alongside dev pipelines.
@@ -795,6 +801,15 @@ func (o *Orchestrator) CheckIn() (*CheckInResult, error) {
 		if action := o.processQueue(); action != nil {
 			result.Actions = append(result.Actions, *action)
 		}
+	}
+
+	// Advance deploy pipelines (if configured)
+	if action := o.checkInDeploy(); action != nil {
+		result.Actions = append(result.Actions, CheckInAction{
+			Action:  "deploy:" + action.Action,
+			Stage:   action.Stage,
+			Message: action.Message,
+		})
 	}
 
 	// Advance triage pipelines (if configured)

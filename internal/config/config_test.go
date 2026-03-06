@@ -831,3 +831,181 @@ func TestStageFields(t *testing.T) {
 		t.Errorf("ExtraChecks = %v", implement.ExtraChecks)
 	}
 }
+
+func TestLoadWithDeploySection(t *testing.T) {
+	data := []byte(`
+pipeline:
+  name: test-app
+  repo: owner/repo
+  stages:
+    - id: implement
+      type: agent
+
+deploy:
+  name: test-deploy
+  stages:
+    - id: deploy
+      type: agent
+      prompt_template: "templates/deploy.md"
+      timeout: "10m"
+      on_fail: rollback
+    - id: smoke-test
+      type: agent
+      prompt_template: "templates/smoke.md"
+      timeout: "5m"
+    - id: rollback
+      type: agent
+      prompt_template: "templates/rollback.md"
+      timeout: "5m"
+`)
+	cfg, err := LoadFromBytes(data)
+	if err != nil {
+		t.Fatalf("LoadFromBytes: %v", err)
+	}
+	if cfg.Deploy == nil {
+		t.Fatal("Deploy section should not be nil")
+	}
+	if cfg.Deploy.Name != "test-deploy" {
+		t.Errorf("Deploy.Name = %q, want %q", cfg.Deploy.Name, "test-deploy")
+	}
+	if len(cfg.Deploy.Stages) != 3 {
+		t.Fatalf("Deploy.Stages has %d entries, want 3", len(cfg.Deploy.Stages))
+	}
+	if cfg.Deploy.Stages[0].ID != "deploy" {
+		t.Errorf("first deploy stage ID = %q, want %q", cfg.Deploy.Stages[0].ID, "deploy")
+	}
+	if cfg.Deploy.Stages[0].OnFail != "rollback" {
+		t.Errorf("first deploy stage OnFail = %v, want %q", cfg.Deploy.Stages[0].OnFail, "rollback")
+	}
+}
+
+func TestLoadWithoutDeploySection(t *testing.T) {
+	data := []byte(`
+pipeline:
+  name: test-app
+  repo: owner/repo
+  stages:
+    - id: implement
+      type: agent
+`)
+	cfg, err := LoadFromBytes(data)
+	if err != nil {
+		t.Fatalf("LoadFromBytes: %v", err)
+	}
+	if cfg.Deploy != nil {
+		t.Error("Deploy should be nil when not present in YAML")
+	}
+}
+
+func TestDeployStagesInheritDefaults(t *testing.T) {
+	data := []byte(`
+pipeline:
+  name: test-app
+  repo: owner/repo
+  defaults:
+    model: sonnet
+    flags: "--verbose"
+  stages:
+    - id: implement
+      type: agent
+
+deploy:
+  name: test-deploy
+  stages:
+    - id: deploy
+      type: agent
+    - id: smoke-test
+      type: agent
+      model: opus
+`)
+	cfg, err := LoadFromBytes(data)
+	if err != nil {
+		t.Fatalf("LoadFromBytes: %v", err)
+	}
+	if cfg.Deploy == nil {
+		t.Fatal("Deploy section should not be nil")
+	}
+	// deploy stage should inherit defaults
+	if cfg.Deploy.Stages[0].Model != "sonnet" {
+		t.Errorf("deploy stage Model = %q, want %q", cfg.Deploy.Stages[0].Model, "sonnet")
+	}
+	if cfg.Deploy.Stages[0].Flags != "--verbose" {
+		t.Errorf("deploy stage Flags = %q, want %q", cfg.Deploy.Stages[0].Flags, "--verbose")
+	}
+	// smoke-test has explicit model, should NOT be overridden
+	if cfg.Deploy.Stages[1].Model != "opus" {
+		t.Errorf("smoke-test stage Model = %q, want %q", cfg.Deploy.Stages[1].Model, "opus")
+	}
+	// smoke-test should still inherit flags
+	if cfg.Deploy.Stages[1].Flags != "--verbose" {
+		t.Errorf("smoke-test stage Flags = %q, want %q", cfg.Deploy.Stages[1].Flags, "--verbose")
+	}
+}
+
+func TestValidateDeployDuplicateStageIDs(t *testing.T) {
+	cfg := &PipelineConfig{
+		Pipeline: Pipeline{Name: "test", Repo: "github.com/x/y", Stages: []Stage{{ID: "impl"}}},
+		Deploy: &DeployPipeline{
+			Stages: []Stage{
+				{ID: "deploy"},
+				{ID: "deploy"}, // duplicate
+			},
+		},
+	}
+	errs := Validate(cfg)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Message, "duplicate deploy stage ID") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected duplicate deploy stage ID error, got: %v", errs)
+	}
+}
+
+func TestValidateDeployInvalidOnFailTarget(t *testing.T) {
+	cfg := &PipelineConfig{
+		Pipeline: Pipeline{Name: "test", Repo: "github.com/x/y", Stages: []Stage{{ID: "impl"}}},
+		Deploy: &DeployPipeline{
+			Stages: []Stage{
+				{ID: "deploy", OnFail: "nonexistent"},
+				{ID: "rollback"},
+			},
+		},
+	}
+	errs := Validate(cfg)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e.Message, "references undefined deploy stage") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected invalid on_fail target error, got: %v", errs)
+	}
+}
+
+func TestValidateDeployValidConfig(t *testing.T) {
+	cfg := &PipelineConfig{
+		Pipeline: Pipeline{Name: "test", Repo: "github.com/x/y", Stages: []Stage{{ID: "impl"}}},
+		Deploy: &DeployPipeline{
+			Stages: []Stage{
+				{ID: "deploy", OnFail: "rollback"},
+				{ID: "smoke-test"},
+				{ID: "rollback"},
+			},
+		},
+	}
+	errs := Validate(cfg)
+	// Filter only deploy-related errors
+	var deployErrs []ValidationError
+	for _, e := range errs {
+		if strings.HasPrefix(e.Field, "deploy.") {
+			deployErrs = append(deployErrs, e)
+		}
+	}
+	if len(deployErrs) != 0 {
+		t.Errorf("expected no deploy validation errors, got: %v", deployErrs)
+	}
+}

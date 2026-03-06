@@ -170,6 +170,11 @@ func Validate(cfg *PipelineConfig) []ValidationError {
 		}
 	}
 
+	// Validate deploy section (if present)
+	if cfg.Deploy != nil {
+		errs = append(errs, validateDeployStages(cfg.Deploy)...)
+	}
+
 	// Validate env key names
 	for key := range p.Env {
 		if !identifierRe.MatchString(key) {
@@ -181,6 +186,75 @@ func Validate(cfg *PipelineConfig) []ValidationError {
 	}
 
 	return errs
+}
+
+// validateDeployStages checks deploy-specific stage configuration.
+func validateDeployStages(deploy *DeployPipeline) []ValidationError {
+	var errs []ValidationError
+
+	if len(deploy.Stages) == 0 {
+		errs = append(errs, ValidationError{
+			Field:   "deploy.stages",
+			Message: "at least one deploy stage is required",
+		})
+		return errs
+	}
+
+	// Unique stage IDs within deploy section
+	deployStageIDs := make(map[string]bool)
+	for i, s := range deploy.Stages {
+		if s.ID == "" {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("deploy.stages[%d].id", i),
+				Message: "is required",
+			})
+			continue
+		}
+		if deployStageIDs[s.ID] {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("deploy.stages[%d].id", i),
+				Message: fmt.Sprintf("duplicate deploy stage ID %q", s.ID),
+			})
+		}
+		deployStageIDs[s.ID] = true
+	}
+
+	// Validate on_fail targets reference existing deploy stage IDs
+	for i, s := range deploy.Stages {
+		validateDeployOnFail(s, i, deployStageIDs, &errs)
+	}
+
+	return errs
+}
+
+// validateDeployOnFail checks on_fail targets in deploy stages.
+func validateDeployOnFail(s Stage, index int, stageIDs map[string]bool, errs *[]ValidationError) {
+	prefix := fmt.Sprintf("deploy.stages[%d].on_fail", index)
+
+	switch v := s.OnFail.(type) {
+	case nil:
+		// No on_fail specified
+	case string:
+		if v != "" && !stageIDs[v] {
+			*errs = append(*errs, ValidationError{
+				Field:   prefix,
+				Message: fmt.Sprintf("references undefined deploy stage %q", v),
+			})
+		}
+	case map[string]interface{}:
+		for key, val := range v {
+			target, ok := val.(string)
+			if !ok {
+				continue
+			}
+			if !stageIDs[target] {
+				*errs = append(*errs, ValidationError{
+					Field:   fmt.Sprintf("%s.%s", prefix, key),
+					Message: fmt.Sprintf("references undefined deploy stage %q", target),
+				})
+			}
+		}
+	}
 }
 
 // validateOnFail checks that on_fail values reference existing stage IDs.

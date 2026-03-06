@@ -155,6 +155,21 @@ type ReposPageData struct {
 	Sidebar SidebarData
 }
 
+type DeploysPageData struct {
+	Deploys []DeployRow
+	Sidebar SidebarData
+}
+
+type DeployRow struct {
+	CommitSHA    string
+	SHA7         string
+	Status       string
+	CurrentStage string
+	Namespace    string
+	PreviousSHA7 string
+	CreatedAgo   string
+}
+
 type ConfigData struct {
 	Repos   []RepoConfigView
 	Sidebar SidebarData
@@ -897,4 +912,45 @@ func depIssueView(issue int, qByIssue map[int]db.QueueItem, store *pipeline.Stor
 		dv.HasPipeline = true
 	}
 	return dv
+}
+
+// ---- Deploys ----
+
+func (s *Server) handleDeploys(w http.ResponseWriter, r *http.Request) {
+	sidebar := s.sidebarData("")
+
+	deploys, err := s.db.DeployList(50)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var rows []DeployRow
+	for _, d := range deploys {
+		sha7 := d.CommitSHA
+		if len(sha7) > 7 {
+			sha7 = sha7[:7]
+		}
+		prevSHA7 := ""
+		if d.PreviousSHA != "" {
+			prevSHA7 = d.PreviousSHA
+			if len(prevSHA7) > 7 {
+				prevSHA7 = prevSHA7[:7]
+			}
+		}
+		rows = append(rows, DeployRow{
+			CommitSHA:    d.CommitSHA,
+			SHA7:         sha7,
+			Status:       d.Status,
+			CurrentStage: d.CurrentStage,
+			Namespace:    d.Namespace,
+			PreviousSHA7: prevSHA7,
+			CreatedAgo:   relTime(d.CreatedAt),
+		})
+	}
+
+	data := DeploysPageData{Deploys: rows, Sidebar: sidebar}
+	if err := s.deploysTmpl.ExecuteTemplate(w, "base", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }

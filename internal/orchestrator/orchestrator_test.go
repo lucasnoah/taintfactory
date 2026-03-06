@@ -67,7 +67,8 @@ func (m *mockTmux) NewSession(name string) error {
 	return nil
 }
 
-func (m *mockTmux) SendKeys(sess string, keys string) error    { return nil }
+func (m *mockTmux) SendKeys(sess string, keys string) error     { return nil }
+func (m *mockTmux) SendRaw(sess string, key string) error       { return nil }
 func (m *mockTmux) SendBuffer(sess string, content string) error { return nil }
 func (m *mockTmux) KillSession(name string) error            { delete(m.sessions, name); return nil }
 func (m *mockTmux) CapturePane(name string) (string, error)  { return "", nil }

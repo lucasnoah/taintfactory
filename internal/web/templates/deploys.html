@@ -1,0 +1,34 @@
+{{define "title"}}Deploys{{end}}
+{{define "refresh"}}<meta http-equiv="refresh" content="15">{{end}}
+{{define "content"}}
+<h1 style="font-size:1.2rem;font-weight:700;margin-bottom:1.25rem">Deploys</h1>
+
+{{if .Deploys}}
+<table>
+  <thead>
+    <tr>
+      <th>SHA</th>
+      <th>Status</th>
+      <th>Stage</th>
+      <th>Namespace</th>
+      <th>Previous</th>
+      <th>Created</th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Deploys}}
+  <tr>
+    <td><code>{{.SHA7}}</code></td>
+    <td><span class="{{badgeClass .Status}}">{{.Status}}</span></td>
+    <td>{{.CurrentStage}}</td>
+    <td>{{if .Namespace}}<code>{{.Namespace}}</code>{{else}}<span class="muted">—</span>{{end}}</td>
+    <td>{{if .PreviousSHA7}}<code>{{.PreviousSHA7}}</code>{{else}}<span class="muted">—</span>{{end}}</td>
+    <td class="muted">{{.CreatedAgo}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="muted">No deploys found. Use <code>factory deploy create &lt;sha&gt;</code> to create one.</p>
+{{end}}
+{{end}}
