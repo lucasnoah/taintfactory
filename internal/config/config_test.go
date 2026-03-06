@@ -705,6 +705,19 @@ func TestDatabaseURL(t *testing.T) {
 	}
 }
 
+func TestDatabaseURLForHost(t *testing.T) {
+	db := &DatabaseConfig{
+		Name:     "wptl_dev",
+		User:     "wptl",
+		Password: "wptl_dev",
+	}
+	got := db.URLForHost("factory-postgres:5432")
+	want := "postgres://wptl:wptl_dev@factory-postgres:5432/wptl_dev?sslmode=disable"
+	if got != want {
+		t.Errorf("URLForHost() = %q, want %q", got, want)
+	}
+}
+
 func TestDatabaseURL_SpecialChars(t *testing.T) {
 	db := &DatabaseConfig{
 		Name:     "mydb",

@@ -3,6 +3,8 @@ package stage
 import (
 	"fmt"
 	"io"
+	"net/url"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -647,18 +649,33 @@ func (e *Engine) findStageConfig(stageID string, cfg *config.PipelineConfig) (*c
 
 // buildEnvMap merges pipeline.env with auto-generated DATABASE_URL.
 // If database is configured, DATABASE_URL overrides any user-provided value.
+// The host is derived from the factory's own DATABASE_URL so per-repo
+// connections reach the same Postgres instance (e.g. factory-postgres:5432
+// in k8s instead of the hardcoded localhost:5432).
 func buildEnvMap(cfg *config.PipelineConfig) map[string]string {
 	env := make(map[string]string)
 	for k, v := range cfg.Pipeline.Env {
 		env[k] = v
 	}
 	if cfg.Pipeline.Database != nil {
-		env["DATABASE_URL"] = cfg.Pipeline.Database.URL()
+		env["DATABASE_URL"] = cfg.Pipeline.Database.URLForHost(dbHost())
 	}
 	if len(env) == 0 {
 		return nil
 	}
 	return env
+}
+
+// dbHost extracts the host:port from the factory's DATABASE_URL env var.
+// Falls back to localhost:5432 if the env var is unset or unparseable.
+func dbHost() string {
+	raw := os.Getenv("DATABASE_URL")
+	if raw != "" {
+		if u, err := url.Parse(raw); err == nil && u.Host != "" {
+			return u.Host
+		}
+	}
+	return "localhost:5432"
 }
 
 // formatGateFailures formats gate failures into a deterministic readable string.

@@ -18,11 +18,16 @@ type DatabaseConfig struct {
 	Migrate  string `yaml:"migrate"`
 }
 
-// URL returns a PostgreSQL connection string for this database config.
+// URLForHost returns a PostgreSQL connection string targeting the given host.
 // The password is URL-encoded to handle special characters.
+func (d *DatabaseConfig) URLForHost(host string) string {
+	return fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=disable",
+		d.User, url.PathEscape(d.Password), host, d.Name)
+}
+
+// URL returns a PostgreSQL connection string defaulting to localhost:5432.
 func (d *DatabaseConfig) URL() string {
-	return fmt.Sprintf("postgres://%s:%s@localhost:5432/%s?sslmode=disable",
-		d.User, url.PathEscape(d.Password), d.Name)
+	return d.URLForHost("localhost:5432")
 }
 
 // Pipeline defines the full pipeline: metadata, defaults, checks, and stages.
