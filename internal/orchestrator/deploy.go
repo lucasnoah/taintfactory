@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/lucasnoah/taintfactory/internal/config"
 	"github.com/lucasnoah/taintfactory/internal/pipeline"
@@ -339,7 +338,8 @@ func isRollbackStage(stageID string) bool {
 	return stageID == "rollback" || strings.Contains(stageID, "rollback")
 }
 
-// runDeployStage creates a session, renders the prompt, sends it, and waits for idle.
+// runDeployStage creates a session, renders the prompt, and sends it.
+// It does NOT block waiting for idle — the next check-in monitors the session.
 // Returns the session name on success.
 func (o *Orchestrator) runDeployStage(ds *pipeline.DeployState, stageCfg *config.Stage, cfg *config.DeployPipeline) (string, error) {
 	sha7 := shortDeploySHA(ds.CommitSHA)
@@ -418,19 +418,8 @@ func (o *Orchestrator) runDeployStage(ds *pipeline.DeployState, stageCfg *config
 		return "", fmt.Errorf("send prompt: %w", err)
 	}
 
-	// Wait for idle
-	timeout := 30 * time.Minute
-	waitResult, err := o.sessions.WaitIdle(sessionName, timeout, 30*time.Second)
-	if err != nil {
-		_, _ = o.sessions.Kill(sessionName)
-		return "", fmt.Errorf("wait idle: %w", err)
-	}
-
-	if waitResult.State == "exited" {
-		return "", fmt.Errorf("session exited unexpectedly")
-	}
-
-	o.logf("deploy %s: session %s is idle", sha7, sessionName)
+	// Non-blocking: session is now running. Next check-in will monitor it.
+	o.logf("deploy %s: session %s launched, will monitor on next check-in", sha7, sessionName)
 	return sessionName, nil
 }
 
