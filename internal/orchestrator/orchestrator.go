@@ -70,6 +70,7 @@ func NewOrchestrator(
 		client := github.NewClient(&github.ExecRunner{})
 		repo := strings.TrimPrefix(repoURL, "https://")
 		repo = strings.TrimPrefix(repo, "github.com/")
+		repo = strings.TrimSuffix(repo, ".git")
 		if repo != "" {
 			client = client.WithRepo(repo)
 		}
