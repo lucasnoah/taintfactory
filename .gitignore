@@ -25,3 +25,6 @@ pipelines/*/stages/*/gifs/
 
 # Git worktrees
 .worktrees/
+
+# K8s secrets (never commit)
+deploy/k8s/secrets.yaml

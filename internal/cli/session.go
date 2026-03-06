@@ -313,11 +313,11 @@ func init() {
 
 // newSessionManager opens the DB, migrates, and returns a Manager + cleanup func.
 func newSessionManager() (*session.Manager, func(), error) {
-	dbPath, err := db.DefaultDBPath()
+	connStr, err := db.DefaultConnStr()
 	if err != nil {
 		return nil, nil, err
 	}
-	d, err := db.Open(dbPath)
+	d, err := db.Open(connStr)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -466,14 +466,14 @@ func (e *Engine) createAndRunSession(name string, ps *pipeline.PipelineState, op
 		return fmt.Errorf("create session: %w", err)
 	}
 
-	// Wait for Claude to boot and become ready for input.
-	// Claude Code takes ~5-10s to start; we use a fixed delay since
-	// the Stop hook doesn't fire on initial boot (only after processing).
-	e.logf("waiting %s for Claude to boot...", e.bootDelay)
-	time.Sleep(e.bootDelay)
+	// Wait for Claude to boot, dismissing any startup dialogs (trust, bypass warning).
+	e.logf("waiting for Claude to boot and dismiss startup dialogs...")
+	if err := e.sessions.DismissStartupDialogs(name); err != nil {
+		e.logf("warning: dialog dismissal: %v", err)
+	}
 
 	// Send the rendered prompt
-	e.logf("sending prompt to session %s", name)
+	e.logf("sending prompt to session %s (%d bytes)", name, len(rendered))
 	if err := e.sessions.Send(name, rendered); err != nil {
 		e.cleanupSession(name)
 		return fmt.Errorf("send prompt: %w", err)

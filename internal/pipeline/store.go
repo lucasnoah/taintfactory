@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"time"
+
+	"github.com/lucasnoah/taintfactory/internal/config"
 )
 
 // Store manages pipeline state on disk.
@@ -19,13 +21,10 @@ func NewStore(baseDir string) *Store {
 	return &Store{baseDir: baseDir}
 }
 
-// DefaultStore returns a Store at ~/.factory/pipelines, creating the directory if needed.
+// DefaultStore returns a Store at {datadir}/pipelines, creating the directory if needed.
+// Respects FACTORY_DATA_DIR env var (default: ~/.factory).
 func DefaultStore() (*Store, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("get home dir: %w", err)
-	}
-	dir := filepath.Join(home, ".factory", "pipelines")
+	dir := filepath.Join(config.DataDir(), "pipelines")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
 	}

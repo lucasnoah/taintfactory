@@ -2,8 +2,11 @@ package cli
 
 import (
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/lucasnoah/taintfactory/internal/db"
+	"github.com/lucasnoah/taintfactory/internal/orchestrator"
 	"github.com/lucasnoah/taintfactory/internal/pipeline"
 	"github.com/lucasnoah/taintfactory/internal/triage"
 	"github.com/lucasnoah/taintfactory/internal/web"
@@ -13,19 +16,20 @@ import (
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the local web UI",
-	Long: `Start a read-only browser UI on localhost showing pipeline state, history, and check results.
+	Long: `Start a read-only browser UI showing pipeline state, history, and check results.
 
-Pipeline configs (pipeline.yaml) are discovered automatically from each pipeline's
-worktree path, so the server works correctly regardless of which directory it is
-started from.`,
+With --with-orchestrator, also runs the orchestrator check-in loop on a configurable
+interval, combining the web UI and the automation loop in a single process.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		port, _ := cmd.Flags().GetInt("port")
+		withOrch, _ := cmd.Flags().GetBool("with-orchestrator")
+		orchInterval, _ := cmd.Flags().GetInt("orchestrator-interval")
 
-		dbPath, err := db.DefaultDBPath()
+		connStr, err := db.DefaultConnStr()
 		if err != nil {
-			return fmt.Errorf("db path: %w", err)
+			return fmt.Errorf("db connection: %w", err)
 		}
-		database, err := db.Open(dbPath)
+		database, err := db.Open(connStr)
 		if err != nil {
 			return fmt.Errorf("open db: %w", err)
 		}
@@ -40,11 +44,38 @@ started from.`,
 			return fmt.Errorf("store: %w", err)
 		}
 
-		triageDir, _ := triage.DefaultTriageDir() // "" if home dir unavailable; triage UI degrades gracefully
+		if withOrch {
+			orch, cleanup, err := newOrchestrator()
+			if err != nil {
+				return fmt.Errorf("init orchestrator: %w", err)
+			}
+			defer cleanup()
+
+			go runOrchestratorLoop(orch, time.Duration(orchInterval)*time.Second)
+		}
+
+		triageDir, _ := triage.DefaultTriageDir()
 		return web.NewServer(store, database, port, triageDir).Start()
 	},
 }
 
+func runOrchestratorLoop(orch *orchestrator.Orchestrator, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	log.Printf("Orchestrator loop started (interval: %s)", interval)
+	for range ticker.C {
+		if _, err := orch.CheckIn(); err != nil {
+			log.Printf("orchestrator check-in error: %v", err)
+		}
+		if err := discordPollTick(); err != nil {
+			log.Printf("discord poll: %v", err)
+		}
+	}
+}
+
 func init() {
 	serveCmd.Flags().Int("port", 17432, "Port to listen on")
+	serveCmd.Flags().Bool("with-orchestrator", false, "Run orchestrator check-in loop alongside web server")
+	serveCmd.Flags().Int("orchestrator-interval", 120, "Orchestrator check-in interval in seconds")
 }

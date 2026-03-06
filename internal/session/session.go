@@ -64,7 +64,7 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-// Create spins up a new tmux session running Claude Code.
+// Create spins up a new tmux session running Claude Code in interactive mode.
 func (m *Manager) Create(opts CreateOpts) error {
 	if err := ValidateSessionName(opts.Name); err != nil {
 		return err
@@ -102,6 +102,10 @@ func (m *Manager) Create(opts CreateOpts) error {
 		if err := m.tmux.SendKeys(opts.Name, "cd "+shellQuote(opts.Workdir)); err != nil {
 			return fmt.Errorf("send cd: %w", err)
 		}
+		// Pre-trust the workdir so Claude skips the "trust this folder" dialog.
+		if err := preTrustDirectory(opts.Workdir); err != nil {
+			fmt.Fprintf(os.Stderr, "[session] warning: could not pre-trust %s: %v\n", opts.Workdir, err)
+		}
 	}
 
 	// Unset CLAUDECODE to allow nested Claude Code sessions in tmux
@@ -109,15 +113,10 @@ func (m *Manager) Create(opts CreateOpts) error {
 		return fmt.Errorf("unset CLAUDECODE: %w", err)
 	}
 
-	// Export OAuth token if available in .env next to the binary
-	if token := loadOAuthToken(); token != "" {
-		if err := m.tmux.SendKeys(opts.Name, "export CLAUDE_CODE_OAUTH_TOKEN="+shellQuote(token)); err != nil {
-			return fmt.Errorf("export oauth token: %w", err)
-		}
-	}
-
-	// Build and send claude command
+	// Launch Claude in interactive mode.
+	// Auth is handled via CLAUDE_CODE_OAUTH_TOKEN env var (set in .bashrc by entrypoint).
 	cmd := buildClaudeCommand(opts)
+	fmt.Fprintf(os.Stderr, "[session] launching: %s\n", cmd)
 	if err := m.tmux.SendKeys(opts.Name, cmd); err != nil {
 		return fmt.Errorf("send claude command: %w", err)
 	}
@@ -274,7 +273,7 @@ func (m *Manager) DetectHuman(name string) (bool, error) {
 	return m.db.DetectHumanIntervention(name)
 }
 
-// Send delivers a prompt to a running session via tmux send-keys.
+// Send delivers a prompt to a running interactive session via tmux buffer paste.
 // It logs a factory_send event before sending so human detection works.
 func (m *Manager) Send(name string, prompt string) error {
 	exists, err := m.tmux.HasSession(name)
@@ -382,6 +381,13 @@ func isRateLimited(pane string) bool {
 		strings.Contains(pane, "/rate-limit-options")
 }
 
+// isLoginPrompt detects when Claude Code is stuck on the authentication
+// screen instead of running. This happens when CLAUDE_CODE_OAUTH_TOKEN
+// is missing or invalid.
+func isLoginPrompt(pane string) bool {
+	return strings.Contains(pane, "Select login method")
+}
+
 // WaitIdle polls the DB until the session reaches "idle" or "exited" state.
 // As a fallback, it also monitors the tmux pane content for stability —
 // if the pane doesn't change for multiple consecutive polls, Claude is
@@ -411,13 +417,18 @@ func (m *Manager) WaitIdle(name string, timeout time.Duration, pollInterval time
 
 		if state.Event == "idle" || state.Event == "exited" {
 			if state.Event == "idle" {
-				// Before declaring idle, check whether the pane is showing an
-				// Anthropic rate-limit screen instead of a completed response.
-				if pane, pErr := m.tmux.CapturePaneLines(name, 50); pErr == nil && isRateLimited(pane) {
-					return &WaitIdleResult{
-						State:   "rate_limited",
-						Elapsed: elapsed(state.Timestamp),
-					}, nil
+				if pane, pErr := m.tmux.CapturePaneLines(name, 50); pErr == nil {
+					// Check for authentication failure — Claude is stuck on login.
+					if isLoginPrompt(pane) {
+						return nil, fmt.Errorf("session %q stuck on login prompt: CLAUDE_CODE_OAUTH_TOKEN is missing or invalid", name)
+					}
+					// Check for rate-limit screen instead of a completed response.
+					if isRateLimited(pane) {
+						return &WaitIdleResult{
+							State:   "rate_limited",
+							Elapsed: elapsed(state.Timestamp),
+						}, nil
+					}
 				}
 			}
 			return &WaitIdleResult{
@@ -434,6 +445,10 @@ func (m *Manager) WaitIdle(name string, timeout time.Duration, pollInterval time
 			if pane == lastPane {
 				stableCount++
 				if stableCount >= stableThreshold {
+					// Check for authentication failure — fail fast.
+					if isLoginPrompt(pane) {
+						return nil, fmt.Errorf("session %q stuck on login prompt: CLAUDE_CODE_OAUTH_TOKEN is missing or invalid", name)
+					}
 					if isRateLimited(pane) {
 						// Pane is stable because it's showing the rate-limit screen.
 						_ = m.db.LogSessionEvent(name, state.Issue, state.Stage, "rate_limited", nil, "pane_rate_limited")
@@ -487,6 +502,99 @@ func (r *WaitIdleResult) JSON() (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+// DismissStartupDialogs polls the tmux pane for known Claude Code startup
+// dialogs and sends the appropriate keystrokes to accept them.
+// Handles: "trust this folder" and "bypass permissions warning" dialogs.
+// Returns when Claude is ready for input or after ~30 seconds.
+func (m *Manager) DismissStartupDialogs(session string) error {
+	// Poll for up to 30 seconds, checking every 2 seconds.
+	for i := 0; i < 15; i++ {
+		time.Sleep(2 * time.Second)
+
+		pane, err := m.tmux.CapturePaneLines(session, 30)
+		if err != nil {
+			return fmt.Errorf("capture pane: %w", err)
+		}
+
+		switch {
+		case strings.Contains(pane, "Yes, I trust this folder"):
+			// Trust dialog: option 1 is already selected, just press Enter.
+			fmt.Fprintf(os.Stderr, "[session] dismissing trust dialog\n")
+			if err := m.tmux.SendRaw(session, "Enter"); err != nil {
+				return err
+			}
+			continue // check for next dialog
+
+		case strings.Contains(pane, "Yes, I accept"):
+			// Bypass permissions warning: "No, exit" is selected by default,
+			// need to move Down to "Yes, I accept" then press Enter.
+			fmt.Fprintf(os.Stderr, "[session] dismissing bypass permissions dialog\n")
+			if err := m.tmux.SendRaw(session, "Down"); err != nil {
+				return err
+			}
+			time.Sleep(200 * time.Millisecond)
+			if err := m.tmux.SendRaw(session, "Enter"); err != nil {
+				return err
+			}
+			continue // check for next dialog
+
+		case strings.Contains(pane, "Select login method"):
+			return fmt.Errorf("login prompt detected — CLAUDE_CODE_OAUTH_TOKEN not working")
+
+		case strings.Contains(pane, "Welcome back") || strings.Contains(pane, "Try \""):
+			// Claude is fully booted and ready for input.
+			fmt.Fprintf(os.Stderr, "[session] claude is ready\n")
+			return nil
+		}
+	}
+
+	return nil // timed out but no error — might already be past dialogs
+}
+
+// preTrustDirectory sets hasTrustDialogAccepted=true for a directory in
+// ~/.claude.json so Claude Code skips the interactive trust prompt.
+func preTrustDirectory(dir string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	path := home + "/.claude.json"
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return err
+	}
+
+	projects, _ := cfg["projects"].(map[string]interface{})
+	if projects == nil {
+		projects = make(map[string]interface{})
+		cfg["projects"] = projects
+	}
+
+	proj, _ := projects[dir].(map[string]interface{})
+	if proj == nil {
+		proj = make(map[string]interface{})
+		projects[dir] = proj
+	}
+
+	if accepted, _ := proj["hasTrustDialogAccepted"].(bool); accepted {
+		return nil // already trusted
+	}
+
+	proj["hasTrustDialogAccepted"] = true
+
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0644)
 }
 
 // buildClaudeCommand constructs the claude CLI invocation string.

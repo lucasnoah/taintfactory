@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: factory-postgres
+  namespace: taintfactory
+spec:
+  selector:
+    app: factory-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: factory-postgres
+  namespace: taintfactory
+spec:
+  serviceName: factory-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: factory-postgres
+  template:
+    metadata:
+      labels:
+        app: factory-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_DB
+              value: factory
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: factory-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: factory-secrets
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: pg-data
+              mountPath: /var/lib/postgresql/data
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "factory"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "factory"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: pg-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: do-block-storage
+        resources:
+          requests:
+            storage: 5Gi

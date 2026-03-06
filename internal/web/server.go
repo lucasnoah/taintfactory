@@ -313,9 +313,10 @@ func (s *Server) sidebarData(currentProj string) SidebarData {
 	return SidebarData{Projects: projects, CurrentProject: currentProj}
 }
 
-// Start registers routes and starts listening.
-func (s *Server) Start() error {
+// buildMux constructs the HTTP mux with all routes.
+func (s *Server) buildMux() *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/":
@@ -332,10 +333,20 @@ func (s *Server) Start() error {
 	})
 	mux.HandleFunc("/queue", s.handleQueue)
 	mux.HandleFunc("/config", s.handleConfig)
+	return mux
+}
 
+// Start registers routes and starts listening.
+func (s *Server) Start() error {
+	mux := s.buildMux()
 	addr := fmt.Sprintf(":%d", s.port)
 	log.Printf("TaintFactory UI: http://localhost%s", addr)
 	return http.ListenAndServe(addr, mux)
+}
+
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"status":"ok"}`))
 }
 
 func (s *Server) routePipeline(w http.ResponseWriter, r *http.Request) {
