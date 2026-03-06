@@ -774,12 +774,23 @@ type CheckInResult struct {
 // CheckIn runs the orchestrator decision loop for all in-flight pipelines.
 // This is meant to be called on a cron schedule (e.g. every 5 minutes).
 func (o *Orchestrator) CheckIn() (*CheckInResult, error) {
+	result := &CheckInResult{Actions: []CheckInAction{}}
+
+	// Advance deploy pipelines first (non-blocking — fire and monitor).
+	// Runs before the potentially-blocking pipeline loop so deploys are
+	// decoupled from implementation pipelines.
+	if action := o.checkInDeploy(); action != nil {
+		result.Actions = append(result.Actions, CheckInAction{
+			Action:  "deploy:" + action.Action,
+			Stage:   action.Stage,
+			Message: action.Message,
+		})
+	}
+
 	pipelines, err := o.store.List("")
 	if err != nil {
 		return nil, fmt.Errorf("list pipelines: %w", err)
 	}
-
-	result := &CheckInResult{Actions: []CheckInAction{}}
 
 	hasActive := false
 	for i := range pipelines {
@@ -801,15 +812,6 @@ func (o *Orchestrator) CheckIn() (*CheckInResult, error) {
 		if action := o.processQueue(); action != nil {
 			result.Actions = append(result.Actions, *action)
 		}
-	}
-
-	// Advance deploy pipelines (if configured)
-	if action := o.checkInDeploy(); action != nil {
-		result.Actions = append(result.Actions, CheckInAction{
-			Action:  "deploy:" + action.Action,
-			Stage:   action.Stage,
-			Message: action.Message,
-		})
 	}
 
 	// Advance triage pipelines (if configured)
