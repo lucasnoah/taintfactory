@@ -1444,16 +1444,6 @@ func (o *Orchestrator) pollLabeledIssues() (int, error) {
 			newIssues = append(newIssues, iss)
 		}
 
-		// Find the highest-numbered issue already in the queue for this
-		// namespace — new issues will chain off it.
-		var lastKnownIssue int
-		for _, q := range queueItems {
-			if q.Namespace == repo.Namespace && q.Issue > lastKnownIssue {
-				lastKnownIssue = q.Issue
-			}
-		}
-
-		prevIssue := lastKnownIssue
 		for _, iss := range newIssues {
 			// Derive feature intent via LLM.
 			intent := ""
@@ -1466,27 +1456,18 @@ func (o *Orchestrator) pollLabeledIssues() (int, error) {
 				}
 			}
 
-			// Chain dependency: each issue depends on the previous one
-			// so they execute in numerical order.
-			var deps []int
-			if prevIssue > 0 {
-				deps = []int{prevIssue}
-			}
-
 			if err := o.db.QueueAdd([]db.QueueAddItem{{
 				Namespace:     repo.Namespace,
 				Issue:         iss.Number,
 				FeatureIntent: intent,
-				DependsOn:     deps,
 				ConfigPath:    repo.ConfigPath,
 			}}); err != nil {
 				o.logf("enqueue #%d: %v", iss.Number, err)
 				continue
 			}
 
-			o.logf("polled and enqueued #%d (%s) from %s [depends on #%d]", iss.Number, iss.Title, repo.Namespace, prevIssue)
+			o.logf("polled and enqueued #%d (%s) from %s", iss.Number, iss.Title, repo.Namespace)
 			known[fmt.Sprintf("%s:%d", repo.Namespace, iss.Number)] = true
-			prevIssue = iss.Number
 			enqueued++
 		}
 	}
