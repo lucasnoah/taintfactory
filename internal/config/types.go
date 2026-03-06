@@ -1,22 +1,44 @@
 package config
 
+import (
+	"fmt"
+	"net/url"
+)
+
 // PipelineConfig is the top-level configuration structure parsed from pipeline YAML.
 type PipelineConfig struct {
 	Pipeline Pipeline `yaml:"pipeline"`
 }
 
+// DatabaseConfig declares per-repo PostgreSQL database needs.
+type DatabaseConfig struct {
+	Name     string `yaml:"name"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+	Migrate  string `yaml:"migrate"`
+}
+
+// URL returns a PostgreSQL connection string for this database config.
+// The password is URL-encoded to handle special characters.
+func (d *DatabaseConfig) URL() string {
+	return fmt.Sprintf("postgres://%s:%s@localhost:5432/%s?sslmode=disable",
+		d.User, url.PathEscape(d.Password), d.Name)
+}
+
 // Pipeline defines the full pipeline: metadata, defaults, checks, and stages.
 type Pipeline struct {
-	Name              string            `yaml:"name"`
-	Repo              string            `yaml:"repo"`
-	MaxFixRounds      int               `yaml:"max_fix_rounds"`
-	FreshSessionAfter int               `yaml:"fresh_session_after"`
-	Setup             []string          `yaml:"setup"`
-	Defaults          StageDefaults     `yaml:"defaults"`
-	DefaultChecks     []string          `yaml:"default_checks"`
-	Checks            map[string]Check  `yaml:"checks"`
-	Stages            []Stage           `yaml:"stages"`
-	Vars              map[string]string `yaml:"vars"`
+	Name              string              `yaml:"name"`
+	Repo              string              `yaml:"repo"`
+	MaxFixRounds      int                 `yaml:"max_fix_rounds"`
+	FreshSessionAfter int                 `yaml:"fresh_session_after"`
+	Setup             []string            `yaml:"setup"`
+	Database          *DatabaseConfig     `yaml:"database"`
+	Env               map[string]string   `yaml:"env"`
+	Defaults          StageDefaults       `yaml:"defaults"`
+	DefaultChecks     []string            `yaml:"default_checks"`
+	Checks            map[string]Check    `yaml:"checks"`
+	Stages            []Stage             `yaml:"stages"`
+	Vars              map[string]string   `yaml:"vars"`
 	Notifications     NotificationsConfig `yaml:"notifications"`
 }
 

@@ -861,6 +861,79 @@ func TestWaitIdle_PaneStabilityFallback(t *testing.T) {
 	}
 }
 
+func TestCreate_WithEnvVars(t *testing.T) {
+	tmux := newMockTmux()
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	err := mgr.Create(CreateOpts{
+		Name:  "test-env",
+		Issue: 1,
+		Stage: "impl",
+		Env: map[string]string{
+			"DATABASE_URL": "postgres://u:p@localhost/db",
+			"API_KEY":      "secret",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Find export calls — should be in alphabetical order (API_KEY before DATABASE_URL)
+	var exports []string
+	for _, c := range tmux.calls {
+		if strings.Contains(c, "export ") {
+			exports = append(exports, c)
+		}
+	}
+	if len(exports) != 2 {
+		t.Fatalf("expected 2 export calls, got %d: %v", len(exports), tmux.calls)
+	}
+	if !strings.Contains(exports[0], "API_KEY") {
+		t.Errorf("first export should be API_KEY, got %q", exports[0])
+	}
+	if !strings.Contains(exports[1], "DATABASE_URL") {
+		t.Errorf("second export should be DATABASE_URL, got %q", exports[1])
+	}
+
+	// Exports should come before the claude command
+	claudeIdx := -1
+	firstExportIdx := -1
+	for i, c := range tmux.calls {
+		if strings.Contains(c, "export ") && firstExportIdx == -1 {
+			firstExportIdx = i
+		}
+		if strings.Contains(c, "claude") {
+			claudeIdx = i
+		}
+	}
+	if firstExportIdx >= claudeIdx {
+		t.Errorf("exports should come before claude command: export@%d, claude@%d", firstExportIdx, claudeIdx)
+	}
+}
+
+func TestCreate_EmptyEnvVars(t *testing.T) {
+	tmux := newMockTmux()
+	d := testDB(t)
+	mgr := NewManager(tmux, d, nil)
+
+	err := mgr.Create(CreateOpts{
+		Name:  "test-noenv",
+		Issue: 1,
+		Stage: "impl",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// No export calls when Env is nil
+	for _, c := range tmux.calls {
+		if strings.Contains(c, "export ") {
+			t.Errorf("unexpected export call: %q", c)
+		}
+	}
+}
+
 func TestWaitIdle_PaneChanging_UsesDBEvent(t *testing.T) {
 	tmux := newMockTmux()
 	tmux.sessions["test-change"] = true

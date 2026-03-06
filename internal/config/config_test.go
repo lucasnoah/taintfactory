@@ -627,6 +627,175 @@ func TestCheckFields(t *testing.T) {
 	}
 }
 
+func TestDatabaseConfig(t *testing.T) {
+	yaml := `
+pipeline:
+  name: test
+  repo: github.com/test/test
+  database:
+    name: test_dev
+    user: testuser
+    password: testpass
+    migrate: "make migrate"
+  env:
+    API_KEY: "secret123"
+    DEBUG: "true"
+  stages:
+    - id: s1
+      type: agent
+`
+	cfg, err := LoadFromBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Pipeline.Database == nil {
+		t.Fatal("expected database config to be parsed")
+	}
+	if cfg.Pipeline.Database.Name != "test_dev" {
+		t.Errorf("Database.Name = %q, want %q", cfg.Pipeline.Database.Name, "test_dev")
+	}
+	if cfg.Pipeline.Database.User != "testuser" {
+		t.Errorf("Database.User = %q, want %q", cfg.Pipeline.Database.User, "testuser")
+	}
+	if cfg.Pipeline.Database.Password != "testpass" {
+		t.Errorf("Database.Password = %q, want %q", cfg.Pipeline.Database.Password, "testpass")
+	}
+	if cfg.Pipeline.Database.Migrate != "make migrate" {
+		t.Errorf("Database.Migrate = %q, want %q", cfg.Pipeline.Database.Migrate, "make migrate")
+	}
+	if cfg.Pipeline.Env["API_KEY"] != "secret123" {
+		t.Errorf("Env[API_KEY] = %q, want %q", cfg.Pipeline.Env["API_KEY"], "secret123")
+	}
+	if cfg.Pipeline.Env["DEBUG"] != "true" {
+		t.Errorf("Env[DEBUG] = %q, want %q", cfg.Pipeline.Env["DEBUG"], "true")
+	}
+}
+
+func TestDatabaseConfigEmpty(t *testing.T) {
+	yaml := `
+pipeline:
+  name: test
+  repo: github.com/test/test
+  stages:
+    - id: s1
+      type: agent
+`
+	cfg, err := LoadFromBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Pipeline.Database != nil {
+		t.Error("expected nil database config when not specified")
+	}
+	if len(cfg.Pipeline.Env) != 0 {
+		t.Errorf("expected empty env map, got %v", cfg.Pipeline.Env)
+	}
+}
+
+func TestDatabaseURL(t *testing.T) {
+	db := &DatabaseConfig{
+		Name:     "wptl_dev",
+		User:     "wptl",
+		Password: "wptl_dev",
+	}
+	want := "postgres://wptl:wptl_dev@localhost:5432/wptl_dev?sslmode=disable"
+	got := db.URL()
+	if got != want {
+		t.Errorf("URL() = %q, want %q", got, want)
+	}
+}
+
+func TestDatabaseURL_SpecialChars(t *testing.T) {
+	db := &DatabaseConfig{
+		Name:     "mydb",
+		User:     "myuser",
+		Password: "p@ss:w/rd#100%",
+	}
+	got := db.URL()
+	// Password should be URL-encoded
+	if !strings.Contains(got, "p@ss:w%2Frd%23100%25") {
+		t.Errorf("URL() = %q, expected URL-encoded password", got)
+	}
+	if !strings.Contains(got, "myuser:") {
+		t.Errorf("URL() = %q, missing user", got)
+	}
+	if !strings.Contains(got, "/mydb?") {
+		t.Errorf("URL() = %q, missing database name", got)
+	}
+}
+
+func TestValidateDatabaseConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		db        *DatabaseConfig
+		wantErrs  int
+		wantField string
+	}{
+		{"valid", &DatabaseConfig{Name: "mydb", User: "myuser", Password: "pass"}, 0, ""},
+		{"empty name", &DatabaseConfig{Name: "", User: "myuser"}, 1, "pipeline.database.name"},
+		{"empty user", &DatabaseConfig{Name: "mydb", User: ""}, 1, "pipeline.database.user"},
+		{"invalid name", &DatabaseConfig{Name: "123bad", User: "myuser"}, 1, "pipeline.database.name"},
+		{"invalid user", &DatabaseConfig{Name: "mydb", User: "bad-user"}, 1, "pipeline.database.user"},
+		{"underscores ok", &DatabaseConfig{Name: "_db_1", User: "_user_2"}, 0, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &PipelineConfig{Pipeline: Pipeline{
+				Name:     "test",
+				Repo:     "owner/repo",
+				Database: tt.db,
+				Stages:   []Stage{{ID: "s1"}},
+			}}
+			errs := Validate(cfg)
+			dbErrs := 0
+			for _, e := range errs {
+				if strings.HasPrefix(e.Field, "pipeline.database.") {
+					dbErrs++
+					if tt.wantField != "" && e.Field != tt.wantField {
+						t.Errorf("got field %q, want %q", e.Field, tt.wantField)
+					}
+				}
+			}
+			if dbErrs != tt.wantErrs {
+				t.Errorf("got %d database errors, want %d: %v", dbErrs, tt.wantErrs, errs)
+			}
+		})
+	}
+}
+
+func TestValidateEnvKeys(t *testing.T) {
+	cfg := &PipelineConfig{Pipeline: Pipeline{
+		Name:   "test",
+		Repo:   "owner/repo",
+		Env:    map[string]string{"GOOD_KEY": "v", "bad-key": "v"},
+		Stages: []Stage{{ID: "s1"}},
+	}}
+	errs := Validate(cfg)
+	envErrs := 0
+	for _, e := range errs {
+		if strings.HasPrefix(e.Field, "pipeline.env.") {
+			envErrs++
+		}
+	}
+	if envErrs != 1 {
+		t.Errorf("expected 1 env error, got %d: %v", envErrs, errs)
+	}
+}
+
+func TestValidateWithWarnings_DatabaseAndEnvURL(t *testing.T) {
+	cfg := &PipelineConfig{Pipeline: Pipeline{
+		Name:     "test",
+		Repo:     "owner/repo",
+		Database: &DatabaseConfig{Name: "mydb", User: "myuser", Password: "pass"},
+		Env:      map[string]string{"DATABASE_URL": "postgres://..."},
+		Stages:   []Stage{{ID: "s1"}},
+	}}
+	_, warnings := ValidateWithWarnings(cfg)
+	if len(warnings) != 1 {
+		t.Errorf("expected 1 warning, got %d: %v", len(warnings), warnings)
+	}
+}
+
 func TestStageFields(t *testing.T) {
 	path := writeTestConfig(t, validConfig)
 	cfg, err := Load(path)

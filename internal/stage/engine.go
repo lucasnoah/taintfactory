@@ -453,6 +453,9 @@ func (e *Engine) createAndRunSession(name string, ps *pipeline.PipelineState, op
 		model = "claude-opus-4-6"
 	}
 
+	// Build merged env map: pipeline.env + auto DATABASE_URL
+	env := buildEnvMap(cfg)
+
 	e.logf("creating tmux session %s in %s (model: %s)", name, ps.Worktree, model)
 	if err := e.sessions.Create(session.CreateOpts{
 		Name:        name,
@@ -462,6 +465,7 @@ func (e *Engine) createAndRunSession(name string, ps *pipeline.PipelineState, op
 		Issue:       opts.Issue,
 		Stage:       opts.Stage,
 		Interactive: true,
+		Env:         env,
 	}); err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
@@ -639,6 +643,22 @@ func (e *Engine) findStageConfig(stageID string, cfg *config.PipelineConfig) (*c
 		}
 	}
 	return nil, fmt.Errorf("stage %q not found in config", stageID)
+}
+
+// buildEnvMap merges pipeline.env with auto-generated DATABASE_URL.
+// If database is configured, DATABASE_URL overrides any user-provided value.
+func buildEnvMap(cfg *config.PipelineConfig) map[string]string {
+	env := make(map[string]string)
+	for k, v := range cfg.Pipeline.Env {
+		env[k] = v
+	}
+	if cfg.Pipeline.Database != nil {
+		env["DATABASE_URL"] = cfg.Pipeline.Database.URL()
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 // formatGateFailures formats gate failures into a deterministic readable string.

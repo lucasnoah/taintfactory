@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,7 +9,9 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/lucasnoah/taintfactory/internal/config"
 	"github.com/lucasnoah/taintfactory/internal/db"
+	"github.com/lucasnoah/taintfactory/internal/dbprov"
 	"github.com/spf13/cobra"
 )
 
@@ -52,6 +55,26 @@ var repoAddCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Registered %s\n", namespace)
+
+		// Auto-provision database if configured
+		if configPath != "" {
+			if cfg, err := config.Load(configPath); err == nil && cfg.Pipeline.Database != nil {
+				databaseURL := os.Getenv("DATABASE_URL")
+				if databaseURL == "" {
+					fmt.Fprintln(os.Stderr, "warning: DATABASE_URL not set, skipping database provisioning")
+				} else if adminStr, err := dbprov.AdminConnStr(databaseURL); err == nil {
+					if adminConn, err := sql.Open("pgx", adminStr); err == nil {
+						defer adminConn.Close()
+						if err := dbprov.Provision(adminConn, cfg.Pipeline.Database); err != nil {
+							fmt.Fprintf(os.Stderr, "warning: database provisioning failed: %v\n", err)
+						} else {
+							fmt.Printf("Provisioned database %s\n", cfg.Pipeline.Database.Name)
+						}
+					}
+				}
+			}
+		}
+
 		return nil
 	},
 }
@@ -144,6 +167,82 @@ var repoUpdateCmd = &cobra.Command{
 	},
 }
 
+var repoProvisionDBCmd = &cobra.Command{
+	Use:   "provision-db [namespace]",
+	Short: "Provision databases for registered repositories",
+	Long:  "Creates PostgreSQL databases and users for repos with database config. Requires DATABASE_URL env var.",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		databaseURL := os.Getenv("DATABASE_URL")
+		if databaseURL == "" {
+			fmt.Fprintln(os.Stderr, "error: DATABASE_URL environment variable not set")
+			os.Exit(1)
+		}
+
+		adminStr, err := dbprov.AdminConnStr(databaseURL)
+		if err != nil {
+			return fmt.Errorf("parse DATABASE_URL: %w", err)
+		}
+
+		adminConn, err := sql.Open("pgx", adminStr)
+		if err != nil {
+			return fmt.Errorf("connect to admin database: %w", err)
+		}
+		defer adminConn.Close()
+
+		d, cleanup, err := openDB()
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		repos, err := d.RepoList()
+		if err != nil {
+			return err
+		}
+
+		var filterNS string
+		if len(args) > 0 {
+			filterNS = args[0]
+		}
+
+		failures := 0
+		provisioned := 0
+		for _, r := range repos {
+			if filterNS != "" && r.Namespace != filterNS {
+				continue
+			}
+			if r.ConfigPath == "" {
+				continue
+			}
+			cfg, err := config.Load(r.ConfigPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: %s: failed to load config: %v\n", r.Namespace, err)
+				failures++
+				continue
+			}
+			if cfg.Pipeline.Database == nil {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "provisioning database for %s: %s\n", r.Namespace, cfg.Pipeline.Database.Name)
+			if err := dbprov.Provision(adminConn, cfg.Pipeline.Database); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %s: %v\n", r.Namespace, err)
+				failures++
+				continue
+			}
+			provisioned++
+			fmt.Printf("provisioned %s/%s\n", r.Namespace, cfg.Pipeline.Database.Name)
+		}
+
+		if failures > 0 {
+			fmt.Fprintf(os.Stderr, "%d provisioned, %d failed\n", provisioned, failures)
+			os.Exit(2)
+		}
+		fmt.Fprintf(os.Stderr, "%d databases provisioned\n", provisioned)
+		return nil
+	},
+}
+
 // repoURLToNamespace extracts "owner/repo" from a GitHub URL.
 func repoURLToNamespace(url string) string {
 	for _, prefix := range []string{"https://github.com/", "github.com/"} {
@@ -159,6 +258,7 @@ func init() {
 	repoCmd.AddCommand(repoListCmd)
 	repoCmd.AddCommand(repoRemoveCmd)
 	repoCmd.AddCommand(repoUpdateCmd)
+	repoCmd.AddCommand(repoProvisionDBCmd)
 
 	repoAddCmd.Flags().String("local-path", "", "Local path to cloned repo")
 	repoAddCmd.Flags().String("config", "", "Path to pipeline.yaml")
