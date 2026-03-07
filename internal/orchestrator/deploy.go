@@ -595,11 +595,24 @@ func findDeployStage(stageID string, cfg *config.DeployPipeline) *config.Stage {
 	return nil
 }
 
-// nextDeployStageID returns the stage ID after the given one, or "" if last.
+// nextDeployStageID returns the next stage ID in the normal flow, or "" if last.
+// Stages that are only reachable via on_fail are skipped during normal advancement.
 func nextDeployStageID(currentID string, cfg *config.DeployPipeline) string {
-	for i, s := range cfg.Stages {
-		if s.ID == currentID && i+1 < len(cfg.Stages) {
-			return cfg.Stages[i+1].ID
+	// Collect stages that are failure-only targets (referenced by on_fail).
+	failTargets := make(map[string]bool)
+	for _, s := range cfg.Stages {
+		if target, ok := s.OnFail.(string); ok && target != "" {
+			failTargets[target] = true
+		}
+	}
+
+	found := false
+	for _, s := range cfg.Stages {
+		if found && !failTargets[s.ID] {
+			return s.ID
+		}
+		if s.ID == currentID {
+			found = true
 		}
 	}
 	return ""
