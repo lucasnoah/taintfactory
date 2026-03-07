@@ -14,8 +14,9 @@ type PipelineConfig struct {
 
 // DeployPipeline defines the deploy pipeline configuration.
 type DeployPipeline struct {
-	Name   string  `yaml:"name"`
-	Stages []Stage `yaml:"stages"`
+	Name   string            `yaml:"name"`
+	Vars   map[string]string `yaml:"vars"`
+	Stages []Stage           `yaml:"stages"`
 }
 
 // DatabaseConfig declares per-repo PostgreSQL database needs.

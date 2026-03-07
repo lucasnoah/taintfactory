@@ -395,33 +395,18 @@ func isRollbackStage(stageID string) bool {
 func (o *Orchestrator) determineDeployOutcome(ds *pipeline.DeployState, sha7 string) string {
 	output, err := o.sessions.Peek(ds.CurrentSession, 200)
 	if err != nil || output == "" {
-		// Can't read output (tmux server gone, etc.) — retry the stage
 		o.logf("deploy %s: cannot read session output, will retry", sha7)
 		return "retry"
 	}
 
 	lower := strings.ToLower(output)
 
-	// Check for clear failure signals
-	failSignals := []string{
-		"error:", "failed", "permission denied", "access denied",
-		"deployment stopped", "step failed", "fatal:",
-	}
-	for _, sig := range failSignals {
-		if strings.Contains(lower, sig) {
-			// Verify it's not just a log line that mentions error in passing
-			// by checking for success signals too
-			if strings.Contains(lower, "all steps completed") ||
-				strings.Contains(lower, "deployment is verified") {
-				return "success"
-			}
-			return "fail"
-		}
-	}
-
-	// Check for clear success signals
+	// Check for success signals first — the agent's summary table and
+	// conclusion text are the most reliable indicators.
 	successSignals := []string{
-		"all steps completed", "deployment is verified", "deploy complete",
+		"all steps completed", "all checks pass",
+		"deployment is verified", "deploy complete",
+		"deployment to staging complete", "deployment to production complete",
 		"successfully deployed", "verification passed",
 	}
 	for _, sig := range successSignals {
@@ -430,13 +415,38 @@ func (o *Orchestrator) determineDeployOutcome(ds *pipeline.DeployState, sha7 str
 		}
 	}
 
-	// Ambiguous — check if the agent appears to have finished (idle spinner present)
-	// If we can't determine, retry is safest
+	// Check for the idle spinner (agent finished without explicit error)
 	for _, pattern := range deployIdlePatterns {
 		if strings.Contains(output, pattern) {
-			// Agent finished processing but no clear signal — treat as success
-			// (the agent would have reported errors explicitly)
+			// Check for hard failure signals in the last portion of output.
+			// Only the tail matters — earlier lines may contain benign "error"
+			// mentions from build logs, npm warnings, etc.
+			tail := output
+			if len(tail) > 2000 {
+				tail = tail[len(tail)-2000:]
+			}
+			tailLower := strings.ToLower(tail)
+			hardFails := []string{
+				"step failed", "deployment stopped", "stopping deployment",
+				"fatal error", "permission denied", "access denied",
+			}
+			for _, hf := range hardFails {
+				if strings.Contains(tailLower, hf) {
+					return "fail"
+				}
+			}
 			return "success"
+		}
+	}
+
+	// No idle pattern and no success signal — check for clear failures
+	failSignals := []string{
+		"step failed", "deployment stopped", "permission denied",
+		"access denied", "fatal:",
+	}
+	for _, sig := range failSignals {
+		if strings.Contains(lower, sig) {
+			return "fail"
 		}
 	}
 
@@ -486,6 +496,11 @@ func (o *Orchestrator) runDeployStage(ds *pipeline.DeployState, stageCfg *config
 	}
 	if ds.RepoDir != "" {
 		vars["repo_dir"] = ds.RepoDir
+	}
+
+	// Merge deploy-level vars (defaults for all stages)
+	for k, v := range cfg.Vars {
+		vars[k] = v
 	}
 
 	// Merge stage-level vars (stage vars take precedence)
