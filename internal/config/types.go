@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"os"
 )
 
 // PipelineConfig is the top-level configuration structure parsed from pipeline YAML.
@@ -27,9 +28,17 @@ type DatabaseConfig struct {
 
 // URL returns a PostgreSQL connection string for this database config.
 // The password is URL-encoded to handle special characters.
+// The host is derived from the DATABASE_URL env var if set (for shared postgres),
+// otherwise defaults to localhost:5432.
 func (d *DatabaseConfig) URL() string {
-	return fmt.Sprintf("postgres://%s:%s@localhost:5432/%s?sslmode=disable",
-		d.User, url.PathEscape(d.Password), d.Name)
+	host := "localhost:5432"
+	if envURL := os.Getenv("DATABASE_URL"); envURL != "" {
+		if u, err := url.Parse(envURL); err == nil && u.Host != "" {
+			host = u.Host
+		}
+	}
+	return fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=disable",
+		d.User, url.PathEscape(d.Password), host, d.Name)
 }
 
 // Pipeline defines the full pipeline: metadata, defaults, checks, and stages.
