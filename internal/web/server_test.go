@@ -11,7 +11,7 @@ import (
 )
 
 func TestHealthz(t *testing.T) {
-	s := NewServer(nil, nil, 0, "")
+	s := NewServer(nil, nil, 0, "", nil)
 	mux := s.buildMux()
 
 	req := httptest.NewRequest("GET", "/healthz", nil)
@@ -38,7 +38,7 @@ func TestSidebarData_GroupsByNamespace(t *testing.T) {
 	store.Create(pipeline.CreateOpts{Issue: 102, Title: "B", Branch: "b", Worktree: "w", FirstStage: "impl", Namespace: "org/repo-a", ConfigPath: "/x/pipeline.yaml", RepoDir: "/x"})
 	store.Create(pipeline.CreateOpts{Issue: 103, Title: "C", Branch: "b", Worktree: "w", FirstStage: "impl", Namespace: "org/repo-b", ConfigPath: "/y/pipeline.yaml", RepoDir: "/y"})
 
-	s := NewServer(store, nil, 0, "")
+	s := NewServer(store, nil, 0, "", nil)
 	sd := s.sidebarData("")
 
 	if len(sd.Projects) != 2 {
@@ -57,7 +57,7 @@ func TestSidebarData_CountsOnlyActive(t *testing.T) {
 	store.Create(pipeline.CreateOpts{Issue: 202, Title: "B", Branch: "b", Worktree: "w", FirstStage: "impl", Namespace: "org/app", ConfigPath: "/x/pipeline.yaml", RepoDir: "/x"})
 	// issue 202 stays pending
 
-	s := NewServer(store, nil, 0, "")
+	s := NewServer(store, nil, 0, "", nil)
 	sd := s.sidebarData("")
 
 	if len(sd.Projects) != 1 {
@@ -74,7 +74,7 @@ func TestSidebarData_MarksSelected(t *testing.T) {
 	store.Create(pipeline.CreateOpts{Issue: 301, Title: "A", Branch: "b", Worktree: "w", FirstStage: "impl", Namespace: "org/app", ConfigPath: "/x/pipeline.yaml", RepoDir: "/x"})
 	store.Create(pipeline.CreateOpts{Issue: 302, Title: "B", Branch: "b", Worktree: "w", FirstStage: "impl", Namespace: "org/other", ConfigPath: "/y/pipeline.yaml", RepoDir: "/y"})
 
-	s := NewServer(store, nil, 0, "")
+	s := NewServer(store, nil, 0, "", nil)
 	sd := s.sidebarData("org/app")
 
 	var foundSelected bool
@@ -99,7 +99,7 @@ func TestSidebarData_ExcludesLegacyPipelines(t *testing.T) {
 	store := pipeline.NewStore(dir)
 	store.Create(pipeline.CreateOpts{Issue: 401, Title: "Legacy", Branch: "b", Worktree: "/some/worktree", FirstStage: "impl"})
 
-	s := NewServer(store, nil, 0, "")
+	s := NewServer(store, nil, 0, "", nil)
 	sd := s.sidebarData("")
 
 	if len(sd.Projects) != 0 {
@@ -142,7 +142,7 @@ pipeline:
 		t.Fatal(err)
 	}
 
-	s := NewServer(nil, nil, 0, "")
+	s := NewServer(nil, nil, 0, "", nil)
 
 	ps := &pipeline.PipelineState{
 		Issue:      1,
@@ -171,7 +171,7 @@ pipeline:
 		t.Fatal(err)
 	}
 
-	s := NewServer(nil, nil, 0, "")
+	s := NewServer(nil, nil, 0, "", nil)
 	ps := &pipeline.PipelineState{
 		Issue:      2,
 		ConfigPath: cfgPath,
@@ -192,7 +192,7 @@ pipeline:
 }
 
 func TestConfigForPS_FallsBackToWorktreeWhenNoConfigPath(t *testing.T) {
-	s := NewServer(nil, nil, 0, "")
+	s := NewServer(nil, nil, 0, "", nil)
 
 	// No ConfigPath and empty Worktree: should return nil gracefully
 	ps := &pipeline.PipelineState{
@@ -218,7 +218,7 @@ pipeline:
 		t.Fatal(err)
 	}
 
-	s := NewServer(nil, nil, 0, "")
+	s := NewServer(nil, nil, 0, "", nil)
 
 	// RepoDir empty: should be derived from filepath.Dir(ConfigPath)
 	ps := &pipeline.PipelineState{

@@ -18,7 +18,7 @@
   <tbody>
   {{range .Deploys}}
   <tr>
-    <td><code>{{.SHA7}}</code></td>
+    <td><a href="/deploys/{{.CommitSHA}}"><code>{{.SHA7}}</code></a></td>
     <td><span class="{{badgeClass .Status}}">{{.Status}}</span></td>
     <td>{{.CurrentStage}}</td>
     <td>{{if .Namespace}}<code>{{.Namespace}}</code>{{else}}<span class="muted">—</span>{{end}}</td>

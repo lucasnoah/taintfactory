@@ -59,7 +59,9 @@ type Server struct {
 	configTmpl    *template.Template
 	reposTmpl     *template.Template
 
-	deploysTmpl *template.Template
+	deploysTmpl      *template.Template
+	deployDetailTmpl *template.Template
+	deployStore      *pipeline.DeployStore
 
 	// Triage support
 	triageDir      string
@@ -70,24 +72,26 @@ type Server struct {
 }
 
 // NewServer creates a Server with parsed templates.
-func NewServer(store *pipeline.Store, database *db.DB, port int, triageDir string) *Server {
+func NewServer(store *pipeline.Store, database *db.DB, port int, triageDir string, deployStore *pipeline.DeployStore) *Server {
 	return &Server{
-		store:          store,
-		db:             database,
-		port:           port,
-		triageDir:      triageDir,
-		cfgCache:       make(map[string]*config.PipelineConfig),
-		wtCache:        make(map[string]string),
-		triageCfgCache: make(map[string]*triage.TriageConfig),
-		dashboardTmpl:  mustParseTmpl("base.html", "dashboard.html"),
-		pipelineTmpl:   mustParseTmpl("base.html", "pipeline.html"),
-		attemptTmpl:    mustParseTmpl("base.html", "attempt.html"),
-		queueTmpl:      mustParseTmpl("base.html", "queue.html"),
-		configTmpl:     mustParseTmpl("base.html", "config.html"),
-		reposTmpl:      mustParseTmpl("base.html", "repos.html"),
-		deploysTmpl:    mustParseTmpl("base.html", "deploys.html"),
-		triageTmpl:     mustParseTmpl("base.html", "triage.html"),
-		triageListTmpl: mustParseTmpl("base.html", "triage-list.html"),
+		store:            store,
+		db:               database,
+		port:             port,
+		triageDir:        triageDir,
+		deployStore:      deployStore,
+		cfgCache:         make(map[string]*config.PipelineConfig),
+		wtCache:          make(map[string]string),
+		triageCfgCache:   make(map[string]*triage.TriageConfig),
+		dashboardTmpl:    mustParseTmpl("base.html", "dashboard.html"),
+		pipelineTmpl:     mustParseTmpl("base.html", "pipeline.html"),
+		attemptTmpl:      mustParseTmpl("base.html", "attempt.html"),
+		queueTmpl:        mustParseTmpl("base.html", "queue.html"),
+		configTmpl:       mustParseTmpl("base.html", "config.html"),
+		reposTmpl:        mustParseTmpl("base.html", "repos.html"),
+		deploysTmpl:      mustParseTmpl("base.html", "deploys.html"),
+		deployDetailTmpl: mustParseTmpl("base.html", "deploy-detail.html"),
+		triageTmpl:       mustParseTmpl("base.html", "triage.html"),
+		triageListTmpl:   mustParseTmpl("base.html", "triage-list.html"),
 	}
 }
 
@@ -339,6 +343,7 @@ func (s *Server) buildMux() *http.ServeMux {
 	mux.HandleFunc("/queue", s.handleQueue)
 	mux.HandleFunc("/repos", s.handleRepos)
 	mux.HandleFunc("/deploys", s.handleDeploys)
+	mux.HandleFunc("/deploys/", s.routeDeploy)
 	mux.HandleFunc("/config", s.handleConfig)
 	return mux
 }
@@ -402,6 +407,24 @@ func (s *Server) routeTriage(w http.ResponseWriter, r *http.Request) {
 		s.handleTriageDetail(w, r, parts[0], parts[1])
 	case len(parts) == 4 && parts[2] == "session" && parts[3] == "stream":
 		s.handleTriageStream(w, r, parts[0], parts[1])
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) routeDeploy(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/deploys/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) < 1 || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	sha := parts[0]
+	switch {
+	case len(parts) == 1:
+		s.handleDeployDetail(w, r, sha)
+	case len(parts) == 3 && parts[1] == "session" && parts[2] == "stream":
+		s.handleDeployStream(w, r, sha)
 	default:
 		http.NotFound(w, r)
 	}

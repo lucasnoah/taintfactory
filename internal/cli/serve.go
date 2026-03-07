@@ -56,7 +56,8 @@ interval, combining the web UI and the automation loop in a single process.`,
 		}
 
 		triageDir, _ := triage.DefaultTriageDir()
-		return web.NewServer(store, database, port, triageDir).Start()
+		deployStore, _ := pipeline.DefaultDeployStore()
+		return web.NewServer(store, database, port, triageDir, deployStore).Start()
 	},
 }
 

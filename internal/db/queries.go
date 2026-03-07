@@ -961,6 +961,51 @@ func (d *DB) DeployGetLatestCompleted(namespace string) (*DeployRecord, error) {
 	return &r, nil
 }
 
+// DeployEvent represents a single deploy lifecycle event row.
+type DeployEvent struct {
+	Event     string
+	Stage     string
+	Attempt   int
+	Detail    string
+	Timestamp string
+}
+
+// DeployGet returns a single deploy by commit SHA.
+func (d *DB) DeployGet(commitSHA string) (*DeployRecord, error) {
+	var r DeployRecord
+	err := d.conn.QueryRow(
+		`SELECT id, namespace, commit_sha, status, previous_sha, current_stage, stage_history, created_at, updated_at
+		 FROM deploys WHERE commit_sha = $1`, commitSHA,
+	).Scan(&r.ID, &r.Namespace, &r.CommitSHA, &r.Status, &r.PreviousSHA, &r.CurrentStage, &r.StageHistory, &r.CreatedAt, &r.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get deploy: %w", err)
+	}
+	return &r, nil
+}
+
+// DeployListEvents returns deploy events for a commit SHA, newest first.
+func (d *DB) DeployListEvents(commitSHA string, limit int) ([]DeployEvent, error) {
+	rows, err := d.conn.Query(
+		`SELECT event, COALESCE(stage, ''), COALESCE(attempt, 0), COALESCE(detail, ''), timestamp
+		 FROM deploy_events WHERE commit_sha = $1
+		 ORDER BY timestamp DESC LIMIT $2`, commitSHA, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list deploy events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []DeployEvent
+	for rows.Next() {
+		var e DeployEvent
+		if err := rows.Scan(&e.Event, &e.Stage, &e.Attempt, &e.Detail, &e.Timestamp); err != nil {
+			return nil, fmt.Errorf("scan deploy event: %w", err)
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
 // LogDeployEvent inserts an append-only deploy lifecycle event.
 func (d *DB) LogDeployEvent(commitSHA, namespace, event, stage string, attempt int, detail string) error {
 	_, err := d.conn.Exec(

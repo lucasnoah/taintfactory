@@ -170,6 +170,29 @@ type DeployRow struct {
 	CreatedAgo   string
 }
 
+type DeployDetailData struct {
+	SHA7           string
+	CommitSHA      string
+	Status         string
+	CurrentStage   string
+	Namespace      string
+	PreviousSHA7   string
+	CreatedAgo     string
+	UpdatedAgo     string
+	HasLiveStream  bool
+	SessionName    string
+	Events         []DeployEventView
+	Sidebar        SidebarData
+}
+
+type DeployEventView struct {
+	Event     string
+	Stage     string
+	Attempt   int
+	Detail    string
+	Timestamp string
+}
+
 type ConfigData struct {
 	Repos   []RepoConfigView
 	Sidebar SidebarData
@@ -952,5 +975,131 @@ func (s *Server) handleDeploys(w http.ResponseWriter, r *http.Request) {
 	data := DeploysPageData{Deploys: rows, Sidebar: sidebar}
 	if err := s.deploysTmpl.ExecuteTemplate(w, "base", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) handleDeployDetail(w http.ResponseWriter, r *http.Request, sha string) {
+	sidebar := s.sidebarData("")
+
+	deploy, err := s.db.DeployGet(sha)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	sha7 := deploy.CommitSHA
+	if len(sha7) > 7 {
+		sha7 = sha7[:7]
+	}
+	prevSHA7 := ""
+	if deploy.PreviousSHA != "" {
+		prevSHA7 = deploy.PreviousSHA
+		if len(prevSHA7) > 7 {
+			prevSHA7 = prevSHA7[:7]
+		}
+	}
+
+	// Check for live session via file-based deploy store
+	sessionName := ""
+	hasLive := false
+	if s.deployStore != nil {
+		if ds, err := s.deployStore.Get(deploy.CommitSHA); err == nil && ds.CurrentSession != "" {
+			sessionName = ds.CurrentSession
+			// Verify tmux session is actually alive
+			if _, captureErr := capturePane(sessionName); captureErr == nil {
+				hasLive = true
+			}
+		}
+	}
+
+	// Load events
+	events, _ := s.db.DeployListEvents(deploy.CommitSHA, 50)
+	var eventViews []DeployEventView
+	for _, e := range events {
+		eventViews = append(eventViews, DeployEventView{
+			Event:     e.Event,
+			Stage:     e.Stage,
+			Attempt:   e.Attempt,
+			Detail:    e.Detail,
+			Timestamp: relTime(e.Timestamp),
+		})
+	}
+
+	data := DeployDetailData{
+		SHA7:          sha7,
+		CommitSHA:     deploy.CommitSHA,
+		Status:        deploy.Status,
+		CurrentStage:  deploy.CurrentStage,
+		Namespace:     deploy.Namespace,
+		PreviousSHA7:  prevSHA7,
+		CreatedAgo:    relTime(deploy.CreatedAt),
+		UpdatedAgo:    relTime(deploy.UpdatedAt),
+		HasLiveStream: hasLive,
+		SessionName:   sessionName,
+		Events:        eventViews,
+		Sidebar:       sidebar,
+	}
+	if err := s.deployDetailTmpl.ExecuteTemplate(w, "base", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) handleDeployStream(w http.ResponseWriter, r *http.Request, sha string) {
+	// Get session name from file-based deploy store
+	if s.deployStore == nil {
+		http.Error(w, "deploy store not configured", http.StatusInternalServerError)
+		return
+	}
+
+	ds, err := s.deployStore.Get(sha)
+	if err != nil || ds.CurrentSession == "" {
+		http.Error(w, "no active session", http.StatusNotFound)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	sendDone := func(reason string) {
+		fmt.Fprintf(w, "event: done\ndata: %s\n\n", reason)
+		flusher.Flush()
+	}
+
+	tick := time.NewTicker(2 * time.Second)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-tick.C:
+		}
+
+		// Re-read deploy state to get current session
+		ds, err = s.deployStore.Get(sha)
+		if err != nil || ds.CurrentSession == "" {
+			sendDone("no active session")
+			return
+		}
+
+		output, err := capturePane(ds.CurrentSession)
+		if err != nil {
+			sendDone("session ended")
+			return
+		}
+
+		for _, line := range strings.Split(output, "\n") {
+			fmt.Fprintf(w, "data: %s\n", line)
+		}
+		fmt.Fprintf(w, "\n")
+		flusher.Flush()
 	}
 }
