@@ -771,21 +771,26 @@ type CheckInResult struct {
 	Actions []CheckInAction `json:"actions"`
 }
 
+// DeployCheckIn runs the deploy pipeline check-in independently of the
+// main orchestrator loop. It is designed to be called from its own goroutine
+// so deploy progress is never blocked by long-running implementation pipelines.
+func (o *Orchestrator) DeployCheckIn() *CheckInAction {
+	action := o.checkInDeploy()
+	if action == nil {
+		return nil
+	}
+	return &CheckInAction{
+		Action:  "deploy:" + action.Action,
+		Stage:   action.Stage,
+		Message: action.Message,
+	}
+}
+
 // CheckIn runs the orchestrator decision loop for all in-flight pipelines.
 // This is meant to be called on a cron schedule (e.g. every 5 minutes).
+// Deploy check-ins are handled separately via DeployCheckIn().
 func (o *Orchestrator) CheckIn() (*CheckInResult, error) {
 	result := &CheckInResult{Actions: []CheckInAction{}}
-
-	// Advance deploy pipelines first (non-blocking — fire and monitor).
-	// Runs before the potentially-blocking pipeline loop so deploys are
-	// decoupled from implementation pipelines.
-	if action := o.checkInDeploy(); action != nil {
-		result.Actions = append(result.Actions, CheckInAction{
-			Action:  "deploy:" + action.Action,
-			Stage:   action.Stage,
-			Message: action.Message,
-		})
-	}
 
 	pipelines, err := o.store.List("")
 	if err != nil {

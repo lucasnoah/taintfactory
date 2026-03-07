@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/lucasnoah/taintfactory/internal/config"
@@ -221,6 +222,7 @@ func (o *Orchestrator) advanceDeployToNext(ds *pipeline.DeployState) *DeployChec
 			_ = o.db.DeployUpdateStatus(sha, "rolled_back", ds.CurrentStage, stageHistoryJSON(ds.StageHistory))
 			_ = o.db.LogDeployEvent(sha, ds.Namespace, "rolled_back", ds.CurrentStage, 0, "")
 		})
+		o.resetDeployRepoToMain(ds)
 		return &DeployCheckInAction{
 			CommitSHA: sha,
 			Action:    "rolled_back",
@@ -241,6 +243,7 @@ func (o *Orchestrator) advanceDeployToNext(ds *pipeline.DeployState) *DeployChec
 			_ = o.db.DeployUpdateStatus(sha, "completed", ds.CurrentStage, stageHistoryJSON(ds.StageHistory))
 			_ = o.db.LogDeployEvent(sha, ds.Namespace, "completed", "", 0, "")
 		})
+		o.resetDeployRepoToMain(ds)
 		return &DeployCheckInAction{
 			CommitSHA: sha,
 			Action:    "completed",
@@ -301,6 +304,7 @@ func (o *Orchestrator) handleDeployFailure(ds *pipeline.DeployState, stageCfg *c
 			_ = o.db.DeployUpdateStatus(sha, "failed", ds.CurrentStage, stageHistoryJSON(ds.StageHistory))
 			_ = o.db.LogDeployEvent(sha, ds.Namespace, "failed", ds.CurrentStage, 0, "no on_fail target")
 		})
+		o.resetDeployRepoToMain(ds)
 		return &DeployCheckInAction{
 			CommitSHA: sha,
 			Action:    "failed",
@@ -320,6 +324,7 @@ func (o *Orchestrator) handleDeployFailure(ds *pipeline.DeployState, stageCfg *c
 				_ = o.db.DeployUpdateStatus(sha, "failed", ds.CurrentStage, stageHistoryJSON(ds.StageHistory))
 				_ = o.db.LogDeployEvent(sha, ds.Namespace, "failed", ds.CurrentStage, 0, fmt.Sprintf("cycle detected: %s already visited", target))
 			})
+			o.resetDeployRepoToMain(ds)
 			return &DeployCheckInAction{
 				CommitSHA: sha,
 				Action:    "failed",
@@ -338,6 +343,7 @@ func (o *Orchestrator) handleDeployFailure(ds *pipeline.DeployState, stageCfg *c
 		o.logDeployDB(func() {
 			_ = o.db.DeployUpdateStatus(sha, "failed", ds.CurrentStage, stageHistoryJSON(ds.StageHistory))
 		})
+		o.resetDeployRepoToMain(ds)
 		return &DeployCheckInAction{
 			CommitSHA: sha,
 			Action:    "failed",
@@ -568,4 +574,17 @@ func stageHistoryJSON(history []pipeline.StageHistoryEntry) string {
 		return "[]"
 	}
 	return string(data)
+}
+
+// resetDeployRepoToMain restores the deploy repo to the main branch after
+// a deploy completes, fails, or rolls back. This is necessary because deploy
+// stages run `git checkout <sha>` which leaves the repo in detached HEAD,
+// preventing `git pull --ff-only` on subsequent pod restarts.
+func (o *Orchestrator) resetDeployRepoToMain(ds *pipeline.DeployState) {
+	if ds.RepoDir == "" {
+		return
+	}
+	if err := exec.Command("git", "-C", ds.RepoDir, "checkout", "main").Run(); err != nil {
+		o.logf("deploy %s: failed to reset repo to main: %v", shortDeploySHA(ds.CommitSHA), err)
+	}
 }

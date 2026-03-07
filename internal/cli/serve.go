@@ -52,6 +52,7 @@ interval, combining the web UI and the automation loop in a single process.`,
 			defer cleanup()
 
 			go runOrchestratorLoop(orch, time.Duration(orchInterval)*time.Second)
+			go runDeployLoop(orch, 30*time.Second)
 		}
 
 		triageDir, _ := triage.DefaultTriageDir()
@@ -70,6 +71,18 @@ func runOrchestratorLoop(orch *orchestrator.Orchestrator, interval time.Duration
 		}
 		if err := discordPollTick(); err != nil {
 			log.Printf("discord poll: %v", err)
+		}
+	}
+}
+
+func runDeployLoop(orch *orchestrator.Orchestrator, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	log.Printf("Deploy loop started (interval: %s)", interval)
+	for range ticker.C {
+		if action := orch.DeployCheckIn(); action != nil {
+			log.Printf("deploy check-in: %s (stage: %s)", action.Action, action.Stage)
 		}
 	}
 }
