@@ -23,6 +23,14 @@ fi
   echo "export GOPATH='${GOPATH:-/go}'"
 } > "$HOME/.bashrc"
 
+# Source deploy env secrets (mounted from k8s secrets) into .bashrc
+# so tmux sessions used by deploy agents inherit them.
+if [ -d /etc/factory/deploy-env ]; then
+  for f in /etc/factory/deploy-env/*; do
+    [ -f "$f" ] && echo "export $(basename "$f")='$(cat "$f")'" >> "$HOME/.bashrc"
+  done
+fi
+
 # Configure Docker registry auth if credentials are mounted
 if [ -f /var/run/secrets/registry/.dockerconfigjson ]; then
   mkdir -p "$HOME/.docker"

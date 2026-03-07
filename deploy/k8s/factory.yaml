@@ -91,6 +91,9 @@ spec:
             - name: registry-creds
               mountPath: /var/run/secrets/registry
               readOnly: true
+            - name: deploy-env
+              mountPath: /etc/factory/deploy-env
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /healthz
@@ -124,6 +127,10 @@ spec:
         - name: registry-creds
           secret:
             secretName: registry-push-creds
+        - name: deploy-env
+          secret:
+            secretName: deathcookies-staging-env
+            optional: true
   volumeClaimTemplates:
     - metadata:
         name: factory-data
