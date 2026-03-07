@@ -432,30 +432,39 @@ func (o *Orchestrator) determineDeployOutcome(ds *pipeline.DeployState, sha7 str
 
 	// Ambiguous — check if the agent appears to have finished (idle spinner present)
 	// If we can't determine, retry is safest
-	if strings.Contains(output, "Brewed for") || strings.Contains(output, "Razzmatazzing") {
-		// Agent finished processing but no clear signal — treat as success
-		// (the agent would have reported errors explicitly)
-		return "success"
+	for _, pattern := range deployIdlePatterns {
+		if strings.Contains(output, pattern) {
+			// Agent finished processing but no clear signal — treat as success
+			// (the agent would have reported errors explicitly)
+			return "success"
+		}
 	}
 
 	return "retry"
+}
+
+// deployIdlePatterns are phrases Claude Code shows in the idle/completion line.
+// The format is "✻ <verb> for <duration>" with randomly chosen verbs.
+var deployIdlePatterns = []string{
+	"Worked for", "Brewed for", "Baked for", "Cooked for",
+	"Crafted for", "Built for", "Forged for", "Mixed for",
+	"Razzmatazzing",
 }
 
 // isDeploySessionIdle checks the tmux pane content to determine if the
 // Claude agent has finished processing. Deploy sessions stay in "factory_send"
 // DB state forever because they never call WaitIdle, so we check the pane.
 func (o *Orchestrator) isDeploySessionIdle(sessionName string) bool {
-	output, err := o.sessions.Peek(sessionName, 20)
+	output, err := o.sessions.Peek(sessionName, 10)
 	if err != nil {
 		return false
 	}
-	// Claude Code shows these indicators when idle:
-	// - "❯" prompt at start of line (waiting for input)
-	// - "Worked for" / "Brewed for" duration summary
-	// - "Razzmatazzing" idle spinner text
-	return strings.Contains(output, "Worked for") ||
-		strings.Contains(output, "Brewed for") ||
-		strings.Contains(output, "Razzmatazzing")
+	for _, pattern := range deployIdlePatterns {
+		if strings.Contains(output, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // runDeployStage creates a session, renders the prompt, and sends it.
