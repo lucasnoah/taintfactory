@@ -71,16 +71,18 @@ type DeployState struct {
 	UpdatedAt      string              `json:"updated_at"`
 	ConfigPath     string              `json:"config_path,omitempty"`
 	RepoDir        string              `json:"repo_dir,omitempty"`
+	TriggerIssue   int                 `json:"trigger_issue,omitempty"`
 }
 
 // DeployCreateOpts holds options for creating a new deploy.
 type DeployCreateOpts struct {
-	CommitSHA   string
-	Namespace   string
-	FirstStage  string
-	PreviousSHA string
-	ConfigPath  string
-	RepoDir     string
+	CommitSHA    string
+	Namespace    string
+	FirstStage   string
+	PreviousSHA  string
+	ConfigPath   string
+	RepoDir      string
+	TriggerIssue int
 }
 
 // StageSummary is the final summary of a stage attempt including fix-loop stats.

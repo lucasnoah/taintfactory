@@ -203,6 +203,24 @@ func LoadCachedIssue(pipelineDir string) (*Issue, error) {
 	return &issue, nil
 }
 
+// CloseIssue closes a GitHub issue.
+func (c *Client) CloseIssue(number int, comment string) error {
+	if err := ValidateIssueNumber(number); err != nil {
+		return err
+	}
+	if comment != "" {
+		commentArgs := append([]string{"issue", "comment", fmt.Sprintf("%d", number), "--body", comment}, c.repoArgs()...)
+		if _, err := c.cmd.Run(commentArgs...); err != nil {
+			return fmt.Errorf("comment on issue %d: %w", number, err)
+		}
+	}
+	args := append([]string{"issue", "close", fmt.Sprintf("%d", number)}, c.repoArgs()...)
+	if _, err := c.cmd.Run(args...); err != nil {
+		return fmt.Errorf("close issue %d: %w", number, err)
+	}
+	return nil
+}
+
 // PRCreateOpts holds options for creating a PR.
 type PRCreateOpts struct {
 	Title  string

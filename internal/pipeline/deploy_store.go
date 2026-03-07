@@ -52,6 +52,7 @@ func (s *DeployStore) Create(opts DeployCreateOpts) (*DeployState, error) {
 		UpdatedAt:      now,
 		ConfigPath:     opts.ConfigPath,
 		RepoDir:        opts.RepoDir,
+		TriggerIssue:   opts.TriggerIssue,
 	}
 	path := filepath.Join(dir, "deploy.json")
 	if err := WriteJSON(path, ds); err != nil {

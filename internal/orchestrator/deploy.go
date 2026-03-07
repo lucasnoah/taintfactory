@@ -21,6 +21,7 @@ type DeployCheckInAction struct {
 }
 
 // checkInDeploy finds the first pending/in_progress deploy and advances it.
+// When no active deploys exist, polls GitHub for deploy_staging issues.
 func (o *Orchestrator) checkInDeploy() *DeployCheckInAction {
 	if o.deployStore == nil {
 		return nil
@@ -40,6 +41,9 @@ func (o *Orchestrator) checkInDeploy() *DeployCheckInAction {
 
 		return o.advanceDeploy(ds)
 	}
+
+	// No active deploys — poll for deploy_staging issues
+	o.pollDeployIssues()
 
 	return nil
 }
@@ -235,6 +239,7 @@ func (o *Orchestrator) advanceDeployToNext(ds *pipeline.DeployState) *DeployChec
 			_ = o.db.LogDeployEvent(sha, ds.Namespace, "rolled_back", ds.CurrentStage, 0, "")
 		})
 		o.resetDeployRepoToMain(ds)
+		o.closeDeployTriggerIssue(ds, "rolled back")
 		return &DeployCheckInAction{
 			CommitSHA: sha,
 			Action:    "rolled_back",
@@ -256,6 +261,7 @@ func (o *Orchestrator) advanceDeployToNext(ds *pipeline.DeployState) *DeployChec
 			_ = o.db.LogDeployEvent(sha, ds.Namespace, "completed", "", 0, "")
 		})
 		o.resetDeployRepoToMain(ds)
+		o.closeDeployTriggerIssue(ds, "completed successfully")
 		return &DeployCheckInAction{
 			CommitSHA: sha,
 			Action:    "completed",
@@ -317,6 +323,7 @@ func (o *Orchestrator) handleDeployFailure(ds *pipeline.DeployState, stageCfg *c
 			_ = o.db.LogDeployEvent(sha, ds.Namespace, "failed", ds.CurrentStage, 0, "no on_fail target")
 		})
 		o.resetDeployRepoToMain(ds)
+		o.closeDeployTriggerIssue(ds, "failed")
 		return &DeployCheckInAction{
 			CommitSHA: sha,
 			Action:    "failed",
@@ -337,6 +344,7 @@ func (o *Orchestrator) handleDeployFailure(ds *pipeline.DeployState, stageCfg *c
 				_ = o.db.LogDeployEvent(sha, ds.Namespace, "failed", ds.CurrentStage, 0, fmt.Sprintf("cycle detected: %s already visited", target))
 			})
 			o.resetDeployRepoToMain(ds)
+			o.closeDeployTriggerIssue(ds, "failed")
 			return &DeployCheckInAction{
 				CommitSHA: sha,
 				Action:    "failed",
@@ -356,6 +364,7 @@ func (o *Orchestrator) handleDeployFailure(ds *pipeline.DeployState, stageCfg *c
 			_ = o.db.DeployUpdateStatus(sha, "failed", ds.CurrentStage, stageHistoryJSON(ds.StageHistory))
 		})
 		o.resetDeployRepoToMain(ds)
+		o.closeDeployTriggerIssue(ds, "failed")
 		return &DeployCheckInAction{
 			CommitSHA: sha,
 			Action:    "failed",
@@ -640,6 +649,123 @@ func stageHistoryJSON(history []pipeline.StageHistoryEntry) string {
 		return "[]"
 	}
 	return string(data)
+}
+
+// closeDeployTriggerIssue closes the GitHub issue that triggered a deploy,
+// posting a comment with the outcome.
+func (o *Orchestrator) closeDeployTriggerIssue(ds *pipeline.DeployState, outcome string) {
+	if ds.TriggerIssue == 0 || ds.Namespace == "" || o.gh == nil {
+		return
+	}
+
+	sha7 := shortDeploySHA(ds.CommitSHA)
+	comment := fmt.Sprintf("Deploy %s %s.", sha7, outcome)
+
+	client := o.gh.WithRepo(ds.Namespace)
+	if err := client.CloseIssue(ds.TriggerIssue, comment); err != nil {
+		o.logf("deploy %s: failed to close trigger issue #%d: %v", sha7, ds.TriggerIssue, err)
+	} else {
+		o.logf("deploy %s: closed trigger issue #%d (%s)", sha7, ds.TriggerIssue, outcome)
+	}
+}
+
+// pollDeployIssues checks registered repos for issues labeled "deploy_staging"
+// and creates deploy pipelines for them. Runs on the deploy check-in cadence.
+func (o *Orchestrator) pollDeployIssues() {
+	if o.db == nil || o.deployStore == nil {
+		return
+	}
+
+	repos, err := o.db.RepoGetPollable()
+	if err != nil {
+		return
+	}
+
+	for _, repo := range repos {
+		gh := o.ghForRepo(repo.RepoURL)
+		issues, err := gh.ListLabeledIssues("deploy_staging")
+		if err != nil {
+			o.logf("deploy poll %s: %v", repo.Namespace, err)
+			continue
+		}
+		if len(issues) == 0 {
+			continue
+		}
+
+		// Check if there's already an active deploy for this namespace
+		deploys, _ := o.deployStore.List("")
+		hasActive := false
+		for _, d := range deploys {
+			if d.Namespace == repo.Namespace && d.Status != "completed" && d.Status != "failed" && d.Status != "rolled_back" {
+				hasActive = true
+				break
+			}
+		}
+		if hasActive {
+			continue
+		}
+
+		// Get HEAD of main for the deploy
+		headSHA, err := exec.Command("git", "-C", repo.LocalPath, "rev-parse", "HEAD").Output()
+		if err != nil {
+			o.logf("deploy poll %s: git rev-parse HEAD: %v", repo.Namespace, err)
+			continue
+		}
+		sha := strings.TrimSpace(string(headSHA))
+
+		// Pull latest first
+		_ = exec.Command("git", "-C", repo.LocalPath, "pull", "--ff-only").Run()
+		headSHA, err = exec.Command("git", "-C", repo.LocalPath, "rev-parse", "HEAD").Output()
+		if err == nil {
+			sha = strings.TrimSpace(string(headSHA))
+		}
+
+		// Check if this SHA was already deployed
+		if _, err := o.deployStore.Get(sha); err == nil {
+			o.logf("deploy poll %s: SHA %s already deployed, skipping", repo.Namespace, shortDeploySHA(sha))
+			continue
+		}
+
+		// Load deploy config
+		cfg, err := config.Load(repo.ConfigPath)
+		if err != nil || cfg.Deploy == nil || len(cfg.Deploy.Stages) == 0 {
+			o.logf("deploy poll %s: no deploy config", repo.Namespace)
+			continue
+		}
+
+		firstStage := cfg.Deploy.Stages[0].ID
+
+		// Get previous SHA
+		previousSHA := ""
+		if prev, err := o.db.DeployGetLatestCompleted(repo.Namespace); err == nil {
+			previousSHA = prev.CommitSHA
+		}
+
+		// Use the first matching issue as trigger
+		triggerIssue := issues[0].Number
+
+		ds, err := o.deployStore.Create(pipeline.DeployCreateOpts{
+			CommitSHA:    sha,
+			Namespace:    repo.Namespace,
+			FirstStage:   firstStage,
+			PreviousSHA:  previousSHA,
+			ConfigPath:   repo.ConfigPath,
+			RepoDir:      repo.LocalPath,
+			TriggerIssue: triggerIssue,
+		})
+		if err != nil {
+			o.logf("deploy poll %s: create deploy: %v", repo.Namespace, err)
+			continue
+		}
+
+		o.logDeployDB(func() {
+			_ = o.db.DeployInsert(repo.Namespace, sha, previousSHA, firstStage)
+			_ = o.db.LogDeployEvent(sha, repo.Namespace, "created", firstStage, 0,
+				fmt.Sprintf("triggered by issue #%d", triggerIssue))
+		})
+
+		o.logf("deploy poll %s: created deploy %s (triggered by #%d)", repo.Namespace, shortDeploySHA(ds.CommitSHA), triggerIssue)
+	}
 }
 
 // resetDeployRepoToMain restores the deploy repo to the main branch after
