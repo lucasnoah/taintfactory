@@ -74,13 +74,25 @@ func (o *Orchestrator) advanceDeploy(ds *pipeline.DeployState) *DeployCheckInAct
 				// outcome is "success" or "fail" — fall through to advance/fail logic
 			} else {
 				switch si.State {
-				case "started", "active", "steer", "factory_send":
+				case "started", "active", "steer":
 					return &DeployCheckInAction{
 						CommitSHA: sha,
 						Action:    "skip",
 						Stage:     ds.CurrentStage,
 						Message:   "session active",
 					}
+				case "factory_send":
+					// Deploy sessions never call WaitIdle, so state stays
+					// factory_send forever. Check pane content for idle.
+					if !o.isDeploySessionIdle(ds.CurrentSession) {
+						return &DeployCheckInAction{
+							CommitSHA: sha,
+							Action:    "skip",
+							Stage:     ds.CurrentStage,
+							Message:   "session active",
+						}
+					}
+					fallthrough
 				case "idle":
 					// Session finished — check output for success/failure
 					outcome := o.determineDeployOutcome(ds, sha7)
@@ -427,6 +439,23 @@ func (o *Orchestrator) determineDeployOutcome(ds *pipeline.DeployState, sha7 str
 	}
 
 	return "retry"
+}
+
+// isDeploySessionIdle checks the tmux pane content to determine if the
+// Claude agent has finished processing. Deploy sessions stay in "factory_send"
+// DB state forever because they never call WaitIdle, so we check the pane.
+func (o *Orchestrator) isDeploySessionIdle(sessionName string) bool {
+	output, err := o.sessions.Peek(sessionName, 20)
+	if err != nil {
+		return false
+	}
+	// Claude Code shows these indicators when idle:
+	// - "❯" prompt at start of line (waiting for input)
+	// - "Worked for" / "Brewed for" duration summary
+	// - "Razzmatazzing" idle spinner text
+	return strings.Contains(output, "Worked for") ||
+		strings.Contains(output, "Brewed for") ||
+		strings.Contains(output, "Razzmatazzing")
 }
 
 // runDeployStage creates a session, renders the prompt, and sends it.
